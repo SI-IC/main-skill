@@ -17,16 +17,11 @@ Full rules: [`skills/workflow-rules/SKILL.md`](skills/workflow-rules/SKILL.md).
 On any machine with Claude Code:
 
 ```bash
-claude plugin install https://github.com/<your-username>/main-skill
+claude plugin marketplace add SI-IC/main-skill
+claude plugin install main-skill@main-skill
 ```
 
-Or (if added to a marketplace):
-
-```bash
-claude plugin install main-skill
-```
-
-The plugin's `SessionStart` hook fires on every new session — cats `SKILL.md` into Claude's context automatically. No per-project config needed.
+First command registers this repo as a Claude Code marketplace; second installs the `main-skill` plugin from it. The plugin's `SessionStart` hook fires on every new session — cats `SKILL.md` and `CLAUDE.md` into Claude's context automatically. No per-project config needed.
 
 ## Updates
 
@@ -35,7 +30,7 @@ The `SessionStart` hook runs `git pull` in the plugin directory before injecting
 For a forced manual update:
 
 ```bash
-claude plugin update main-skill
+claude plugin marketplace update main-skill
 ```
 
 ## Editing the rules
@@ -47,7 +42,8 @@ Edit [`skills/workflow-rules/SKILL.md`](skills/workflow-rules/SKILL.md), commit,
 ```
 main-skill/
 ├── .claude-plugin/
-│   └── plugin.json         # manifest
+│   ├── plugin.json         # plugin manifest
+│   └── marketplace.json    # marketplace manifest (makes the repo installable)
 ├── skills/
 │   └── workflow-rules/
 │       └── SKILL.md        # the core three-phase workflow rules

@@ -1,0 +1,13 @@
+{
+  "name": "main-skill",
+  "owner": {
+    "name": "SI-IC"
+  },
+  "plugins": [
+    {
+      "name": "main-skill",
+      "source": "./",
+      "description": "Personal workflow rules for Claude Code — triage, align on logic, execute with edge-case coverage. Auto-injected at every session start."
+    }
+  ]
+}
