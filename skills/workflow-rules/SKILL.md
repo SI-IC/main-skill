@@ -1,6 +1,6 @@
 ---
 name: workflow-rules
-description: Personal workflow for non-trivial tasks. MUST invoke triage skill FIRST (bugfix → superpowers:systematic-debugging, new feature → superpowers:brainstorming, UI/UX → +ui-ux-pro-max), THEN clarify REQUIREMENTS with the user (ask as many questions as needed, but never offer A/B/C implementation menus), THEN decide the approach autonomously, announce it in 1–2 sentences, and execute with self-check. Happy path is NOT enough — brainstorm edge cases (404/empty/null/concurrency/network failure/malformed input/auth states/browser back-button) and cover with tests. Skipping any phase = user frustrated.
+description: Personal workflow for non-trivial tasks. MUST invoke triage skill FIRST (bugfix → superpowers:systematic-debugging, new feature → superpowers:brainstorming, UI/UX → +ui-ux-pro-max), THEN clarify REQUIREMENTS with the user (ask as many questions as needed, but never offer A/B/C implementation menus), THEN decide the approach autonomously, announce it in 1–2 sentences, and execute with self-check. Happy path is NOT enough — brainstorm edge cases (404/empty/null/concurrency/network failure/malformed input/auth states/browser back-button) and cover with tests. For bugs the user observed himself (browser/API/UI error), re-execute the original failure scenario after the fix and show evidence (HTTP code / screenshot / clean console) — green tests are NOT evidence. If you can't reproduce in-session, say "применил, end-to-end НЕ проверил" — never "готово". Skipping any phase = user frustrated.
 ---
 
 # Workflow for non-trivial tasks
@@ -59,11 +59,34 @@ Before claiming code works, generate failure-mode hypotheses covering at minimum
 
 For each non-trivial case, define expected behavior (reject / degrade / retry / propagate) and **cover it with tests**. Goal: no "oh I didn't foresee this" after shipping.
 
+### Reproduce-before-done for observed failures
+
+When the user reports a bug they **observed themselves** (browser error, failing request, broken UI, wrong output in a shell), the fix is NOT done until you **re-execute the original failing scenario after the fix and show evidence it now works**.
+
+**Evidence by context:**
+
+- **Browser-reported** → trigger the exact action via browser MCP (`playwright`, `chrome-devtools`, `claude-in-chrome`) and show: network tab HTTP 2xx on the originally-500ing request, clean console, correct UI state. Screenshot if visual.
+- **API-reported** → `curl`/HTTP client against the real endpoint with real auth, show status code + response body.
+- **CLI / script** → re-run the exact command, paste the output.
+- **Wrong output / data** → re-run the producing flow and paste the corrected output.
+
+**Green unit/integration tests are NOT evidence.** Tests pass against a model of the system; the failure happened in the real system. Re-run the real scenario.
+
+**If in-session reproduction is impossible** (no browser/API access, auth blocks it, env is isolated) — do NOT use words "готово" / "done" / "fixed" / "работает" / "should work". Say literally:
+
+> "Фикс применён. End-to-end НЕ проверил. Проверь вручную: [точные шаги репро]"
+
+and wait for the user's confirmation before treating the task as closed.
+
+**Also add a regression test** that reproduces the exact failure, so the bug can't silently return.
+
 ### Self-check checklist before claiming done
 
+- [ ] **For observed bugs:** re-ran the original failing scenario after the fix and confirmed with evidence (HTTP code, screenshot, console, command output) — OR explicitly flagged "not verified end-to-end, please check: [steps]"
 - [ ] Unit tests written/updated — happy path AND edge cases
 - [ ] Integration tests where relevant
 - [ ] e2e tests where relevant
+- [ ] Regression test added for the exact bug (so it can't silently come back)
 - [ ] Security review of own code (injection, auth bypass, leak of secrets)
 - [ ] Code review via `superpowers:requesting-code-review`
 - [ ] Linters + formatters green
@@ -79,5 +102,6 @@ The user wants predictable collaboration:
 - Autonomous approach decisions (no A/B/C menus) reduce friction — the user's job is to specify *what* they need, not to pick between implementations.
 - Self-verification prevents declaring "done" on broken work.
 - Explicit edge-case thinking prevents "oh I didn't foresee this" regressions after ship.
+- Reproduce-before-done prevents the worst failure mode: Claude says "готово", user refreshes the browser, the same 500 error is still there. That is the outcome this rule exists to eliminate.
 
-**Skipping any phase is the failure mode.** Jumping straight to code, ignoring skill triage, testing only the happy path — all produce the "ой я это не предусмотрел" outcome the user is actively trying to avoid.
+**Skipping any phase is the failure mode.** Jumping straight to code, ignoring skill triage, testing only the happy path, declaring done without re-running the real failure scenario — all produce the "ой я это не предусмотрел" outcome the user is actively trying to avoid.
