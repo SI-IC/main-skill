@@ -25,15 +25,27 @@ First command registers this repo as a Claude Code marketplace; second installs 
 
 ## Updates
 
-After pushing changes to this repo, run on each machine:
+**Maintainer workflow** (when editing rules in this repo):
+
+1. Edit `SKILL.md` / `CLAUDE.md` / whatever.
+2. **Bump `version` in `.claude-plugin/plugin.json`** (patch increment — `1.0.1` → `1.0.2`). Without a version bump, Claude Code will not refresh the cached plugin content on consumer machines.
+3. Commit + push.
+
+**Consumer workflow** (on each machine that installed the plugin):
 
 ```bash
-claude plugin marketplace update main-skill
+claude plugin marketplace update main-skill   # refresh marketplace metadata
+claude plugin update main-skill@main-skill    # fetch the new version into the cache
 ```
 
-Then restart Claude Code. The next session will load the fresh rules.
+Then restart Claude Code. The next session loads the fresh rules.
 
-Claude Code caches the plugin locally (not as a git checkout), so updates do not propagate automatically — `marketplace update` is the command that fetches new commits from this repo into the cache.
+If `plugin update` doesn't exist on your version of Claude Code, fall back to:
+
+```bash
+claude plugin uninstall main-skill@main-skill
+claude plugin install main-skill@main-skill
+```
 
 ## Editing the rules
 
