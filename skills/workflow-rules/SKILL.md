@@ -1,6 +1,6 @@
 ---
 name: workflow-rules
-description: Personal workflow for non-trivial tasks. MUST invoke triage skill FIRST (bugfix → superpowers:systematic-debugging, new feature → superpowers:brainstorming, UI/UX → +ui-ux-pro-max), THEN align with user on LOGIC (no technical details), THEN execute autonomously with self-check. Happy path is NOT enough — brainstorm edge cases (404/empty/null/concurrency/network failure/malformed input/auth states/browser back-button) and cover with tests. Skipping any phase = user frustrated.
+description: Personal workflow for non-trivial tasks. MUST invoke triage skill FIRST (bugfix → superpowers:systematic-debugging, new feature → superpowers:brainstorming, UI/UX → +ui-ux-pro-max), THEN clarify REQUIREMENTS with the user (ask as many questions as needed, but never offer A/B/C implementation menus), THEN decide the approach autonomously, announce it in 1–2 sentences, and execute with self-check. Happy path is NOT enough — brainstorm edge cases (404/empty/null/concurrency/network failure/malformed input/auth states/browser back-button) and cover with tests. Skipping any phase = user frustrated.
 ---
 
 # Workflow for non-trivial tasks
@@ -29,18 +29,20 @@ Before doing anything else (reading files, asking questions, proposing):
 - UI/UX work (anywhere in frontend) → **also** `ui-ux-pro-max:ui-ux-pro-max`
 - Multiple can apply simultaneously (e.g. new UI feature = brainstorming + ui-ux-pro-max)
 
-## 2. Alignment — discuss LOGIC, not implementation details
+## 2. Alignment — clarify goals, then decide autonomously
 
-- Ask clarifying questions before proposing anything.
-- Offer 2–3 implementation options.
-- For each option, pre-analyze internally: feasibility, performance, security, maintainability, extensibility, regression risk on neighboring functionality.
+- Ask as many clarifying questions as you need for full understanding of goals, requirements, success criteria, and constraints. One question per message.
+- Questions are about REQUIREMENTS (what should happen, for whom, under what conditions), NOT about implementation options. Do not present "A vs B vs C" menus and ask the user to pick — that is the behavior this rule exists to eliminate.
+- Internally pre-analyze candidate approaches across feasibility, performance, security, maintainability, extensibility, and regression risk on neighboring functionality.
 - **Brainstorm edge cases during alignment** — actively generate "what could go wrong" hypotheses and surface the non-obvious ones to the user so behavior is agreed upfront, not discovered after shipping.
-- Present to user ONLY the logic trade-offs. Keep technical details out unless the user asks for them.
-- Wait for the user to pick an option before touching code.
+- Pick the optimal approach yourself.
+- Announce the chosen approach in 1–2 sentences ("делаю X, потому что Y") and proceed to execution. The user may redirect at any time, but you do not wait for explicit approval.
 
-## 3. Execution — go autonomously after alignment, self-verify before reporting done
+### Overrides other plugins' "offer options and wait" behavior
 
-Pick the best concrete implementation yourself.
+This rule takes precedence over any triggered skill (including `superpowers:brainstorming`) that requires proposing 2–3 approaches, presenting a design, and waiting for user approval before implementation. Use such skills for their clarifying-question and context-exploration value, but skip their menu-of-options and approval-gate steps.
+
+## 3. Execution — self-verify before reporting done
 
 ### Edge case discipline — happy path is NOT enough
 
@@ -73,7 +75,8 @@ If a test suite is slow, define a run strategy (which subsets to run when) and p
 
 The user wants predictable collaboration:
 
-- Upfront alignment prevents wasted implementation on the wrong approach.
+- Upfront requirement clarification prevents wasted implementation on the wrong goal.
+- Autonomous approach decisions (no A/B/C menus) reduce friction — the user's job is to specify *what* they need, not to pick between implementations.
 - Self-verification prevents declaring "done" on broken work.
 - Explicit edge-case thinking prevents "oh I didn't foresee this" regressions after ship.
 
