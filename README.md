@@ -25,13 +25,15 @@ First command registers this repo as a Claude Code marketplace; second installs 
 
 ## Updates
 
-The `SessionStart` hook runs `git pull` in the plugin directory before injecting the skill, so each new session picks up the latest version of the rules automatically (assuming internet access). If offline, the cached version loads.
-
-For a forced manual update:
+After pushing changes to this repo, run on each machine:
 
 ```bash
 claude plugin marketplace update main-skill
 ```
+
+Then restart Claude Code. The next session will load the fresh rules.
+
+Claude Code caches the plugin locally (not as a git checkout), so updates do not propagate automatically — `marketplace update` is the command that fetches new commits from this repo into the cache.
 
 ## Editing the rules
 
@@ -48,7 +50,7 @@ main-skill/
 │   └── workflow-rules/
 │       └── SKILL.md        # the core three-phase workflow rules
 ├── hooks/
-│   └── hooks.json          # SessionStart hook: git pull + cat SKILL.md + CLAUDE.md
+│   └── hooks.json          # SessionStart hook: cat SKILL.md + CLAUDE.md into context
 ├── CLAUDE.md               # miscellaneous rule additions (auto-loaded alongside SKILL.md)
 └── README.md
 ```
