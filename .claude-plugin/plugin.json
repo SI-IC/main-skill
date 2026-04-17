@@ -1,0 +1,5 @@
+{
+  "name": "main-skill",
+  "description": "Personal workflow rules for Claude Code — triage → align on logic → execute with self-check and edge case coverage. Auto-injected at every session start.",
+  "version": "1.0.0"
+}

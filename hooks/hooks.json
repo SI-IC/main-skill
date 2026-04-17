@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" 2>/dev/null && git pull -q 2>/dev/null; cat \"${CLAUDE_PLUGIN_ROOT}/skills/workflow-rules/SKILL.md\" \"${CLAUDE_PLUGIN_ROOT}/CLAUDE.md\" 2>/dev/null"
+          }
+        ]
+      }
+    ]
+  }
+}
