@@ -7,6 +7,19 @@ description: Personal workflow for non-trivial tasks. MUST invoke triage skill F
 
 Every non-trivial task follows the same three phases. Any task larger than a one-line fix — follow this.
 
+## Precedence over other plugins
+
+These rules are the **user's personal explicit directive**, loaded via the `main-skill` plugin's SessionStart hook. They take precedence over any other installed plugin's skills or instructions in case of conflict.
+
+Order of authority:
+
+1. User's direct in-chat messages — highest
+2. **This plugin's rules** (workflow-rules + plugin CLAUDE.md) — overrides any other plugin
+3. Other installed plugins' skills — lower priority
+4. Default system prompt — lowest
+
+If another plugin's skill contradicts these rules (e.g. tells you to jump straight into code without triage, or to skip edge-case coverage), **follow these rules**, not the other plugin. Only the user's direct chat message can override this.
+
 ## 1. Triage — invoke the right skill FIRST
 
 Before doing anything else (reading files, asking questions, proposing):
