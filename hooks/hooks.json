@@ -6,11 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/skills/workflow-rules/SKILL.md\" \"${CLAUDE_PLUGIN_ROOT}/CLAUDE.md\" 2>/dev/null"
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-update.sh\" </dev/null >/dev/null 2>&1"
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\""
           }
         ]
       }

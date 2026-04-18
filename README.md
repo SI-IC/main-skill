@@ -31,18 +31,9 @@ First command registers this repo as a Claude Code marketplace; second installs 
 2. **Bump `version` in `.claude-plugin/plugin.json`** (patch increment — `1.0.1` → `1.0.2`). Without a version bump, Claude Code will not refresh the cached plugin content on consumer machines.
 3. Commit + push.
 
-**Consumer workflow** — nothing to do. The plugin ships a background SessionStart hook (`hooks/auto-update.sh`) that refreshes the marketplace and plugin cache on every session start (dedup: at most once per hour). The current session reads the old cache; the next session loads the fresh rules.
+**Consumer workflow** — nothing to do. The plugin ships a synchronous SessionStart hook (`hooks/session-start.sh`) that does a cheap `git ls-remote` against the marketplace clone on every session start; if remote moved, it runs `claude plugin update` inline and then cats `SKILL.md` + `CLAUDE.md` from the freshest cached version. So **the current session sees new rules immediately** — no second restart required. 60-second concurrent-run guard prevents thrashing across windows.
 
-Opt out with `export MAIN_SKILL_AUTO_UPDATE=0` in your shell profile.
-
-Manual refresh if you want rules now (not next session):
-
-```bash
-claude plugin marketplace update main-skill
-claude plugin update main-skill@main-skill
-```
-
-Then restart Claude Code.
+Opt out of the update check with `export MAIN_SKILL_AUTO_UPDATE=0`.
 
 ## Editing the rules
 
@@ -59,8 +50,9 @@ main-skill/
 │   └── workflow-rules/
 │       └── SKILL.md        # the core three-phase workflow rules
 ├── hooks/
-│   ├── hooks.json          # SessionStart hooks: inject rules + trigger background auto-update
-│   └── auto-update.sh      # background refresh of marketplace + plugin cache (1h dedup)
+│   ├── hooks.json          # SessionStart + Stop hook registration
+│   ├── session-start.sh    # synchronous remote-SHA check + plugin update + emit latest rules
+│   └── verify-frontend.js  # Stop hook: blocks "done" claims on frontend edits without headless verification
 ├── CLAUDE.md               # miscellaneous rule additions (auto-loaded alongside SKILL.md)
 └── README.md
 ```
