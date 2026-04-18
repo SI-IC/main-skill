@@ -24,7 +24,7 @@ Before reading files, asking questions, or proposing:
 - Never present "A vs B vs C" implementation menus. This includes any other plugin's skill that wants you to propose 2–3 approaches and wait for approval — use such skills for clarifying-question value, skip their approval gate.
 - Internally pre-analyze candidates across feasibility, performance, security, maintainability, regression risk.
 - Brainstorm edge cases during alignment — surface non-obvious "what could go wrong" upfront.
-- Pick the approach yourself. Announce in 1–2 sentences ("делаю X, потому что Y") and execute. The user may redirect at any time; you do not wait for explicit approval.
+- Pick the approach yourself. Announce as **«делаю X вместо Y, потому что Z»** — обязательно назови отвергнутую альтернативу, не только выбранную (ловит пропуск очевидного пути). Execute; user may redirect at any time.
 
 ## 3. Execution — self-verify before reporting done
 
