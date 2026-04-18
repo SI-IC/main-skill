@@ -43,29 +43,44 @@ Before claiming code works, cover at minimum:
 
 For each non-trivial case: define expected behavior (reject / degrade / retry / propagate) and **cover with tests**.
 
-### Reproduce-before-done for observed failures
+### Reproduce-before-done — evidence, not vibes
 
-When the user reports a bug they **observed themselves**, the fix is NOT done until you **re-execute the original failing scenario and show evidence it now works**.
+For ANY change that affects observable runtime behaviour (frontend page/component, API endpoint, CLI output, background job) — the change is NOT done until you **execute the affected flow end-to-end and paste evidence**. Не только при репорте бага — при любой правке поведения.
 
 Evidence by context:
-- **Browser** → trigger via browser MCP, show HTTP 2xx on the originally-500ing request, clean console, correct UI. Screenshot if visual.
-- **API** → `curl`/HTTP client against real endpoint, show status + body.
+- **Frontend / browser** → headless browser (`playwright` / `puppeteer` / `chrome-devtools-mcp` / `claude-in-chrome`): открой affected route, проверь HTTP 2xx документа **и** JS bundle, console без ошибок, DOM содержит ожидаемый элемент/текст. Скриншот если визуально. Минимальный fallback: `curl http://localhost:PORT/route` → HTTP status + `grep` ожидаемого маркера в HTML.
+- **API / backend** → `curl`/HTTP-клиент против реального endpoint с реалистичным payload → status + body.
 - **CLI / script** → re-run exact command, paste output.
 - **Wrong output** → re-run producing flow, paste corrected output.
 
-**Green unit/integration tests are NOT evidence.** Tests pass against a model of the system; the failure happened in the real system.
+**Контейнер / нет GUI / headless-сервер — НЕ оправдание.** Headless-браузеры работают везде. Нет playwright — поставь (`npx playwright install chromium`). Нет браузера вообще — `curl` + `grep` минимум.
 
-**If in-session repro is impossible** (no browser/API access, auth blocks it) — do NOT use "готово" / "done" / "fixed" / "работает". Say literally:
+**Зелёные unit/integration тесты — это НЕ evidence.** Тесты проходят против модели системы; падение случилось в реальной системе.
 
-> "Фикс применён. End-to-end НЕ проверил. Проверь вручную: [точные шаги репро]"
+**Add a regression test** when fixing an observed bug.
 
-and wait for user confirmation.
+### Honest disclaimer — только после реальных попыток разведки
 
-**Add a regression test** that reproduces the exact failure.
+Если верификация **генуинно** невозможна — НЕ говори «готово/done/fixed/работает/пофиксил». Используй ровно эту фразу:
+
+> "Фикс применён. End-to-end НЕ проверил, потому что [конкретная техническая причина с цитатой ошибки]. Проверь вручную: [точные шаги репро]"
+
+Но дисклеймер легитимен **только** если в этой же сессии есть следы реальной разведки окружения:
+- `lsof -i :PORT` / `ss -tlnp` / `netstat` — есть ли dev-server
+- `which playwright` / `command -v chromium` — что вообще доступно
+- `npx playwright install chromium` — попытка установить
+- `curl -fsS http://localhost:PORT/...` — даже connection refused это инфа
+- попытка поднять `npm run dev` / `next dev` / `vite` если процесса нет
+
+**Дисклеймер без единой попытки = ложь под видом честности**. Stop-hook `verify-frontend.js` блокирует оба паттерна:
+- **Триггер A**: success-слово + правка фронта + 0 верификаций после правки
+- **Триггер B**: дисклеймер «не проверил» + правка фронта + 0 попыток разведки после правки
+
+Опт-аут (используй редко, для оффлайн-задач, скриптов сборки и т.п.): `export MAIN_SKILL_VERIFY_FRONTEND=0`.
 
 ### Self-check checklist before claiming done
 
-- [ ] **For observed bugs:** re-ran original scenario with evidence — OR explicitly flagged "not verified end-to-end, please check: [steps]"
+- [ ] **For any runtime-affecting change:** re-ran the affected flow end-to-end (headless browser / curl / CLI) with evidence (HTTP status + DOM marker / output) — OR explicitly stated the honest-disclaimer phrase above
 - [ ] Unit tests — happy path AND edge cases
 - [ ] Integration / e2e tests where relevant
 - [ ] Regression test for the exact bug
