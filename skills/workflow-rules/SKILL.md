@@ -45,38 +45,21 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 ### Reproduce-before-done — evidence, not vibes
 
-For ANY change that affects observable runtime behaviour (frontend page/component, API endpoint, CLI output, background job) — the change is NOT done until you **execute the affected flow end-to-end and paste evidence**. Не только при репорте бага — при любой правке поведения.
+Любая правка observable behaviour (фронт, API, CLI, job) — НЕ done, пока не выполнил flow и не вставил пруфы.
 
-Evidence by context:
-- **Frontend / browser** → headless browser (`playwright` / `puppeteer` / `chrome-devtools-mcp` / `claude-in-chrome`): открой affected route, проверь HTTP 2xx документа **и** JS bundle, console без ошибок, DOM содержит ожидаемый элемент/текст. Скриншот если визуально. Минимальный fallback: `curl http://localhost:PORT/route` → HTTP status + `grep` ожидаемого маркера в HTML.
-- **API / backend** → `curl`/HTTP-клиент против реального endpoint с реалистичным payload → status + body.
-- **CLI / script** → re-run exact command, paste output.
-- **Wrong output** → re-run producing flow, paste corrected output.
+- **Frontend** → headless (`playwright` / `chrome-devtools-mcp` / `claude-in-chrome`): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер. Скриншот если визуально. Минимум — `curl localhost:PORT/route` → status + `grep`.
+- **API** → `curl` против реального endpoint → status + body.
+- **CLI** → re-run, paste output.
 
-**Контейнер / нет GUI / headless-сервер — НЕ оправдание.** Headless-браузеры работают везде. Нет playwright — поставь (`npx playwright install chromium`). Нет браузера вообще — `curl` + `grep` минимум.
+Контейнер / нет GUI — НЕ оправдание; headless ставится `npx playwright install chromium`. Зелёные unit-тесты — НЕ evidence. Фиксишь баг — добавь regression-test.
 
-**Зелёные unit/integration тесты — это НЕ evidence.** Тесты проходят против модели системы; падение случилось в реальной системе.
+### Honest disclaimer — только после реальных попыток
 
-**Add a regression test** when fixing an observed bug.
+Если верификация генуинно невозможна — НЕ говори «готово/done/fixed/работает/пофиксил». Пиши ровно:
 
-### Honest disclaimer — только после реальных попыток разведки
+> "Фикс применён. End-to-end НЕ проверил: [техническая причина]. Проверь вручную: [шаги]"
 
-Если верификация **генуинно** невозможна — НЕ говори «готово/done/fixed/работает/пофиксил». Используй ровно эту фразу:
-
-> "Фикс применён. End-to-end НЕ проверил, потому что [конкретная техническая причина с цитатой ошибки]. Проверь вручную: [точные шаги репро]"
-
-Но дисклеймер легитимен **только** если в этой же сессии есть следы реальной разведки окружения:
-- `lsof -i :PORT` / `ss -tlnp` / `netstat` — есть ли dev-server
-- `which playwright` / `command -v chromium` — что вообще доступно
-- `npx playwright install chromium` — попытка установить
-- `curl -fsS http://localhost:PORT/...` — даже connection refused это инфа
-- попытка поднять `npm run dev` / `next dev` / `vite` если процесса нет
-
-**Дисклеймер без единой попытки = ложь под видом честности**. Stop-hook `verify-frontend.js` блокирует оба паттерна:
-- **Триггер A**: success-слово + правка фронта + 0 верификаций после правки
-- **Триггер B**: дисклеймер «не проверил» + правка фронта + 0 попыток разведки после правки
-
-Опт-аут (используй редко, для оффлайн-задач, скриптов сборки и т.п.): `export MAIN_SKILL_VERIFY_FRONTEND=0`.
+Дисклеймер легитимен только если в сессии есть следы попыток разведки (`lsof -i :PORT`, `which playwright`, `npx playwright install`, `curl ...` с ошибкой). Без попыток — ложь под видом честности; Stop-hook блокирует.
 
 ### Self-check checklist before claiming done
 
