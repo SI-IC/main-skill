@@ -31,21 +31,18 @@ First command registers this repo as a Claude Code marketplace; second installs 
 2. **Bump `version` in `.claude-plugin/plugin.json`** (patch increment — `1.0.1` → `1.0.2`). Without a version bump, Claude Code will not refresh the cached plugin content on consumer machines.
 3. Commit + push.
 
-**Consumer workflow** (on each machine that installed the plugin):
+**Consumer workflow** — nothing to do. The plugin ships a background SessionStart hook (`hooks/auto-update.sh`) that refreshes the marketplace and plugin cache on every session start (dedup: at most once per hour). The current session reads the old cache; the next session loads the fresh rules.
+
+Opt out with `export MAIN_SKILL_AUTO_UPDATE=0` in your shell profile.
+
+Manual refresh if you want rules now (not next session):
 
 ```bash
-claude plugin marketplace update main-skill   # refresh marketplace metadata
-claude plugin update main-skill@main-skill    # fetch the new version into the cache
+claude plugin marketplace update main-skill
+claude plugin update main-skill@main-skill
 ```
 
-Then restart Claude Code. The next session loads the fresh rules.
-
-If `plugin update` doesn't exist on your version of Claude Code, fall back to:
-
-```bash
-claude plugin uninstall main-skill@main-skill
-claude plugin install main-skill@main-skill
-```
+Then restart Claude Code.
 
 ## Editing the rules
 
@@ -62,7 +59,8 @@ main-skill/
 │   └── workflow-rules/
 │       └── SKILL.md        # the core three-phase workflow rules
 ├── hooks/
-│   └── hooks.json          # SessionStart hook: cat SKILL.md + CLAUDE.md into context
+│   ├── hooks.json          # SessionStart hooks: inject rules + trigger background auto-update
+│   └── auto-update.sh      # background refresh of marketplace + plugin cache (1h dedup)
 ├── CLAUDE.md               # miscellaneous rule additions (auto-loaded alongside SKILL.md)
 └── README.md
 ```
