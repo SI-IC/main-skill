@@ -45,13 +45,33 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 ### Reproduce-before-done — evidence, not vibes
 
-Любая правка observable behaviour (фронт, API, CLI, job) — НЕ done, пока не выполнил flow и не вставил пруфы.
+Любая правка observable behaviour (фронт, API, CLI, job, MCP-плагин, cross-machine) — НЕ done, пока не выполнил flow и не вставил пруфы.
 
 - **Frontend** → headless (`playwright` / `chrome-devtools-mcp` / `claude-in-chrome`): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер. Скриншот если визуально. Минимум — `curl localhost:PORT/route` → status + `grep`.
 - **API** → `curl` против реального endpoint → status + body.
 - **CLI** → re-run, paste output.
+- **MCP-плагин / slash-команда Claude Code** → `claude plugin marketplace update && claude -p "/namespace:command" --output-format stream-json` → проверь exit + контент ответа.
+- **Cross-machine / multi-process** → `docker-compose up --abort-on-container-exit` (два инстанса + mediator / две стороны pipe) → ассерт по логам или output.
 
 Контейнер / нет GUI — НЕ оправдание; headless ставится `npx playwright install chromium`. Зелёные unit-тесты — НЕ evidence. Фиксишь баг — добавь regression-test.
+
+### Build-your-own-harness
+
+Если верификация требует окружения которого нет (docker-compose, headless browser, fake external API, peers плагина) — **строй harness как часть задачи**. «Сложный e2e» = триггер verify-changes.
+
+- Cross-machine / distributed → `docker-compose.e2e.yml`, `claude -p "/command"` в каждом контейнере, assertion по output.
+- Headless frontend → `playwright` + `npx playwright install chromium`.
+- External API → заглушка (`msw` / `nock` / локальный http-server).
+- Slash-команды плагина → `claude -p --permission-mode bypassPermissions --output-format stream-json` (штатный headless CI, требует `ANTHROPIC_API_KEY`).
+
+Коммить harness в репо (`scripts/e2e.sh`, `docker-compose.e2e.yml`, `tests/e2e/`); следующая правка переиспользует.
+
+### Tiered test strategy
+
+- **После правки** — only affected: `vitest --changed`, `jest --findRelatedTests`, `pytest --testmon`, `cargo test -p <crate>`, `go test ./<pkg>`.
+- **Перед «готово»** — full suite модуля. Правил `core/shared/utils` — ещё и reverse-dependencies (`pnpm why`, `cargo tree -i`).
+- **Full > 2 мин** — зафиксируй стратегию в проектном `CLAUDE.md` при первой встрече. `> 10 мин` — спроси пользователя, не решай сам.
+- Unit-only под предлогом «медленно» не засчитается как верификация — сработает `verify-changes` триггер A.
 
 ### Honest disclaimer — только после реальных попыток
 
