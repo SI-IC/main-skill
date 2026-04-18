@@ -2,7 +2,11 @@
 # SessionStart hook for main-skill.
 # 1. Cheap remote SHA check (git ls-remote on marketplace clone).
 # 2. If remote moved — run claude plugin update SYNCHRONOUSLY.
-# 3. cat SKILL.md + CLAUDE.md from the LATEST cached version (not from
+# 3. If the cache LATEST version changed during this run, echo a one-line
+#    banner so the user (and Claude) get a visible "actually upgraded" signal
+#    — Claude Code's /plugin UI is bound to the version loaded at process
+#    start and won't reflect mid-session updates.
+# 4. cat SKILL.md + CLAUDE.md from the LATEST cached version (not from
 #    ${CLAUDE_PLUGIN_ROOT}, which is bound to the version active at
 #    session start and would yield stale content after an update).
 #
@@ -34,10 +38,18 @@ maybe_update() {
 
   command -v claude >/dev/null 2>&1 || return
 
+  OLD_VERSION=$(ls "$CACHE_BASE" 2>/dev/null | sort -V | tail -1)
+
   claude plugin marketplace update main-skill </dev/null >/dev/null 2>&1
   claude plugin update main-skill@main-skill </dev/null >/dev/null 2>&1
 
   touch "$STAMP"
+
+  NEW_VERSION=$(ls "$CACHE_BASE" 2>/dev/null | sort -V | tail -1)
+  if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" != "$OLD_VERSION" ]; then
+    echo "main-skill updated to v${NEW_VERSION}"
+    echo
+  fi
 }
 
 emit_latest() {
