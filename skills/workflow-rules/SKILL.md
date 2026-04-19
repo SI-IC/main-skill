@@ -47,7 +47,7 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 Любая правка observable behaviour (фронт, API, CLI, job, MCP-плагин, cross-machine) — НЕ done, пока не выполнил flow и не вставил пруфы.
 
-- **Frontend** → headless (`playwright` / `chrome-devtools-mcp` / `claude-in-chrome`): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер. Скриншот если визуально. Минимум — `curl localhost:PORT/route` → status + `grep`.
+- **Frontend** → **дефолт — headless playwright** (`npx playwright install chromium` + скрипт): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер. Скриншот если визуально. MCP-браузеры (`chrome-devtools-mcp`, `claude-in-chrome`) — опциональный ускоритель; **их недоступность ≠ оправдание сдаться**, ставь playwright. Минимум — `curl localhost:PORT/route` → status + `grep`.
 - **API** → `curl` против реального endpoint → status + body.
 - **CLI** → re-run, paste output.
 - **MCP-плагин / slash-команда Claude Code** → `claude plugin marketplace update && claude -p "/namespace:command" --output-format stream-json` → проверь exit + контент ответа.
