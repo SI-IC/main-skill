@@ -13,9 +13,10 @@ Three phases. Any task larger than a one-line fix — follow this.
 
 Before reading files, asking questions, or proposing:
 
-- Bug fix / unexpected behavior → `superpowers:systematic-debugging`
+- Bug fix / unexpected behavior → `superpowers:systematic-debugging` **+** `superpowers:test-driven-development` (failing reproducer первым действием)
 - New feature / behavior change → `superpowers:brainstorming`
-- UI/UX work (anywhere in frontend) → **also** `ui-ux-pro-max:ui-ux-pro-max`
+- Чистая backend-логика (parser / transform / state machine / бизнес-правило / pure function) → **также** `superpowers:test-driven-development`
+- UI/UX work (anywhere in frontend) → **also** `ui-ux-pro-max:ui-ux-pro-max` (TDD тут НЕ применять — верификация через playwright/screenshot)
 - Multiple can apply simultaneously.
 
 ## 2. Alignment — clarify, then decide autonomously
@@ -80,6 +81,13 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 > "Фикс применён. End-to-end НЕ проверил: [техническая причина]. Проверь вручную: [шаги]"
 
 Дисклеймер легитимен только если в сессии есть следы попыток разведки (`lsof -i :PORT`, `which playwright`, `npx playwright install`, `curl ...` с ошибкой). Без попыток — ложь под видом честности; Stop-hook блокирует.
+
+### Test ordering — где порядок матчится
+
+- **Bug fix:** failing reproducer ПЕРВЫМ. Без красного теста, который зелёнеет от фикса, ты не доказал что починил именно тот баг — мог поправить симптом или другую ветку.
+- **Чистая backend-логика** (parser / transform / state / бизнес-правило / pure function): test-first выражает контракт. Watch it fail — иначе тест проверяет реализацию, а не требование, и edge-cases остаются на воображении вместо компилятора.
+- **UI / integration / glue-код / configs:** порядок не важен; обязательно наличие к моменту Stop (`verify-changes` D/E). Iron law TDD не применять.
+- **Spike / PoC / exploratory:** opt-out, явно пометь в финальном сообщении (`spike: TDD skipped — exploratory`).
 
 ### Self-check checklist before claiming done
 
