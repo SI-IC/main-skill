@@ -12,6 +12,8 @@
 // Старое имя переменной тоже уважается: MAIN_SKILL_VERIFY_FRONTEND=0.
 
 const fs = require('fs');
+const path = require('path');
+const checks = require('./lib/checks');
 
 let payload = '';
 process.stdin.on('data', (c) => (payload += c));
@@ -212,21 +214,22 @@ function main(p) {
     }
   });
 
-  // Триггер C (делегация) работает независимо от правок — его логика отдельная ниже.
-  // Триггеры A и B требуют наличия observable-правки.
+  // Триггер C (делегация) работает независимо от правок — его логика отдельная.
+  // Триггеры A/B требуют наличия observable-правки.
+  // Триггеры D/E/F/G/H — мехчеки на дисциплину тестов/доков/лайнта; срабатывают при hasSuccess.
 
   let trigger = null;
-  let reasonLines = null;
+  let triggerData = null;
 
   if (hasDelegation && lastDelegableBashIdx >= 0) {
-    // У Клода есть Bash-доступ в этой сессии — он использовал его сам → может запустить и эту команду.
-    // Исключение: interactive auth / GUI-команды распознаём грубо по содержимому.
     const interactiveHint =
       /(gcloud|aws|az|op|vault)\s+(login|auth)|ssh\s+-\w*\s*\w|xdg-open|open\s+http|osascript/i;
     if (!interactiveHint.test(lastText)) {
       trigger = 'C';
     }
   }
+
+  const allEdits = checks.collectFileEdits(lines);
 
   if (!trigger && lastEditIdx >= 0) {
     // Уже блокировали после этой правки — даём слово пользователю.
@@ -235,13 +238,85 @@ function main(p) {
     const verifiedAfterEdit = lastVerifyIdx > lastEditIdx;
     const attemptedAfterEdit = lastAttemptIdx > lastEditIdx;
 
-    if (verifiedAfterEdit) return;
-
-    if (hasDisclaimer) {
-      if (!attemptedAfterEdit) trigger = 'B';
-      else return;
+    if (hasDisclaimer && !attemptedAfterEdit) {
+      trigger = 'B';
     } else if (hasSuccess) {
-      trigger = 'A';
+      // Новые мехчеки. Порядок: G (lint) → D (src↔test) → E (e2e) → H (docs) → F (edge-cases) → A (no verify).
+      const repoRoot = checks.resolveRepoRoot(process.env.CLAUDE_PROJECT_DIR, allEdits);
+      const sessionFiles = new Set(allEdits.map((e) => e.file_path));
+      const observableSrcEdits = allEdits
+        .filter((e) => observable.has(classify(e.file_path)))
+        .filter((e) => !checks.isTestFile(e.file_path))
+        .filter((e) => !checks.isDocFile(e.file_path))
+        .filter((e) => checks.isCodeFile(e.file_path));
+      const observableSrcFiles = [...new Set(observableSrcEdits.map((e) => e.file_path))];
+
+      // G: auto-lint (опт-аут MAIN_SKILL_VERIFY_LINT=0).
+      if (!trigger && process.env.MAIN_SKILL_VERIFY_LINT !== '0') {
+        const lintRes = checks.runLint(repoRoot);
+        if (lintRes && lintRes.ran && lintRes.ok === false) {
+          trigger = 'G';
+          triggerData = lintRes;
+        }
+      }
+
+      // D: src без парного test-файла.
+      if (!trigger) {
+        const missingTests = [];
+        for (const fp of observableSrcFiles) {
+          const paired = checks.findPairedTestFile(fp, repoRoot, sessionFiles);
+          if (!paired) missingTests.push(fp);
+        }
+        if (missingTests.length > 0) {
+          trigger = 'D';
+          triggerData = { missingTests };
+        }
+      }
+
+      // E: controller/route без e2e-парного.
+      if (!trigger) {
+        const missingE2e = [];
+        for (const fp of observableSrcFiles) {
+          if (!checks.isControllerOrRoute(fp)) continue;
+          const paired = checks.findE2eFile(fp, repoRoot, sessionFiles);
+          if (!paired) missingE2e.push(fp);
+        }
+        if (missingE2e.length > 0) {
+          trigger = 'E';
+          triggerData = { missingE2e };
+        }
+      }
+
+      // H: public surface tронут И docs не тронуты в сессии.
+      if (!trigger) {
+        const publicEdits = allEdits.filter((e) => checks.isPublicSurface(e.file_path));
+        const docEdits = allEdits.filter((e) => checks.isDocFile(e.file_path));
+        if (publicEdits.length > 0 && docEdits.length === 0) {
+          trigger = 'H';
+          triggerData = { publicEdits: [...new Set(publicEdits.map((e) => e.file_path))] };
+        }
+      }
+
+      // F: декларация edge-cases.
+      if (!trigger) {
+        const parsed = checks.parseEdgeCasesBlock(lastText);
+        if (!parsed || parsed.entries.length === 0) {
+          trigger = 'F';
+          triggerData = { kind: 'missing' };
+        } else {
+          const validation = checks.validateEdgeCases(parsed, repoRoot);
+          const failed = validation.filter((v) => !v.ok);
+          if (failed.length > 0) {
+            trigger = 'F';
+            triggerData = { kind: 'invalid', failed };
+          }
+        }
+      }
+
+      // A: нет реальной verify-команды после правки (последняя сетка).
+      if (!trigger && !verifiedAfterEdit) {
+        trigger = 'A';
+      }
     }
   }
 
@@ -327,7 +402,118 @@ function main(p) {
     'Опт-аут (редко): export MAIN_SKILL_VERIFY_CHANGES=0',
   ].join('\n');
 
-  const reason = trigger === 'A' ? reasonA : trigger === 'B' ? reasonB : reasonC;
+  const reasonD = [
+    '[main-skill:verify-changes] Stop заблокирован (триггер D: src-файл без парного test-файла).',
+    '',
+    'Ты правил observable src-файлы, но для них нет парного test-файла ни в репо,',
+    'ни среди правок этой сессии. Запрещено правилом workflow-rules §3 («happy path NOT enough»).',
+    '',
+    'Файлы без тестов:',
+    ...((triggerData?.missingTests || []).map((f) => `  • ${f}`)),
+    '',
+    'Конвенции, по которым ищу парный тест:',
+    '  • <name>.test.<ext> / <name>.spec.<ext> рядом с src',
+    '  • __tests__/<name>.<ext> / __tests__/<name>.test.<ext>',
+    '  • tests/unit/<name>.<ext> / tests/<name>.test.<ext>',
+    '  • Python: test_<name>.py / tests/test_<name>.py',
+    '  • Go: <name>_test.go рядом',
+    '',
+    'Сделай: напиши тесты → прогони → отчитайся. Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0',
+  ].join('\n');
+
+  const reasonE = [
+    '[main-skill:verify-changes] Stop заблокирован (триггер E: controller/route без e2e/functional-теста).',
+    '',
+    'Ты правил controller/route/api-handler — это endpoint, требующий integration/e2e-теста.',
+    'Unit-тест на сервис не считается; нужен тест, бьющий по реальному endpoint',
+    '(например @japa/api-client / supertest / playwright / cypress).',
+    '',
+    'Без e2e-теста:',
+    ...((triggerData?.missingE2e || []).map((f) => `  • ${f}`)),
+    '',
+    'Ищу в: tests/functional/, tests/e2e/, tests/integration/, e2e/, cypress/e2e/, playwright/.',
+    '',
+    'Опт-аут (если в проекте e2e реально не предусмотрен): MAIN_SKILL_VERIFY_CHANGES=0',
+  ].join('\n');
+
+  const reasonF = (() => {
+    if (triggerData?.kind === 'missing') {
+      return [
+        '[main-skill:verify-changes] Stop заблокирован (триггер F: нет декларации edge-cases).',
+        '',
+        'Ты заявил «готово» после observable-правки, но не вывел блок <edge-cases>',
+        'с перечислением покрытых тестами edge-кейсов. Это требование workflow-rules §3.',
+        '',
+        'Формат (одной строкой через `;` или построчно):',
+        '  <edge-cases>',
+        '  empty:tests/auth.test.ts:test_empty_password;',
+        '  expired_token:tests/auth.test.ts:test_expired_remember;',
+        '  race:tests/auth.test.ts:test_concurrent_login',
+        '  </edge-cases>',
+        '',
+        'Каждая запись — name:test_file:test_name. Хук проверит существование test_file',
+        'и наличие it/test/describe/def с этим именем.',
+        '',
+        'Минимум edge-кейсов из workflow-rules §3:',
+        '  • non-existent / deleted resource',
+        '  • empty state (zero items / null / whitespace)',
+        '  • boundary values (max length / overflow / off-by-one)',
+        '  • concurrency / races',
+        '  • external failures (timeout / 5xx / rate limit)',
+        '  • malformed / hostile input',
+        '  • permission / auth edge states',
+        '  • browser / UX edge states (для frontend)',
+        '',
+        'Если кейс реально N/A для этой задачи — пиши явно: name:N/A:<обоснование>.',
+        '',
+        'Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0',
+      ].join('\n');
+    }
+    const failed = triggerData?.failed || [];
+    return [
+      '[main-skill:verify-changes] Stop заблокирован (триггер F: декларация edge-cases невалидна).',
+      '',
+      'Невалидные записи в блоке <edge-cases>:',
+      ...failed.map((v) => `  • ${v.entry?.raw || '<unparsed>'} — ${v.reason}`),
+      '',
+      'Каждая запись должна быть name:test_file:test_name; test_file существует;',
+      'в нём — it/test/describe/def, чьё имя содержит test_name (case-insensitive).',
+      '',
+      'Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0',
+    ].join('\n');
+  })();
+
+  const reasonG = [
+    '[main-skill:verify-changes] Stop заблокирован (триггер G: лайнтер красный).',
+    '',
+    `Команда: ${triggerData?.cmd || '<lint>'}`,
+    'Exit-код ≠ 0. Workflow-rules §3 требует «Linters + formatters green» перед done.',
+    '',
+    'Output (хвост):',
+    ...((triggerData?.output || '').split('\n').slice(-30).map((l) => `  ${l}`)),
+    '',
+    'Опт-аут (редко): MAIN_SKILL_VERIFY_LINT=0 (отдельно от MAIN_SKILL_VERIFY_CHANGES).',
+  ].join('\n');
+
+  const reasonH = [
+    '[main-skill:verify-changes] Stop заблокирован (триггер H: public surface без обновления доков).',
+    '',
+    'Ты изменил public-surface файлы, но НЕ тронул ни один *.md / docs/* в этой сессии.',
+    'CLAUDE.md плагина: «Меняешь поведение/контракт/CLI/конфиг — обнови доки в том же изменении».',
+    '',
+    'Public surface tронут:',
+    ...((triggerData?.publicEdits || []).map((f) => `  • ${f}`)),
+    '',
+    'Сделай: пройди grep по старому контракту, обнови README / SKILL.md / docs/* в той же сессии.',
+    '',
+    'Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0',
+  ].join('\n');
+
+  const reasonByTrigger = {
+    A: reasonA, B: reasonB, C: reasonC,
+    D: reasonD, E: reasonE, F: reasonF, G: reasonG, H: reasonH,
+  };
+  const reason = reasonByTrigger[trigger] || reasonA;
   process.stdout.write(JSON.stringify({ decision: 'block', reason }));
 }
 

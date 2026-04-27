@@ -91,5 +91,39 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 - [ ] Code review via `superpowers:requesting-code-review`
 - [ ] Linters + formatters green
 - [ ] Docs updated if behavior/contract changed
+- [ ] **`<edge-cases>` блок в финальном сообщении** (см. ниже)
 
 If the test suite is slow, persist a run strategy (memory, CLAUDE.md, or repo doc) so it's not forgotten next session.
+
+### Обязательная декларация edge-cases в финальном сообщении
+
+Перед заявлением «готово» после правки observable-кода ты ОБЯЗАН вывести в финальном сообщении блок `<edge-cases>` с перечислением покрытых тестами кейсов. Формат строго машинопроверяемый:
+
+```
+<edge-cases>
+empty:tests/auth.test.ts:test_empty_password;
+expired_token:tests/auth.test.ts:test_expired_remember;
+race:tests/auth.test.ts:test_concurrent_login;
+permission:tests/auth.test.ts:test_revoked_session
+</edge-cases>
+```
+
+- Каждая запись — `name:test_file:test_name`. Разделители — `;` или перенос строки.
+- `test_file` — относительный путь от корня репо; должен существовать.
+- `test_name` — подстрока имени `it/test/describe/def` в этом файле (case-insensitive).
+- Хук `verify-changes` парсит блок и валидирует существование test_file + наличие test_name.
+- Враньё в декларации (`test_file` нет / `test_name` отсутствует) ловится механически и блокирует Stop.
+
+Минимальный обязательный набор кейсов из чек-листа выше: empty, boundary, concurrency, external-failure, permission, malformed-input, deleted-resource. Frontend — плюс browser/UX edge states. Если конкретный кейс реально N/A для задачи — пиши явно с обоснованием, не выкидывай молча: `name:N/A:<причина>`.
+
+Stop-хук `verify-changes` блокирует завершение по триггерам:
+- **A** — success-слово без verify-команды
+- **B** — дисклеймер «не проверил» без следов разведки
+- **C** — делегирование shell-команды пользователю при наличии своего Bash
+- **D** — observable код-файл правлен без парного `*.test.*` / `*.spec.*` / `__tests__/*`
+- **E** — controller / route / api-handler без e2e-парного теста (`tests/functional/`, `tests/e2e/`, `cypress/e2e/`, `playwright/`)
+- **F** — отсутствует или невалиден блок `<edge-cases>`
+- **G** — `npm run lint` / `ruff` / `golangci-lint` / `cargo clippy` exit ≠ 0
+- **H** — public surface (CLI, exports, plugin manifest, SKILL.md) изменён без обновления `*.md` / `docs/*` в той же сессии
+
+Опт-аут (редко, на одну сессию): `export MAIN_SKILL_VERIFY_CHANGES=0`. Лайнт отдельно: `MAIN_SKILL_VERIFY_LINT=0`.

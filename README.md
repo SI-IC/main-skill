@@ -52,7 +52,11 @@ main-skill/
 ├── hooks/
 │   ├── hooks.json          # SessionStart + Stop hook registration
 │   ├── session-start.sh    # synchronous remote-SHA check + plugin update + emit latest rules
-│   └── verify-changes.js   # Stop hook: blocks "done" / delegation / disclaimers without evidence — frontend, backend, CLI, plugin, infra
+│   ├── verify-changes.js   # Stop hook: blocks "done" until tests, docs, lint, edge-cases declaration are in place
+│   ├── verify-changes.test.js  # integration tests for the hook
+│   └── lib/
+│       ├── checks.js       # helpers: src↔test mapping, e2e detection, edge-cases parsing, auto-lint
+│       └── checks.test.js  # unit tests for checks.js
 ├── CLAUDE.md               # miscellaneous rule additions (auto-loaded alongside SKILL.md)
 └── README.md
 ```
