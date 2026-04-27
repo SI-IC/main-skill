@@ -261,9 +261,19 @@ function main(p) {
       }
 
       // D: src без парного test-файла.
+      // Фильтруем файлы, для которых unit-тест объективно не имеет смысла
+      // (миграции, типы, generated, configs, wiring), плюс поддерживаем
+      // user-override через MAIN_SKILL_VERIFY_IGNORE_GLOBS (POSIX globs, через `:`).
       if (!trigger) {
+        const userIgnoreGlobs = String(process.env.MAIN_SKILL_VERIFY_IGNORE_GLOBS || '')
+          .split(':')
+          .map((s) => s.trim())
+          .filter(Boolean);
         const missingTests = [];
         for (const fp of observableSrcFiles) {
+          const rel = path.isAbsolute(fp) ? path.relative(repoRoot, fp) : fp;
+          if (checks.shouldSkipForTestPairing(fp, repoRoot)) continue;
+          if (checks.matchAnyGlob(rel, userIgnoreGlobs)) continue;
           const paired = checks.findPairedTestFile(fp, repoRoot, sessionFiles);
           if (!paired) missingTests.push(fp);
         }
@@ -411,16 +421,28 @@ function main(p) {
     'Файлы без тестов:',
     ...((triggerData?.missingTests || []).map((f) => `  • ${f}`)),
     '',
-    'Конвенции, по которым ищу парный тест:',
+    'Конвенции, по которым ищу парный тест (mirror-discovery в monorepo):',
     '  • <name>.test.<ext> / <name>.spec.<ext> рядом с src',
-    '  • __tests__/<name>.<ext> / __tests__/<name>.test.<ext>',
-    '  • tests/unit/<name>.<ext> / tests/<name>.test.<ext>',
+    '  • __tests__/<name>.<ext> / __tests__/<name>.test.<ext> (включая src/__tests__/)',
+    '  • tests/unit/<name>.<ext> / tests/<name>.test.<ext> относительно package-root',
+    '    (package-root = директория с package.json/pyproject.toml/Cargo.toml/go.mod/...)',
+    '  • mirror src/<rel>/X ↔ tests/<rel>/X.spec, __tests__/<rel>/X.test',
     '  • для .vue / .svelte / .astro <ext> теста = .ts/.tsx/.js/.jsx/.mjs/.cjs',
     '    (App.vue ↔ App.spec.ts, Card.svelte ↔ Card.svelte.test.ts)',
-    '  • Python: test_<name>.py / tests/test_<name>.py',
+    '  • Python: test_<name>.py / <name>_test.py / tests/test_<name>.py',
     '  • Go: <name>_test.go рядом',
+    '  • Ruby: <name>_test.rb / <name>_spec.rb; app/<g>/X.rb ↔ spec/<g>/X_spec.rb',
+    '  • Java/Kotlin Maven: src/main/<lang>/X ↔ src/test/<lang>/XTest',
+    '  • PHP: tests/(Unit|Feature|Integration)/<rel>/<Base>Test.php',
+    '  • Swift SPM: Sources/<Module>/X.swift ↔ Tests/<Module>Tests/XTests.swift',
     '',
-    'Сделай: напиши тесты → прогони → отчитайся. Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0',
+    'Авто-skip: миграции, seeders, fixtures, locales, *.d.ts, *.generated.*, *.gen.*,',
+    '  framework-configs (vite/next/nuxt/...), start/, bootstrap/, файлы с @generated',
+    '  заголовком, type-only TS-файлы (только interface/type/enum).',
+    '',
+    'Сделай: напиши тесты → прогони → отчитайся.',
+    'Опт-аут целиком: MAIN_SKILL_VERIFY_CHANGES=0',
+    'Per-project ignore: MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/legacy/**:**/scripts/**" (через `:`).',
   ].join('\n');
 
   const reasonE = [
