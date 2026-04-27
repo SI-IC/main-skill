@@ -120,7 +120,7 @@ Stop-хук `verify-changes` блокирует завершение по три
 - **A** — success-слово без verify-команды
 - **B** — дисклеймер «не проверил» без следов разведки
 - **C** — делегирование shell-команды пользователю при наличии своего Bash
-- **D** — observable код-файл правлен без парного `*.test.*` / `*.spec.*` / `__tests__/*`
+- **D** — observable код-файл правлен без парного `*.test.*` / `*.spec.*` / `__tests__/*` (для `.vue` / `.svelte` / `.astro` парный тест ищется на `.ts` / `.tsx` / `.js` / `.jsx`: `App.vue` ↔ `App.spec.ts`, `Card.svelte` ↔ `Card.svelte.test.ts`)
 - **E** — controller / route / api-handler без e2e-парного теста (`tests/functional/`, `tests/e2e/`, `cypress/e2e/`, `playwright/`)
 - **F** — отсутствует или невалиден блок `<edge-cases>`
 - **G** — `npm run lint` / `ruff` / `golangci-lint` / `cargo clippy` exit ≠ 0

@@ -100,14 +100,38 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
   const candidates = [];
 
   // JS/TS conventions.
-  if (/\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte)$/i.test(ext)) {
-    candidates.push(
-      path.join(dir, `${base}.test${ext}`),
-      path.join(dir, `${base}.spec${ext}`),
-      path.join(dir, '__tests__', `${base}${ext}`),
-      path.join(dir, '__tests__', `${base}.test${ext}`),
-      path.join(dir, '__tests__', `${base}.spec${ext}`),
-    );
+  // Component-расширения (.vue/.svelte/.astro) тестируются ФАЙЛАМИ С ДРУГИМ расширением
+  // (Vue+Vitest: App.spec.ts, Svelte: Button.spec.ts), поэтому строим candidates
+  // по списку tested-extensions, а не по ext исходника.
+  if (/\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|astro)$/i.test(ext)) {
+    const isComponent = /\.(vue|svelte|astro)$/i.test(ext);
+    // JS/TS-расширения, на которых пишутся тесты (в порядке популярности).
+    const JS_TEST_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
+    // Для component-файла сам ext — не валиден для теста (App.spec.vue не существует).
+    // Для .ts/.tsx/.js/... добавляем сначала свой ext, затем JS/TS fallback.
+    const testExts = isComponent
+      ? JS_TEST_EXTS
+      : [ext, ...JS_TEST_EXTS.filter((e) => e.toLowerCase() !== ext.toLowerCase())];
+
+    for (const tExt of testExts) {
+      candidates.push(
+        path.join(dir, `${base}.test${tExt}`),
+        path.join(dir, `${base}.spec${tExt}`),
+        path.join(dir, '__tests__', `${base}${tExt}`),
+        path.join(dir, '__tests__', `${base}.test${tExt}`),
+        path.join(dir, '__tests__', `${base}.spec${tExt}`),
+      );
+    }
+    // vitest-plugin-svelte / Vue паттерн: Card.svelte.test.ts / App.vue.spec.ts —
+    // тест-файл сохраняет component-ext в имени и добавляет .test.<jsext>.
+    if (isComponent) {
+      for (const tExt of JS_TEST_EXTS) {
+        candidates.push(
+          path.join(dir, `${base}${ext}.test${tExt}`),
+          path.join(dir, `${base}${ext}.spec${tExt}`),
+        );
+      }
+    }
   }
   // Python.
   if (ext === '.py') {
@@ -122,15 +146,21 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
     candidates.push(path.join(dir, `${base}_test.go`));
   }
   // Generic test directories.
-  candidates.push(
-    path.join('tests', 'unit', `${base}${ext}`),
-    path.join('tests', 'unit', `${base}.test${ext}`),
-    path.join('tests', 'unit', `${base}.spec${ext}`),
-    path.join('tests', `${base}.test${ext}`),
-    path.join('tests', `${base}.spec${ext}`),
-    path.join('test', `${base}.test${ext}`),
-    path.join('spec', `${base}_spec${ext}`),
-  );
+  // Для component-файлов {base}{ext} в tests/ (например tests/App.vue) бессмысленно —
+  // используем JS/TS-расширения как и в same-dir секции.
+  const isComponent = /\.(vue|svelte|astro)$/i.test(ext);
+  const genericExts = isComponent ? ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'] : [ext];
+  for (const gExt of genericExts) {
+    candidates.push(
+      path.join('tests', 'unit', `${base}${gExt}`),
+      path.join('tests', 'unit', `${base}.test${gExt}`),
+      path.join('tests', 'unit', `${base}.spec${gExt}`),
+      path.join('tests', `${base}.test${gExt}`),
+      path.join('tests', `${base}.spec${gExt}`),
+      path.join('test', `${base}.test${gExt}`),
+      path.join('spec', `${base}_spec${gExt}`),
+    );
+  }
 
   for (const c of candidates) {
     const abs = path.isAbsolute(c) ? c : path.join(repoRoot, c);

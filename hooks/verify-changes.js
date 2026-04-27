@@ -415,6 +415,8 @@ function main(p) {
     '  • <name>.test.<ext> / <name>.spec.<ext> рядом с src',
     '  • __tests__/<name>.<ext> / __tests__/<name>.test.<ext>',
     '  • tests/unit/<name>.<ext> / tests/<name>.test.<ext>',
+    '  • для .vue / .svelte / .astro <ext> теста = .ts/.tsx/.js/.jsx/.mjs/.cjs',
+    '    (App.vue ↔ App.spec.ts, Card.svelte ↔ Card.svelte.test.ts)',
     '  • Python: test_<name>.py / tests/test_<name>.py',
     '  • Go: <name>_test.go рядом',
     '',

@@ -79,6 +79,88 @@ test('findPairedTestFile считает session-edit как валидный п�
   assert.ok(found);
 });
 
+test('findPairedTestFile: .vue ↔ .spec.ts (Vue + Vitest)', () => {
+  const dir = tmp();
+  writeFile(dir, 'frontend/src/App.vue', '<template/>');
+  writeFile(dir, 'frontend/src/App.spec.ts', 'test("x", () => {})');
+  const found = checks.findPairedTestFile('frontend/src/App.vue', dir);
+  assert.strictEqual(found, path.join('frontend', 'src', 'App.spec.ts'));
+});
+
+test('findPairedTestFile: .vue ↔ .test.ts', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/App.vue', 'x');
+  writeFile(dir, 'src/App.test.ts', 'x');
+  const found = checks.findPairedTestFile('src/App.vue', dir);
+  assert.strictEqual(found, path.join('src', 'App.test.ts'));
+});
+
+test('findPairedTestFile: .vue ↔ .spec.js', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/App.vue', 'x');
+  writeFile(dir, 'src/App.spec.js', 'x');
+  const found = checks.findPairedTestFile('src/App.vue', dir);
+  assert.strictEqual(found, path.join('src', 'App.spec.js'));
+});
+
+test('findPairedTestFile: .svelte ↔ .spec.ts', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/Button.svelte', 'x');
+  writeFile(dir, 'src/Button.spec.ts', 'x');
+  const found = checks.findPairedTestFile('src/Button.svelte', dir);
+  assert.strictEqual(found, path.join('src', 'Button.spec.ts'));
+});
+
+test('findPairedTestFile: .svelte ↔ .svelte.test.ts (vitest-plugin-svelte)', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/Card.svelte', 'x');
+  writeFile(dir, 'src/Card.svelte.test.ts', 'x');
+  const found = checks.findPairedTestFile('src/Card.svelte', dir);
+  assert.strictEqual(found, path.join('src', 'Card.svelte.test.ts'));
+});
+
+test('findPairedTestFile: .vue ↔ __tests__/App.ts', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/App.vue', 'x');
+  writeFile(dir, 'src/__tests__/App.ts', 'x');
+  const found = checks.findPairedTestFile('src/App.vue', dir);
+  assert.ok(found, `expected paired test, got ${found}`);
+  assert.match(found, /__tests__/);
+});
+
+test('findPairedTestFile: .vue ↔ tests/unit/App.spec.ts', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/App.vue', 'x');
+  writeFile(dir, 'tests/unit/App.spec.ts', 'x');
+  const found = checks.findPairedTestFile('src/App.vue', dir);
+  assert.ok(found);
+  assert.match(found, /tests[\\/]unit[\\/]App\.spec\.ts/);
+});
+
+test('findPairedTestFile: .tsx ↔ .test.ts (логика без JSX в тесте)', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/Button.tsx', 'x');
+  writeFile(dir, 'src/Button.test.ts', 'x');
+  const found = checks.findPairedTestFile('src/Button.tsx', dir);
+  assert.strictEqual(found, path.join('src', 'Button.test.ts'));
+});
+
+test('findPairedTestFile: .vue без парного теста → null', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/App.vue', 'x');
+  // Голый src/App.ts рядом — это не тест (helper-файл), не должен матчиться.
+  writeFile(dir, 'src/App.ts', 'x');
+  assert.strictEqual(checks.findPairedTestFile('src/App.vue', dir), null);
+});
+
+test('findPairedTestFile: .vue session-edit App.spec.ts валидный парный', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/App.vue', 'x');
+  const sessionFiles = new Set([path.join(dir, 'src/App.spec.ts')]);
+  const found = checks.findPairedTestFile('src/App.vue', dir, sessionFiles);
+  assert.ok(found);
+});
+
 test('findE2eFile находит functional-парный', () => {
   const dir = tmp();
   writeFile(dir, 'app/controllers/auth_controller.ts', 'x');
