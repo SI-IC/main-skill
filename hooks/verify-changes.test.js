@@ -41,6 +41,7 @@ function runHook(transcript_path, env = {}) {
     env: {
       ...process.env,
       MAIN_SKILL_VERIFY_LINT: '0', // лайнт отдельно тестируем; в общем потоке отключаем.
+      MAIN_SKILL_VERIFY_REVIEW: '0', // J/K тестируем отдельно; иначе старые тесты сломаются.
       CLAUDE_PROJECT_DIR: env.CLAUDE_PROJECT_DIR || path.dirname(transcript_path),
       ...env,
     },
@@ -82,6 +83,35 @@ function asstBash(command) {
 function asstText(text) {
   return { type: 'assistant', message: { content: [{ type: 'text', text }] } };
 }
+
+function asstTask(subagent_type, description, prompt) {
+  return {
+    type: 'assistant',
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          name: 'Task',
+          input: { subagent_type, description, prompt },
+        },
+      ],
+    },
+  };
+}
+
+// Edit с реальным new_string — для тестов на nonTrivialDiffLines.
+function asstEditWith(file_path, new_string) {
+  return {
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'tool_use', name: 'Edit', input: { file_path, old_string: '', new_string } },
+      ],
+    },
+  };
+}
+
+const BIG_DIFF = Array.from({ length: 25 }, (_, i) => `const x${i} = ${i};`).join('\n');
 
 const SUCCESS = 'готово, всё работает';
 const EDGE_CASES_BLOCK = (file, name) =>
@@ -327,5 +357,367 @@ test('triggerD срабатывает в monorepo, когда тест в backen
     asstText(SUCCESS + ' ' + EDGE_CASES_BLOCK('backend/tests/unit/audit_log_service.spec.ts', 'empty')),
   ]);
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Триггеры J / K: self-review + review-triage
+// ────────────────────────────────────────────────────────────────────────────
+
+// Сетап минимально-валидного okay-кейса для J/K — все остальные триггеры пройдены.
+function setupReviewBase(dir, srcPath = 'src/foo.ts', testRel = 'src/foo.test.ts', extraNew = BIG_DIFF) {
+  writeFile(dir, srcPath, 'x');
+  writeFile(dir, testRel, `it('empty', () => {});\nit('race_concurrent', () => {});`);
+  return [
+    asstEditWith(path.join(dir, srcPath), extraNew),
+    asstEdit(path.join(dir, testRel)),
+    asstBash('npx vitest --run --changed'),
+    asstBash('curl -s http://localhost:3000/api/foo'),
+  ];
+}
+
+const SELF_REVIEW_OK = (codeStatus = 'none-found', secStatus = 'none-found') =>
+  `<self-review>code:${codeStatus}\nsecurity:${secStatus}</self-review>`;
+
+test('triggerJ: значительный diff без self-review блока → block', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(SUCCESS + ' ' + EDGE_CASES_BLOCK('src/foo.test.ts', 'empty')),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectBlock(r.stdout, 'J');
+});
+
+test('triggerJ: тривиальная правка без self-review → НЕ блокирует', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/foo.ts', 'x');
+  writeFile(dir, 'src/foo.test.ts', `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEditWith(path.join(dir, 'src/foo.ts'), 'const a = 1;\nconst b = 2;'),
+    asstEdit(path.join(dir, 'src/foo.test.ts')),
+    asstBash('npx vitest --run --changed'),
+    asstText(SUCCESS + ' ' + EDGE_CASES_BLOCK('src/foo.test.ts', 'empty')),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectNoBlock(r.stdout);
+});
+
+test('triggerJ: security-sensitive путь требует self-review даже на тривиальной правке', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/auth_helper.ts', 'x');
+  writeFile(dir, 'src/auth_helper.test.ts', `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEditWith(path.join(dir, 'src/auth_helper.ts'), 'const a = 1;'),
+    asstEdit(path.join(dir, 'src/auth_helper.test.ts')),
+    asstBash('npx vitest --run --changed'),
+    asstText(SUCCESS + ' ' + EDGE_CASES_BLOCK('src/auth_helper.test.ts', 'empty')),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectBlock(r.stdout, 'J');
+});
+
+test('triggerJ: фейковый skipped:trivial при крупном diff → block', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(SUCCESS + ' <self-review>skipped:trivial</self-review> ' + EDGE_CASES_BLOCK('src/foo.test.ts', 'empty')),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectBlock(r.stdout, 'J');
+});
+
+test('triggerJ: декларация code/security без Task-вызовов в transcript → block (fake-decl)', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' ' +
+        SELF_REVIEW_OK('none-found', 'none-found'),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectBlock(r.stdout, 'J');
+});
+
+test('triggerJ: review=code требует только code-секцию (security отсутствует — ОК)', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review the auth changes', 'please review the diff for code quality'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:none-found</self-review>',
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'code' });
+  expectNoBlock(r.stdout);
+});
+
+test('triggerJ: review=security требует только security (code отсутствует — ОК)', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask(
+      'general-purpose',
+      'security audit',
+      'security review with focus on OWASP Top-10, injection, auth bypass, secret leaks',
+    ),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>security:none-found</self-review>',
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'security' });
+  expectNoBlock(r.stdout);
+});
+
+test('triggerJ: MAIN_SKILL_VERIFY_REVIEW=0 — J/K выключены целиком', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(SUCCESS + ' ' + EDGE_CASES_BLOCK('src/foo.test.ts', 'empty')),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: '0' });
+  expectNoBlock(r.stdout);
+});
+
+test('triggerJ + K: applied без обоснования / короткое — block (через K)', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review', 'code review please'),
+    asstTask('general-purpose', 'security review', 'security review per OWASP, injection, auth bypass'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:applied:fixed\nsecurity:none-found</self-review>' +
+        ' <review-triage>code:1:applied:fixed</review-triage>', // applied слишком короткий reason
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectBlock(r.stdout, 'K');
+});
+
+test('triggerK: rejected с slop-only обоснованием → block', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review', 'code review please'),
+    asstTask('general-purpose', 'security review', 'security review per OWASP, injection, auth bypass'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:rejected:minor stuff\nsecurity:none-found</self-review>' +
+        ' <review-triage>\ncode:1:rejected:minor cosmetic nitpick, не критично\n</review-triage>',
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectBlock(r.stdout, 'K');
+});
+
+test('triggerK: rejected с техническим обоснованием → НЕ блокирует', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review', 'code review please'),
+    asstTask('general-purpose', 'security review', 'security review per OWASP, injection, auth bypass'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:rejected:async logger pattern\nsecurity:none-found</self-review>' +
+        ' <review-triage>\ncode:1:rejected:async/await в logger fire-and-forget намеренно — потеря лога приемлемее блокировки запроса на горячем пути\n</review-triage>',
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectNoBlock(r.stdout);
+});
+
+test('triggerK: none-found в обеих секциях → триаж не требуется', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review', 'code review please'),
+    asstTask('general-purpose', 'security review', 'security review per OWASP, injection, auth bypass'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' ' +
+        SELF_REVIEW_OK('none-found', 'none-found'),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectNoBlock(r.stdout);
+});
+
+test('triggerJ: per-section `code:skipped` НЕ принимается (regression: bypass через skipped)', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:skipped:устал\nsecurity:skipped:устал</self-review>',
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectBlock(r.stdout, 'J');
+});
+
+test('triggerK: русский slop без tech-сигнала блокируется (regression: \\b на кириллице)', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review', 'code review please'),
+    asstTask('general-purpose', 'security review', 'security review per OWASP, injection, auth bypass'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:rejected:cosmetic стилистика\nsecurity:none-found</self-review>' +
+        ' <review-triage>\ncode:1:rejected:это косметика, мелочь, не важно для нас совсем\n</review-triage>',
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectBlock(r.stdout, 'K');
+});
+
+test('triggerK: русское tech-обоснование с «потому что» проходит (regression: \\b на кириллице)', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review', 'code review please'),
+    asstTask('general-purpose', 'security review', 'security review per OWASP, injection, auth bypass'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:rejected:async logger pattern\nsecurity:none-found</self-review>' +
+        ' <review-triage>\ncode:1:rejected:не делаем await потому что fire-and-forget на горячем пути приведёт к блокировке запроса\n</review-triage>',
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectNoBlock(r.stdout);
+});
+
+test('triggerJ: невалидный MAIN_SKILL_VERIFY_REVIEW="off" → fallback на both (regression)', () => {
+  // "off" не в allowlist → откатываемся на both → значит требуется self-review.
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(SUCCESS + ' ' + EDGE_CASES_BLOCK('src/foo.test.ts', 'empty')),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'off' });
+  expectBlock(r.stdout, 'J');
+});
+
+test('triggerJ: правка docs не учитывается в порог 20 строк (regression: filter observable)', () => {
+  const dir = tmp();
+  writeFile(dir, 'src/foo.ts', 'x');
+  writeFile(dir, 'src/foo.test.ts', `it('empty', () => {});`);
+  // 1 строка observable, 50 строк docs — должно быть trivial.
+  const tp = writeTranscript(dir, [
+    asstEditWith(path.join(dir, 'src/foo.ts'), 'const x = 1;'),
+    asstEditWith(path.join(dir, 'README.md'), Array.from({ length: 50 }, () => 'doc line').join('\n')),
+    asstEdit(path.join(dir, 'src/foo.test.ts')),
+    asstBash('npx vitest --run --changed'),
+    asstText(SUCCESS + ' ' + EDGE_CASES_BLOCK('src/foo.test.ts', 'empty')),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectNoBlock(r.stdout);
+});
+
+test('triggerK: ReDoS-защита — длинный buggy reason не подвешивает hook (regression)', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  // 200K char строка из 'a' — worst-case для регекса /[a-z][a-zA-Z]{3,}[A-Z]\w+/
+  const evil = 'a'.repeat(200_000);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review', 'code review please'),
+    asstTask('general-purpose', 'security review', 'security review per OWASP'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:rejected:long\nsecurity:none-found</self-review>' +
+        ` <review-triage>\ncode:1:rejected:${evil}\n</review-triage>`,
+    ),
+  ]);
+  const start = Date.now();
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  const elapsed = Date.now() - start;
+  // Должно завершиться в разумное время (< 5 сек). Раньше зависало > 30 сек.
+  assert.ok(elapsed < 5000, `hook took ${elapsed}ms, ReDoS не защищён`);
+  // 200K of 'a' — slop по тексту нет, но и tech-signal'а нет (только weak _WEAK_SIGNALS — единичный),
+  // поэтому слоп-детектор не блокирует, просто длинный reason без сигналов проходит. Это OK для
+  // теста — проверяем именно скорость, не семантику.
+  assert.ok(r.status === 0 || r.stdout.length >= 0);
+});
+
+test('triggerK: разделитель `;` между записями (regression: parser symmetry)', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review', 'code review please'),
+    asstTask('general-purpose', 'security review', 'security review per OWASP, injection, auth bypass'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:applied:see triage\nsecurity:applied:see triage</self-review>' +
+        ' <review-triage>code:1:applied:src/foo.ts:42 — early-return на null user; security:1:applied:src/foo.ts:88 — sanitize redirect через allowlist</review-triage>',
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
+  expectNoBlock(r.stdout);
+});
+
+test('triggerK: applied + полный валидный triage → НЕ блокирует', () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask('superpowers:code-reviewer', 'review', 'code review please'),
+    asstTask('general-purpose', 'security review', 'security review per OWASP, injection, auth bypass'),
+    asstText(
+      SUCCESS +
+        ' ' +
+        EDGE_CASES_BLOCK('src/foo.test.ts', 'empty') +
+        ' <self-review>code:applied:see triage\nsecurity:applied:see triage</self-review>' +
+        ' <review-triage>\n' +
+        'code:1:applied:src/foo.ts:42 — добавил early-return на null user\n' +
+        'security:1:applied:src/foo.ts:88 — sanitize redirect через allowlist вместо regex\n' +
+        '</review-triage>',
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_REVIEW: 'both' });
   expectNoBlock(r.stdout);
 });

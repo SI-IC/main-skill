@@ -124,7 +124,45 @@ permission:tests/auth.test.ts:test_revoked_session
 
 Минимальный обязательный набор кейсов из чек-листа выше: empty, boundary, concurrency, external-failure, permission, malformed-input, deleted-resource. Frontend — плюс browser/UX edge states. Если конкретный кейс реально N/A для задачи — пиши явно с обоснованием, не выкидывай молча: `name:N/A:<причина>`.
 
-Stop-хук `verify-changes` блокирует завершение по триггерам:
+### Self-review + триаж замечаний — обязательный шаг 4
+
+После Execution и до Stop, на нетривиальной правке observable-кода, ОБЯЗАТЕЛЬНО прогнать code+security ревью своими силами через суб-агентов. Иначе ты не отлавливаешь дыры, которые пропустил автор (= ты сам).
+
+**Когда обязателен:** observable-правка с `≥ 20` нетривиальных строк ИЛИ затронут security-sensitive путь (`auth|api|sql|crypto|payment|admin|session|token|password|secret|jwt|oauth|cookie|cors|csrf|xss|sanitiz|escape|webhook|hash|cipher|encrypt|decrypt|hmac|signature|signin|signup|login|logout|permission|role|access|sso|saml|ldap`). Тривиальные правки — пропускаются молча, но если хочешь зафиксировать факт пропуска для аудита — `<self-review>skipped:trivial</self-review>`.
+
+**Как делать:**
+
+1. **Параллельно запусти ДВА Task-агента в одном Tool message** (один проход, без второй итерации):
+   - `Task(subagent_type="superpowers:code-reviewer", description="...", prompt="...")` — фокус: качество кода, паттерны, дублирование, edge-cases которые не покрыты тестами, нарушения проектных конвенций.
+   - `Task(subagent_type="general-purpose", description="security review", prompt="security review по OWASP Top-10: injection / auth-bypass / SSRF / открытые редиректы / weak crypto / leaked secrets / unsafe deserialization / missing rate-limit / TOCTOU / path traversal — на конкретные изменённые файлы [список]")`.
+2. **Триаж каждого замечания** через `superpowers:receiving-code-review` — без performative-agreement и без отмазок «minor / вне scope».
+3. **Применить applied / обосновать rejected/deferred с техническим аргументом** (file:line, конкретный риск, метрика, цитата кода — не «несущественно»).
+4. **Один проход.** Повторный запуск review-агентов перед Stop ЗАПРЕЩЁН — diminishing returns, замечания на свежие правки оформляй как follow-up TODO.
+
+**Декларация в финальном сообщении** — два машинопроверяемых блока:
+
+```
+<self-review>
+code:applied:src/auth.ts:42-58 — early-return на null user
+security:rejected:CSRF на /logout — POST + SameSite=Strict cookie
+</self-review>
+
+<review-triage>
+code:1:applied:src/auth.ts:42-58 — добавил early-return на null user
+code:2:deferred:rate-limit на /login — нет данных по нагрузке, см. issue #123
+code:3:rejected:async/await в logger fire-and-forget намеренно — потеря лога приемлемее блокировки запроса
+security:1:applied:src/auth.ts:120 — sanitize redirect_to через allowlist
+security:2:rejected:CSRF на /logout — endpoint POST + SameSite=Strict cookie
+</review-triage>
+```
+
+- `<self-review>` секции: `code` и `security`. Статусы: `applied`, `rejected`, `deferred`, `none-found`. Если активный режим — оба, обе секции обязательны.
+- `<review-triage>` запись: `<source>:<id>:<status>:<reason>`. `source ∈ {code, security}`, `status ∈ {applied, rejected, deferred}`. Каждое замечание — отдельной строкой.
+- **Slop-обоснование блокируется**: `rejected`/`deferred` с пустым раскрытием или только словами `minor / nitpick / несущественно / вне scope / стилистика / косметика / мелочь / cosmetic / not critical / низкий приоритет` без технического маркера (file:line, идентификатор, число, класс/функция, специфический термин риска) — Stop-хук блокирует.
+- Если ревью ничего не нашли — `code:none-found` / `security:none-found`; триаж в этом случае не требуется.
+
+### Полный список Stop-триггеров `verify-changes`
+
 - **A** — success-слово без verify-команды
 - **B** — дисклеймер «не проверил» без следов разведки
 - **C** — делегирование shell-команды пользователю при наличии своего Bash
@@ -133,5 +171,12 @@ Stop-хук `verify-changes` блокирует завершение по три
 - **F** — отсутствует или невалиден блок `<edge-cases>`
 - **G** — `npm run lint` / `ruff` / `golangci-lint` / `cargo clippy` exit ≠ 0
 - **H** — public surface (CLI, exports, plugin manifest, SKILL.md) изменён без обновления `*.md` / `docs/*` в той же сессии
+- **J** — отсутствует или невалиден блок `<self-review>` (нет review-агентов в transcript / фейковый `skipped:trivial` / нет нужной секции)
+- **K** — `<review-triage>` отсутствует / невалиден / содержит slop-only `rejected`/`deferred` без технического обоснования
 
-Опт-аут (редко, на одну сессию): `export MAIN_SKILL_VERIFY_CHANGES=0`. Лайнт отдельно: `MAIN_SKILL_VERIFY_LINT=0`.
+Опт-ауты (редко, на одну сессию):
+- `MAIN_SKILL_VERIFY_CHANGES=0` — все триггеры выкл.
+- `MAIN_SKILL_VERIFY_LINT=0` — выкл только G.
+- `MAIN_SKILL_VERIFY_REVIEW=0` — выкл J/K.
+- `MAIN_SKILL_VERIFY_REVIEW=code` — требовать только code-review секцию.
+- `MAIN_SKILL_VERIFY_REVIEW=security` — требовать только security-review секцию.

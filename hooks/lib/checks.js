@@ -662,6 +662,274 @@ function runLint(repoRoot, opts = {}) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Триггеры J / K: self-review + триаж замечаний ревьюеров
+// ────────────────────────────────────────────────────────────────────────────
+
+// Security-sensitive paths — для них self-review обязателен даже на маленьких diff'ах.
+const SECURITY_SENSITIVE_RE =
+  /(auth|api|sql|crypto|payment|admin|session|token|password|secret|jwt|oauth|cookie|cors|csrf|xss|sanitiz|escape|webhook|hash|cipher|encrypt|decrypt|hmac|signature|signin|signup|login|logout|permission|role|access|sso|saml|ldap)/i;
+
+function hasSecuritySensitivePath(allEdits) {
+  for (const e of allEdits || []) {
+    if (SECURITY_SENSITIVE_RE.test(String(e.file_path || ''))) return true;
+  }
+  return false;
+}
+
+// Считает строки нетривиальных изменений в Edit/Write/MultiEdit за всю сессию.
+// Чисто-пустые / whitespace / comment-only — не считаются.
+const COMMENT_ONLY_RE = /^\s*(\/\/|#|\/\*|\*\/|\*|--|<!--|;;|%)/;
+
+function _countNonTrivialLines(text) {
+  if (!text) return 0;
+  // Cap для больших Write/Edit — > 1MB новых данных всё равно будут считаться как
+  // «много», точное число не важно для порога 20.
+  const s = String(text).length > 1_000_000 ? String(text).slice(0, 1_000_000) : String(text);
+  let n = 0;
+  for (const ln of s.split('\n')) {
+    const t = ln.trim();
+    if (!t) continue;
+    if (COMMENT_ONLY_RE.test(ln)) continue;
+    n++;
+  }
+  return n;
+}
+
+// `filterFn(file_path)` — опциональный фильтр (например, считать только observable
+// исходники). `cap` — early-return когда total достиг порога; для J это 20.
+function countNonTrivialDiffLines(lines, filterFn = null, cap = Infinity) {
+  let total = 0;
+  for (const e of lines || []) {
+    if (e.type !== 'assistant') continue;
+    const content = e.message?.content || [];
+    for (const b of content) {
+      if (!b || b.type !== 'tool_use') continue;
+      const name = b.name || '';
+      const inp = b.input || {};
+      if (!['Edit', 'Write', 'MultiEdit'].includes(name)) continue;
+      const fp = String(inp.file_path || '');
+      if (filterFn && !filterFn(fp)) continue;
+      if (name === 'Edit') {
+        total += _countNonTrivialLines(inp.new_string || '');
+      } else if (name === 'Write') {
+        total += _countNonTrivialLines(inp.content || '');
+      } else if (name === 'MultiEdit') {
+        const edits = Array.isArray(inp.edits) ? inp.edits : [];
+        for (const ed of edits) total += _countNonTrivialLines(ed?.new_string || '');
+      }
+      if (total >= cap) return total;
+    }
+  }
+  return total;
+}
+
+// Собирает все Task-вызовы из транскрипта и категоризирует по типу review.
+// Возвращает { code: bool, security: bool }.
+function findReviewAgentCalls(lines) {
+  let code = false;
+  let security = false;
+  for (const e of lines || []) {
+    if (e.type !== 'assistant') continue;
+    const content = e.message?.content || [];
+    for (const b of content) {
+      if (!b || b.type !== 'tool_use' || b.name !== 'Task') continue;
+      const inp = b.input || {};
+      const sub = String(inp.subagent_type || '');
+      const desc = String(inp.description || '');
+      const prompt = String(inp.prompt || '').slice(0, 2000);
+      const hay = `${sub}\n${desc}\n${prompt}`;
+      // code review: subagent_type явно code-reviewer ИЛИ описание/промпт упоминает code review.
+      if (
+        /code[\s-]*review/i.test(sub) ||
+        /code[\s-]*reviewer/i.test(sub) ||
+        /\bcode[\s-]*review\b/i.test(hay) ||
+        /\bревью\s+кода\b/i.test(hay)
+      ) {
+        code = true;
+      }
+      // security review: явные маркеры из OWASP/security-prompt.
+      if (
+        /security/i.test(sub) ||
+        /\b(security[\s-]*review|OWASP|injection|auth[\s-]*bypass|secret[\s-]*leak|XSS|CSRF|SSRF|path\s+traversal|RCE|TOCTOU|weak\s+crypto)\b/i.test(hay) ||
+        /\b(секьюрити|безопасност[ьи])\b/i.test(hay)
+      ) {
+        security = true;
+      }
+    }
+  }
+  return { code, security };
+}
+
+// Парсит блок <self-review>. Возвращает { code, security, skippedTrivial, raw } или null.
+// Каждое поле code/security: { status, reason } | null.
+// status ∈ { applied, rejected, deferred, 'none-found' }.
+function parseSelfReview(text) {
+  if (!text) return null;
+  const m = text.match(/<self-review>([\s\S]*?)<\/self-review>/i);
+  if (!m) return null;
+  const raw = m[1].trim();
+  const out = { code: null, security: null, skippedTrivial: false, raw };
+  if (!raw) return out;
+  // Может быть `skipped:trivial` целиком — без code/security секций.
+  if (/^\s*skipped\s*:\s*trivial\s*$/i.test(raw)) {
+    out.skippedTrivial = true;
+    return out;
+  }
+  const parts = raw
+    .split(/;|\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((s) => !s.startsWith('#') && !s.startsWith('//'));
+  // Per-section `skipped` намеренно НЕ принимается — это был bypass для J/K
+  // (`code:skipped`/`security:skipped` обходили fake-decl и triage). Только
+  // whole-block `<self-review>skipped:trivial</self-review>` валиден; см. raw-check выше.
+  for (const p of parts) {
+    const m2 = p.match(/^(code|security)\s*:\s*(applied|rejected|deferred|none-found|none)\s*:?\s*(.*)$/i);
+    if (!m2) {
+      const m3 = p.match(/^(code|security)\s*:\s*(applied|rejected|deferred|none-found|none)\s*$/i);
+      if (!m3) continue;
+      const sec = m3[1].toLowerCase();
+      let st = m3[2].toLowerCase();
+      if (st === 'none') st = 'none-found';
+      out[sec] = { status: st, reason: '' };
+      continue;
+    }
+    const sec = m2[1].toLowerCase();
+    let st = m2[2].toLowerCase();
+    if (st === 'none') st = 'none-found';
+    const reason = (m2[3] || '').trim();
+    out[sec] = { status: st, reason };
+  }
+  return out;
+}
+
+// Парсит блок <review-triage>. Возвращает { entries, raw } или null.
+// Запись: <source>:<id>:<status>:<reason>; source ∈ { code, security };
+// status ∈ { applied, rejected, deferred }.
+function parseReviewTriage(text) {
+  if (!text) return null;
+  const m = text.match(/<review-triage>([\s\S]*?)<\/review-triage>/i);
+  if (!m) return null;
+  const raw = m[1].trim();
+  const out = { entries: [], raw };
+  if (!raw) return out;
+  // Разделитель: \n ИЛИ `;` перед началом следующей записи (`code:` / `security:`).
+  // Так reason может содержать `;` (URL params, fragments) без поломки парсинга.
+  const parts = raw
+    .split(/\n|;(?=\s*(?:code|security)\s*:)/i)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((s) => !s.startsWith('#') && !s.startsWith('//'));
+  for (const p of parts) {
+    // <source>:<id>:<status>:<reason>
+    // id может содержать буквы; reason может содержать `:`.
+    const m2 = p.match(/^(code|security)\s*:\s*([^:]+?)\s*:\s*(applied|rejected|deferred)\s*:\s*(.+)$/i);
+    if (!m2) {
+      out.entries.push({ raw: p, valid: false, reason: 'формат должен быть source:id:status:reason' });
+      continue;
+    }
+    out.entries.push({
+      raw: p,
+      valid: true,
+      source: m2[1].toLowerCase(),
+      id: m2[2].trim(),
+      status: m2[3].toLowerCase(),
+      reason: m2[4].trim(),
+    });
+  }
+  return out;
+}
+
+// Slop-фразы — чистые отмазки без технического содержания.
+// Используем lookaround вместо `\b`, потому что `\b` в JS не работает на кириллице
+// (граница между \W и \W не существует, а кириллица — это \W без флага u).
+const _NW = '(?<![\\p{L}\\p{N}_])';
+const _NWE = '(?![\\p{L}\\p{N}_])';
+const SLOP_RE = new RegExp(
+  `${_NW}(?:minor|nitpick|nit|несущественн[оы]?е?|не\\s+критичн[оы]?|вне\\s+scope|out\\s+of\\s+scope|стилистик[аио]|косметик[аио]|не\\s*важно|неважн[оы]?е?|мелоч[ьи]|tiny|trivial|cosmetic|not\\s+critical|not\\s+important|petty|чепух[аы]|пустяк|низкий\\s+приоритет|low\\s+priority)${_NWE}`,
+  'iu',
+);
+
+// Сильные tech-сигналы — конкретность, специфичные security-термины,
+// явная аргументация. Слабые сигналы (одна цифра, общий keyword) не считаются —
+// иначе slop тривиально обходится «версия 2» / упоминанием `null`.
+const _STRONG_SIGNALS = [
+  // file path with ext — самый надёжный признак
+  /[/\\][\p{L}\p{N}._-]+\.\p{L}{1,8}/u,
+  // <ident>.<ident> при отсутствии русских аббревиатур
+  /(?<!\bт)(?<!\bи)(?:[A-Za-z_][A-Za-z0-9_]{2,})\.[A-Za-z_][A-Za-z0-9_]+/,
+  // безопасностные / архитектурные термины — сильные
+  new RegExp(
+    `${_NW}(?:injection|XSS|CSRF|SSRF|RCE|TOCTOU|owasp|exploit|payload|allowlist|denylist|whitelist|blacklist|rate[\\s-]?limit|throttle|backoff|sanitiz[eaí]|escape|hash|hmac|signature|jwt|oauth|csp|cors|hardcode|secret|credential|leak|bypass|exposes?|приведёт|приведет|нарушит|сломает|breaks|prevents|exposes|allows|leaks|bypasses)${_NWE}`,
+    'iu',
+  ),
+  // явная аргументация-связка
+  new RegExp(
+    `${_NW}(?:потому\\s+что|так\\s+как|поскольку|из-за|вместо\\s+(?:этого|того)|because|since\\s+(?:it|the)|due\\s+to)${_NWE}`,
+    'iu',
+  ),
+];
+
+// Слабые сигналы — поодиночке не засчитываются, но в паре дают tech-signal.
+const _WEAK_SIGNALS = [
+  // line:number стиль `:42-58`
+  /:\d+(?:[-–]\d+)?/,
+  // camelCase идентификатор — ограничен 60 chars против ReDoS
+  /[a-z][a-zA-Z]{0,30}[A-Z][a-zA-Z]{0,30}/,
+  // snake_case
+  /[a-z]+(?:_[a-z]+)+/,
+  // common code-структуры
+  new RegExp(
+    `${_NW}(?:class|function|method|interface|struct|module|hook|middleware|handler|endpoint|route|model|schema|migration|query|table|column|reducer|provider|component|service|repository|gateway|adapter|controller)${_NWE}`,
+    'iu',
+  ),
+];
+
+// Технический индикатор — конкретный сигнал в обосновании.
+// Возвращает true, если есть >= 1 strong сигнал ИЛИ >= 2 weak.
+function _hasTechnicalSignal(reason) {
+  if (!reason) return false;
+  // ReDoS-защита: обрезаем длинные reason — semantically всё что > 4KB подозрительно
+  // и не должно ставить hook на колени regex'ами.
+  const r = String(reason).slice(0, 4096);
+  for (const re of _STRONG_SIGNALS) if (re.test(r)) return true;
+  let weak = 0;
+  for (const re of _WEAK_SIGNALS) if (re.test(r)) weak++;
+  return weak >= 2;
+}
+
+// Возвращает массив { entry, ok, reason } для каждой записи.
+// rejected/deferred с slop-only обоснованием → ok=false.
+function validateReviewTriage(parsed) {
+  if (!parsed) return null;
+  return (parsed.entries || []).map((entry) => {
+    if (!entry.valid) return { entry, ok: false, reason: entry.reason };
+    if (entry.status === 'applied') {
+      // applied — тоже требуем минимальный reason (>=10 символов), иначе декларация бесполезна.
+      if ((entry.reason || '').length < 10) {
+        return { entry, ok: false, reason: 'applied без описания изменения (укажи file:line или суть правки)' };
+      }
+      return { entry, ok: true };
+    }
+    // rejected / deferred — slop-detector
+    const reason = entry.reason || '';
+    if (reason.length < 15) {
+      return { entry, ok: false, reason: `${entry.status} с обоснованием < 15 символов — недостаточно` };
+    }
+    const hasSlop = SLOP_RE.test(reason);
+    const hasTech = _hasTechnicalSignal(reason);
+    if (hasSlop && !hasTech) {
+      return {
+        entry,
+        ok: false,
+        reason: `${entry.status} с slop-обоснованием без технического содержания (раскрой: file:line, конкретный риск, метрика)`,
+      };
+    }
+    return { entry, ok: true };
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Resolve repo root.
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -696,4 +964,12 @@ module.exports = {
   validateEdgeCases,
   runLint,
   resolveRepoRoot,
+  // J / K
+  hasSecuritySensitivePath,
+  countNonTrivialDiffLines,
+  findReviewAgentCalls,
+  parseSelfReview,
+  parseReviewTriage,
+  validateReviewTriage,
+  SECURITY_SENSITIVE_RE,
 };

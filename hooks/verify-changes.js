@@ -7,8 +7,20 @@
 //   A — success-слово («готово», «fixed», «pushed», ...) БЕЗ верификации.
 //   B — дисклеймер («не проверил», «проверь вручную») БЕЗ попыток разведки.
 //   C — делегирование shell-команды пользователю при наличии своего Bash.
+//   D — observable src без парного *.test.* / *.spec.* / __tests__/.
+//   E — controller / route / api-handler без e2e-парного теста.
+//   F — отсутствует или невалиден блок <edge-cases>.
+//   G — npm run lint / ruff / golangci-lint / cargo clippy exit ≠ 0.
+//   H — public surface изменён без обновления *.md / docs/* в этой же сессии.
+//   J — нет валидного <self-review> блока (code+security ревью своими силами).
+//   K — <review-triage> отсутствует / невалиден / содержит slop-only обоснования.
 //
-// Опт-аут: export MAIN_SKILL_VERIFY_CHANGES=0
+// Опт-ауты:
+//   MAIN_SKILL_VERIFY_CHANGES=0   — все триггеры выкл.
+//   MAIN_SKILL_VERIFY_LINT=0      — выкл только G.
+//   MAIN_SKILL_VERIFY_REVIEW=0    — выкл J/K.
+//   MAIN_SKILL_VERIFY_REVIEW=code — требовать только code-review секцию.
+//   MAIN_SKILL_VERIFY_REVIEW=security — требовать только security-review секцию.
 // Старое имя переменной тоже уважается: MAIN_SKILL_VERIFY_FRONTEND=0.
 
 const fs = require('fs');
@@ -323,6 +335,105 @@ function main(p) {
         }
       }
 
+      // J / K: self-review + триаж замечаний ревьюеров.
+      // Опт-аут: MAIN_SKILL_VERIFY_REVIEW=0 (полностью), =code (только code-review),
+      // =security (только security-review), =both (default).
+      const VALID_REVIEW_MODES = new Set(['both', 'code', 'security', '0']);
+      const rawReviewMode = (process.env.MAIN_SKILL_VERIFY_REVIEW || 'both').toLowerCase();
+      const reviewMode = VALID_REVIEW_MODES.has(rawReviewMode) ? rawReviewMode : 'both';
+      const reviewWantCode = reviewMode === 'both' || reviewMode === 'code';
+      const reviewWantSec = reviewMode === 'both' || reviewMode === 'security';
+      const reviewEnabled = reviewMode !== '0' && (reviewWantCode || reviewWantSec);
+
+      if (!trigger && reviewEnabled && observableSrcEdits.length > 0) {
+        const securityPath = checks.hasSecuritySensitivePath(observableSrcEdits);
+        // Считаем только observable-src правки (не docs / configs / tests). Иначе правка
+        // README на 50 строк ложно активирует J. Cap на 20 — раннее завершение.
+        const observableSrcSet = new Set(observableSrcFiles);
+        const isObservableSrc = (fp) => observableSrcSet.has(fp);
+        const nonTrivialLines = checks.countNonTrivialDiffLines(lines, isObservableSrc, 20);
+        const isTrivial = !securityPath && nonTrivialLines < 20;
+        const selfReview = checks.parseSelfReview(lastText);
+
+        // Тривиальный diff — self-review необязателен; но если объявлен `skipped:trivial`
+        // в нетривиальной правке — это анти-фейк, блокируем.
+        if (!isTrivial) {
+          if (!selfReview) {
+            trigger = 'J';
+            triggerData = { kind: 'missing', securityPath, nonTrivialLines, reviewMode };
+          } else if (selfReview.skippedTrivial) {
+            trigger = 'J';
+            triggerData = {
+              kind: 'fake-skip',
+              securityPath,
+              nonTrivialLines,
+              reviewMode,
+            };
+          } else {
+            // Проверяем, что нужные секции присутствуют согласно reviewMode.
+            const missingSections = [];
+            if (reviewWantCode && !selfReview.code) missingSections.push('code');
+            if (reviewWantSec && !selfReview.security) missingSections.push('security');
+            if (missingSections.length > 0) {
+              trigger = 'J';
+              triggerData = { kind: 'missing-sections', missingSections, reviewMode };
+            } else {
+              // Анти-фейк: если секция объявлена со статусом != skipped, в transcript должен быть
+              // соответствующий Task-вызов. `none-found` тоже требует реального запуска.
+              const calls = checks.findReviewAgentCalls(lines);
+              const fakeSections = [];
+              const sectionsRequiringCall = (sec) => {
+                const e = selfReview[sec];
+                if (!e) return false;
+                if (e.status === 'skipped') return false;
+                return true;
+              };
+              if (reviewWantCode && sectionsRequiringCall('code') && !calls.code) fakeSections.push('code');
+              if (reviewWantSec && sectionsRequiringCall('security') && !calls.security) fakeSections.push('security');
+              if (fakeSections.length > 0) {
+                trigger = 'J';
+                triggerData = { kind: 'fake-decl', fakeSections, reviewMode };
+              } else {
+                // K: триаж требуется, если хоть в одной активной секции есть applied/rejected/deferred.
+                const needsTriage =
+                  (reviewWantCode &&
+                    selfReview.code &&
+                    ['applied', 'rejected', 'deferred'].includes(selfReview.code.status)) ||
+                  (reviewWantSec &&
+                    selfReview.security &&
+                    ['applied', 'rejected', 'deferred'].includes(selfReview.security.status));
+                if (needsTriage) {
+                  const triage = checks.parseReviewTriage(lastText);
+                  if (!triage || triage.entries.length === 0) {
+                    trigger = 'K';
+                    triggerData = { kind: 'missing' };
+                  } else {
+                    const validation = checks.validateReviewTriage(triage);
+                    const failed = validation.filter((v) => !v.ok);
+                    if (failed.length > 0) {
+                      trigger = 'K';
+                      triggerData = { kind: 'invalid', failed };
+                    } else {
+                      // Все записи в триаже должны принадлежать активной по reviewMode секции.
+                      const wrongSource = triage.entries.filter(
+                        (e) =>
+                          e.valid &&
+                          ((e.source === 'code' && !reviewWantCode) ||
+                            (e.source === 'security' && !reviewWantSec)),
+                      );
+                      if (wrongSource.length > 0) {
+                        trigger = 'K';
+                        triggerData = { kind: 'wrong-source', wrongSource, reviewMode };
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
       // A: нет реальной verify-команды после правки (последняя сетка).
       if (!trigger && !verifiedAfterEdit) {
         trigger = 'A';
@@ -533,9 +644,161 @@ function main(p) {
     'Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0',
   ].join('\n');
 
+  const reasonJ = (() => {
+    const baseHead = '[main-skill:verify-changes] Stop заблокирован (триггер J: нет валидного <self-review> блока).';
+    const formatHelp = [
+      'Формат:',
+      '  <self-review>',
+      '  code:<status>[:<reason>]',
+      '  security:<status>[:<reason>]',
+      '  </self-review>',
+      '',
+      'Per-section статусы: applied | rejected | deferred | none-found.',
+      'Целиком пропустить можно ТОЛЬКО если diff < 20 нетривиальных observable-строк И',
+      'не затронут security-sensitive путь:',
+      '  <self-review>skipped:trivial</self-review>',
+      'Per-section `code:skipped` / `security:skipped` НЕ принимается — это был bypass.',
+    ];
+    const howTo = [
+      'Что должен сделать:',
+      '  1. Параллельно запусти ДВА агента в одном сообщении (один Tool message, два Task call):',
+      '       • code-review — Task(subagent_type="superpowers:code-reviewer") или Task с',
+      '         требованием в промпте провести code review;',
+      '       • security-review — Task(subagent_type="general-purpose") с промптом',
+      '         «security review по OWASP Top-10 + injection / auth-bypass / SSRF / weak-crypto /',
+      '         secret leaks» на конкретные изменённые файлы.',
+      '  2. По каждому замечанию — пункт в <review-triage> блоке (триггер K).',
+      '  3. Применить applied / обосновать rejected/deferred с техническим аргументом.',
+      '  4. Один проход. Повторный запуск review-агентов перед Stop запрещён.',
+      '',
+      'Опт-аут: MAIN_SKILL_VERIFY_REVIEW=0 (целиком) | =code (только code) | =security (только security).',
+    ];
+    if (triggerData?.kind === 'fake-skip') {
+      return [
+        baseHead.replace('нет валидного <self-review> блока', 'фейковый skipped:trivial'),
+        '',
+        `Ты пометил <self-review>skipped:trivial</self-review>, но diff НЕ тривиальный:`,
+        `  • non-trivial lines: ${triggerData.nonTrivialLines} (порог skip: < 20)`,
+        `  • security-sensitive путь затронут: ${triggerData.securityPath ? 'да' : 'нет'}`,
+        '',
+        'Self-review обязателен. ' + (triggerData.securityPath
+          ? 'Особенно тут — затронут auth/api/sql/crypto/payment/admin/session/token/...'
+          : 'Diff ≥ 20 нетривиальных observable-строк.'),
+        '',
+        ...howTo,
+      ].join('\n');
+    }
+    if (triggerData?.kind === 'missing-sections') {
+      return [
+        baseHead.replace('нет валидного <self-review> блока', 'не все секции в <self-review>'),
+        '',
+        `Режим: MAIN_SKILL_VERIFY_REVIEW=${triggerData.reviewMode}`,
+        `Отсутствуют секции: ${triggerData.missingSections.join(', ')}`,
+        '',
+        ...formatHelp,
+        '',
+        ...howTo,
+      ].join('\n');
+    }
+    if (triggerData?.kind === 'fake-decl') {
+      return [
+        baseHead.replace('нет валидного <self-review> блока', 'декларация без реального запуска review-агента'),
+        '',
+        `Ты задекларировал секции [${triggerData.fakeSections.join(', ')}] в <self-review>, но в`,
+        'transcript этой сессии НЕТ соответствующих Task-вызовов. Это враньё под видом дисциплины.',
+        '',
+        'Что считается реальным запуском:',
+        '  • code  — Task с subagent_type содержащим "code-review*" или промптом упоминающим code review.',
+        '  • security — Task с subagent_type содержащим "security" ИЛИ промптом упоминающим OWASP /',
+        '    injection / auth bypass / secret leak / XSS / CSRF / SSRF / RCE / TOCTOU / weak crypto.',
+        '',
+        ...howTo,
+      ].join('\n');
+    }
+    // missing
+    return [
+      baseHead,
+      '',
+      'Ты правил observable код и заявил «готово», но не выполнил self-review своими силами.',
+      'Это требование workflow-rules §4: после execution, до Stop, обязан прогнать code+security',
+      'ревью через суб-агентов и зафиксировать результат блоком <self-review>.',
+      '',
+      `Диагностика (почему J активирован):`,
+      `  • non-trivial observable строк: ${triggerData?.nonTrivialLines ?? '?'} (порог skip: < 20)`,
+      `  • security-sensitive путь затронут: ${triggerData?.securityPath ? 'да' : 'нет'}`,
+      `  • режим: MAIN_SKILL_VERIFY_REVIEW=${triggerData?.reviewMode ?? 'both'}`,
+      '',
+      'Тривиальные правки (< 20 нетривиальных observable-строк И не auth/api/sql/crypto/...)',
+      'self-review не требуют — у тебя случай иной.',
+      '',
+      ...formatHelp,
+      '',
+      ...howTo,
+    ].join('\n');
+  })();
+
+  const reasonK = (() => {
+    const baseHead = '[main-skill:verify-changes] Stop заблокирован (триггер K: нет валидного <review-triage> блока).';
+    const formatHelp = [
+      'Формат: одна запись на строку, формат `<source>:<id>:<status>:<reason>`.',
+      '  source ∈ { code, security }',
+      '  status ∈ { applied, rejected, deferred }',
+      '',
+      'Пример:',
+      '  <review-triage>',
+      '  code:1:applied:src/auth.ts:42-58 — добавил early-return на null user',
+      '  code:2:deferred:rate-limit на /login — нет данных по нагрузке, см. issue #123',
+      '  code:3:rejected:async/await в logger — fire-and-forget намеренно, потеря лога приемлемее блокировки запроса',
+      '  security:1:applied:src/auth.ts:120 — sanitize redirect_to через allowlist',
+      '  security:2:rejected:CSRF на /logout — endpoint POST + SameSite=Strict cookie',
+      '  </review-triage>',
+    ];
+    const slopHelp = [
+      'rejected/deferred с slop-обоснованием (только «minor», «несущественно», «вне scope», «стилистика»,',
+      '«мелочь», «cosmetic», «not critical» и т.п.) без технического раскрытия — БЛОКИРУЕТСЯ.',
+      'Раскрой каждое отвергнутое замечание: file:line, конкретный риск, метрика, цитата кода.',
+    ];
+    if (triggerData?.kind === 'invalid') {
+      return [
+        baseHead.replace('нет валидного <review-triage> блока', 'невалидные записи в <review-triage>'),
+        '',
+        'Невалидные записи:',
+        ...(triggerData.failed || []).map((v) => `  • ${v.entry?.raw || '<unparsed>'} — ${v.reason}`),
+        '',
+        ...slopHelp,
+        '',
+        ...formatHelp,
+      ].join('\n');
+    }
+    if (triggerData?.kind === 'wrong-source') {
+      return [
+        baseHead.replace('нет валидного <review-triage> блока', 'записи в <review-triage> для отключённой секции'),
+        '',
+        `Режим: MAIN_SKILL_VERIFY_REVIEW=${triggerData.reviewMode}`,
+        'Записи относятся к секции, которая отключена флагом — это означает что ты их выдумал',
+        'или забыл переключить режим:',
+        ...(triggerData.wrongSource || []).map((e) => `  • ${e.raw}`),
+      ].join('\n');
+    }
+    // missing
+    return [
+      baseHead,
+      '',
+      'В <self-review> ты заявил applied/rejected/deferred — значит у ревьюеров были замечания.',
+      'Workflow-rules §4: каждое замечание обязано пройти пунктный триаж в блоке <review-triage>',
+      'с явным решением и техническим обоснованием. Это форс-функция против performative-dismissal',
+      '(«остальное minor, поехали»).',
+      '',
+      ...slopHelp,
+      '',
+      ...formatHelp,
+    ].join('\n');
+  })();
+
   const reasonByTrigger = {
     A: reasonA, B: reasonB, C: reasonC,
     D: reasonD, E: reasonE, F: reasonF, G: reasonG, H: reasonH,
+    J: reasonJ, K: reasonK,
   };
   const reason = reasonByTrigger[trigger] || reasonA;
   process.stdout.write(JSON.stringify({ decision: 'block', reason }));

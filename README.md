@@ -37,7 +37,7 @@ Opt out of the update check with `export MAIN_SKILL_AUTO_UPDATE=0`.
 
 ## Stop-hook tuning (per-project)
 
-The `verify-changes.js` Stop hook blocks "done" claims until tests are paired, docs are updated, and lint is green. It auto-detects test pairs across stacks (pnpm/yarn/cargo/go monorepos; Jest/Vitest/RSpec/PHPUnit/JUnit/Swift conventions) and skips files that aren't unit-testable (migrations, seeders, fixtures, locales, `*.d.ts`, `*.generated.*`, framework configs, type-only TS, `@generated`-headed files).
+The `verify-changes.js` Stop hook blocks "done" claims until tests are paired, docs are updated, lint is green, edge-cases are declared, and self-review is performed. It auto-detects test pairs across stacks (pnpm/yarn/cargo/go monorepos; Jest/Vitest/RSpec/PHPUnit/JUnit/Swift conventions) and skips files that aren't unit-testable (migrations, seeders, fixtures, locales, `*.d.ts`, `*.generated.*`, framework configs, type-only TS, `@generated`-headed files).
 
 If the hook still flags files that legitimately don't need unit tests in your project, add a per-project ignore via env var (POSIX globs, `:`-separated):
 
@@ -48,6 +48,9 @@ export MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/legacy/**:**/scripts/**:packages/proto
 Hard opt-outs:
 - `MAIN_SKILL_VERIFY_CHANGES=0` — disable all hook triggers.
 - `MAIN_SKILL_VERIFY_LINT=0` — keep test/docs checks but skip auto-lint.
+- `MAIN_SKILL_VERIFY_REVIEW=0` — disable J/K (self-review + review-triage).
+- `MAIN_SKILL_VERIFY_REVIEW=code` — require only code-review section.
+- `MAIN_SKILL_VERIFY_REVIEW=security` — require only security-review section.
 
 ## Editing the rules
 
