@@ -447,6 +447,18 @@ test('findLocalBin: symlink-бинарь, ведущий за пределы pro
   assert.equal(found, null, 'symlink, ведущий за пределы project-dir, не должен выбираться');
 });
 
+test('concurrency: последовательные вызовы main независимы (no shared state)', () => {
+  const root = tmp();
+  writeFile(root, 'package.json', '{}');
+  const f1 = writeFile(root, 'a.ts', 'export const x = 1;\n');
+  const f2 = writeFile(root, 'b.ts', 'export const y = 2;\n');
+  const out1 = runMain({ tool_name: 'Edit', tool_input: { file_path: f1 } });
+  const out2 = runMain({ tool_name: 'Edit', tool_input: { file_path: f2 } });
+  // Один и тот же отсутствующий prettier → одинаковый additionalContext в обоих вызовах.
+  // Главное: второй вызов не зависит от состояния первого, вывод воспроизводимо детерминирован.
+  assert.equal(out1, out2);
+});
+
 test('isProjectRoot: распознаёт стандартные маркеры', () => {
   const root = tmp();
   for (const m of af.PROJECT_ROOT_MARKERS) {
