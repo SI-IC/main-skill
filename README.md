@@ -35,6 +35,22 @@ First command registers this repo as a Claude Code marketplace; second installs 
 
 Opt out of the update check with `export MAIN_SKILL_AUTO_UPDATE=0`.
 
+## Auto-format (PostToolUse hook)
+
+`hooks/auto-format.js` runs after every `Edit` / `Write` / `MultiEdit` / `NotebookEdit` and formats the file in-place using the right tool for the language:
+
+| Extensions | Formatter | Install (auto-detected) |
+| --- | --- | --- |
+| `.js .jsx .ts .tsx .mjs .cjs .css .scss .sass .less .html .json .yaml .md .mdx .vue .svelte .graphql` | `prettier` | `bun add -d prettier` (bun.lockb) → `pnpm add -D prettier` (pnpm-lock.yaml) → `yarn add -D prettier` (yarn.lock) → `npm install -D prettier` |
+| `.py .pyi` | `ruff format` (fallback `black`) | `uv add --dev ruff` (uv.lock) → `poetry add --group dev ruff` (poetry.lock) → `pipenv install --dev ruff` (Pipfile) → `pip install ruff` |
+| `.go` | `gofmt -w` | (ships with Go SDK — install Go) |
+| `.rs` | `rustfmt` | `rustup component add rustfmt` |
+| `.c .cpp .cc .h .hpp .m .mm` | `clang-format -i` | `brew install clang-format` (macOS) |
+
+Search order: project-local (`node_modules/.bin/`, `.venv/bin/`, `venv/bin/`) → global PATH. If the formatter is missing, the hook returns `additionalContext` to Claude with the exact install command for the detected package manager — Claude installs and re-applies the edit. Lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `Cargo.lock`, etc.), `*.min.js/css`, and files inside `node_modules`/`dist`/`build`/`.next`/`target`/`vendor`/`.git` are skipped.
+
+No env opt-out — formatting is unconditional. Per-project formatter config (`.prettierrc`, `pyproject.toml`, `rustfmt.toml`, `.clang-format`) is honored automatically by each tool.
+
 ## Stop-hook tuning (per-project)
 
 The `verify-changes.js` Stop hook blocks "done" claims until tests are paired, docs are updated, lint is green, edge-cases are declared, and self-review is performed. It auto-detects test pairs across stacks (pnpm/yarn/cargo/go monorepos; Jest/Vitest/RSpec/PHPUnit/JUnit/Swift conventions) and skips files that aren't unit-testable (migrations, seeders, fixtures, locales, `*.d.ts`, `*.generated.*`, framework configs, type-only TS, `@generated`-headed files).
@@ -69,10 +85,12 @@ main-skill/
 │       └── references/
 │           └── stop-triggers.md  # full enumeration of verify-changes triggers
 ├── hooks/
-│   ├── hooks.json          # SessionStart + Stop hook registration
+│   ├── hooks.json          # SessionStart + PostToolUse + Stop hook registration
 │   ├── session-start.sh    # remote-SHA check + plugin update + skill-invocation prompt
+│   ├── auto-format.js      # PostToolUse hook: formats edited file via prettier / ruff / gofmt / rustfmt / clang-format
+│   ├── auto-format.test.js # unit tests for auto-format.js
 │   ├── verify-changes.js   # Stop hook: blocks "done" until tests, docs, lint, edge-cases declaration are in place
-│   ├── verify-changes.test.js  # integration tests for the hook
+│   ├── verify-changes.test.js  # integration tests for verify-changes.js
 │   └── lib/
 │       ├── checks.js       # helpers: src↔test mapping, e2e detection, edge-cases parsing, auto-lint
 │       └── checks.test.js  # unit tests for checks.js

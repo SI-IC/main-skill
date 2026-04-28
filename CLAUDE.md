@@ -20,8 +20,10 @@ main-skill/
 │       ├── SKILL.md        # ядро: 3-фазный workflow + universal rules
 │       └── references/     # справочные файлы (Stop-triggers и т.п.)
 ├── hooks/
-│   ├── hooks.json          # регистрация SessionStart + Stop
+│   ├── hooks.json          # регистрация SessionStart + PostToolUse + Stop
 │   ├── session-start.sh    # update-check + инструкция вызвать skill
+│   ├── auto-format.js      # PostToolUse-хук: форматирует файл prettier/ruff/gofmt/rustfmt/clang-format
+│   ├── auto-format.test.js
 │   ├── verify-changes.js   # Stop-хук с триггерами A–K
 │   ├── verify-changes.test.js
 │   └── lib/
@@ -48,11 +50,14 @@ main-skill/
 node hooks/verify-changes.test.js
 node hooks/lib/checks.test.js
 
+# unit для PostToolUse auto-format
+node hooks/auto-format.test.js
+
 # sh-синтаксис для SessionStart
 sh -n hooks/session-start.sh
 ```
 
-Любая правка `verify-changes.js` или `checks.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
+Любая правка `verify-changes.js` / `checks.js` / `auto-format.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
 
 ## Размер SKILL.md
 
