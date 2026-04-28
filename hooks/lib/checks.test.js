@@ -489,6 +489,55 @@ test('validateEdgeCases — test_file не существует → не ok', ()
   assert.match(v[0].reason, /не найден/);
 });
 
+test('parseEdgeCasesBlock: test_name с двоеточием не теряет хвост', () => {
+  // Регрессия: старый парсер (rest.pop()) терял всё кроме последнего сегмента
+  // и склеивал test_file с куском test_name.
+  const t = '<edge-cases>empty:hooks/auto-format.test.ts:main: empty stdin → no-op</edge-cases>';
+  const r = checks.parseEdgeCasesBlock(t);
+  assert.strictEqual(r.entries[0].name, 'empty');
+  assert.strictEqual(r.entries[0].test_file, 'hooks/auto-format.test.ts');
+  assert.strictEqual(r.entries[0].test_name, 'main: empty stdin → no-op');
+});
+
+test('validateEdgeCases: test_name с двоеточием находится в файле', () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    'tests/auth.test.ts',
+    `it('main: empty stdin → no-op', () => {});`,
+  );
+  const parsed = checks.parseEdgeCasesBlock(
+    '<edge-cases>empty:tests/auth.test.ts:main: empty stdin</edge-cases>',
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, true);
+});
+
+test('validateEdgeCases: N/A test_file — допустим, требует непустую причину', () => {
+  // SKILL.md: «Если конкретный кейс реально N/A — пиши явно: name:N/A:<причина>».
+  const dir = tmp();
+  const parsed = checks.parseEdgeCasesBlock(
+    '<edge-cases>concurrency:N/A:сериализуется хук-протоколом</edge-cases>',
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, true);
+  assert.strictEqual(v[0].na, true);
+});
+
+test('validateEdgeCases: N/A с пустой причиной — не ok', () => {
+  const dir = tmp();
+  const parsed = checks.parseEdgeCasesBlock(
+    '<edge-cases>concurrency:N/A:</edge-cases>',
+  );
+  // У парсера на segs.length<3 валится — это уже покрыто. Здесь — N/A с whitespace.
+  const parsed2 = checks.parseEdgeCasesBlock(
+    '<edge-cases>concurrency:N/A:   </edge-cases>',
+  );
+  const v = checks.validateEdgeCases(parsed2, dir);
+  assert.strictEqual(v[0].ok, false);
+  assert.match(v[0].reason, /причин/i);
+});
+
 test('runLint возвращает null если ничего не настроено', () => {
   const dir = tmp();
   const r = checks.runLint(dir);
