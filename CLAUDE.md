@@ -27,7 +27,9 @@ main-skill/
 │   ├── verify-changes.js   # Stop-хук с триггерами A–K
 │   ├── verify-changes.test.js
 │   └── lib/
-│       ├── checks.js       # src↔test mapping, edge-cases parser, auto-lint
+│       ├── checks.js       # src↔test mapping (включая generic same-dir
+│       │                   # fallback `<base>.test.<ext>` для sh/lua/dart/...),
+│       │                   # edge-cases parser, auto-lint
 │       └── checks.test.js
 ├── CLAUDE.md               # ← этот файл (dev-facing only)
 └── README.md

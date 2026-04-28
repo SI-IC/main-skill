@@ -416,6 +416,22 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
   if (ext === ".rs") {
     candidates.push(path.join("tests", `${base}.rs`));
   }
+  // Generic same-dir fallback для языков без специфической поддержки выше
+  // (sh/bash/zsh/lua/dart/exs/erl/hs/html/css/sql/...). Универсальная конвенция
+  // `<name>.test.<ext>` / `<name>.spec.<ext>` рядом с src — документирована в
+  // сообщении триггера D первой строкой; без неё трейлинг-extensions ловили
+  // false-positive D даже когда тесты лежат корректно рядом.
+  const HANDLED_LANG_EXT_RE =
+    /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|astro|py|go|rb|java|kt|kts|scala|swift|cs|php|rs)$/i;
+  if (isCodeFile(srcPath) && !HANDLED_LANG_EXT_RE.test(ext)) {
+    candidates.push(
+      path.join(dir, `${base}.test${ext}`),
+      path.join(dir, `${base}.spec${ext}`),
+      path.join(dir, `${base}_test${ext}`),
+      path.join(dir, `${base}_spec${ext}`),
+    );
+  }
+
   // Generic test directories.
   // Для component-файлов {base}{ext} в tests/ (например tests/App.vue) бессмысленно —
   // используем JS/TS-расширения как и в same-dir секции.
