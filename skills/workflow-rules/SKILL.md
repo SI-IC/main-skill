@@ -171,8 +171,8 @@ permission:tests/auth.test.ts:test_revoked_session
 **Как делать:**
 
 1. **Параллельно** запусти ДВА Task-агента в одном Tool message (один проход):
-   - `Task(subagent_type="superpowers:code-reviewer", ...)` — фокус: качество, паттерны, дублирование, edge-cases без покрытия, нарушения проектных конвенций.
-   - `Task(subagent_type="general-purpose", ..., prompt="security review по OWASP Top-10: injection / auth-bypass / SSRF / открытые редиректы / weak crypto / leaked secrets / unsafe deserialization / missing rate-limit / TOCTOU / path traversal — на конкретные изменённые файлы [список]")`.
+   - `Task(subagent_type="superpowers:code-reviewer", model="sonnet", ...)` — фокус: качество, паттерны, дублирование, edge-cases без покрытия, нарушения проектных конвенций. Модель **обязательно `sonnet`** — экономия ~5× при минимальном регрессе на структурном обходе diff'а.
+   - `Task(subagent_type="general-purpose", ..., prompt="security review по OWASP Top-10: injection / auth-bypass / SSRF / открытые редиректы / weak crypto / leaked secrets / unsafe deserialization / missing rate-limit / TOCTOU / path traversal — на конкретные изменённые файлы [список]")` — **без `model` override** (inherit от родителя). Security-ревью должно идти на максимально capable модели (false negative дороже стоимости).
 2. **Триаж каждого замечания** через `superpowers:receiving-code-review` — без performative-agreement и без отмазок «minor / вне scope».
 3. **Применить applied / обосновать rejected/deferred технически** (file:line, конкретный риск, метрика, цитата кода — не «несущественно»).
 4. **Один проход.** Повторный запуск review-агентов перед Stop ЗАПРЕЩЁН.
