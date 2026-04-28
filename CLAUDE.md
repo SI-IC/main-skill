@@ -1,43 +1,61 @@
-# Additional rules
+# main-skill — заметки для разработчика плагина
 
-Auto-loaded alongside `skills/workflow-rules/SKILL.md` by the SessionStart hook. For workflow additions that don't fit the three-phase structure — one-off preferences, tool-specific rules, side notes.
+Этот файл — для тех, кто правит сам плагин (этот репо). Он автоматически грузится Claude Code как project-memory, когда работаешь внутри `/Users/alex/Documents/main-skill/`. **User-facing правила (язык, логирование, доки, удаление, дубли процессов и т.п.) живут в `skills/workflow-rules/SKILL.md`** — этот файл их не дублирует.
 
-**Editing this plugin:** when modifying any file in the `main-skill` plugin repo, ALWAYS bump `version` in `.claude-plugin/plugin.json` (patch increment by default) **before** committing. Without a bump, `claude plugin update` on consumer machines won't refresh the cached content.
+## Что это за репо
 
----
+Personal Claude Code плагин с workflow-правилами. Распространяется через marketplace (см. `.claude-plugin/marketplace.json`), устанавливается на любую машину одной командой (см. `README.md` → Install).
 
-## Язык общения — русский
+Ключевая идея: SessionStart-хук подталкивает Claude вызвать `Skill: main-skill:workflow-rules` в начале сессии — содержимое skill приходит через нормальный skill-канал (без 10KB-кап-а на stdout хуков). User-facing правила — в `SKILL.md`. Всё, что не помещается в SKILL.md и применяется условно/по триггеру — в `skills/workflow-rules/references/*.md`.
 
-Отвечай пользователю по-русски, включая короткие апдейты между тулами и финальные саммари. Код, идентификаторы, команды, имена файлов и цитаты из логов/доков — как есть, не переводи. Если пользователь пишет на другом языке — отвечай на его языке.
+## Структура
 
-## Как писать правила сюда
+```
+main-skill/
+├── .claude-plugin/
+│   ├── plugin.json         # манифест плагина (version → bump на каждом коммите)
+│   └── marketplace.json    # делает репо installable как marketplace
+├── skills/
+│   └── workflow-rules/
+│       ├── SKILL.md        # ядро: 3-фазный workflow + universal rules
+│       └── references/     # справочные файлы (Stop-triggers и т.п.)
+├── hooks/
+│   ├── hooks.json          # регистрация SessionStart + Stop
+│   ├── session-start.sh    # update-check + инструкция вызвать skill
+│   ├── verify-changes.js   # Stop-хук с триггерами A–K
+│   ├── verify-changes.test.js
+│   └── lib/
+│       ├── checks.js       # src↔test mapping, edge-cases parser, auto-lint
+│       └── checks.test.js
+├── CLAUDE.md               # ← этот файл (dev-facing only)
+└── README.md
+```
+
+## Bump version при каждой правке
+
+При **любой** правке файла в этом репо — увеличь `version` в `.claude-plugin/plugin.json` (patch-инкремент по умолчанию) **до коммита**. Без bump-а `claude plugin update` на потребительских машинах не подтянет свежий контент из кеша.
+
+## Как писать правила в SKILL.md / CLAUDE.md / references
 
 Кратко, по делу, жёстко на исполнение. Одно правило — заголовок + 1–3 строки. Без преамбул «почему это важно», без буллет-листов на 8 пунктов, без дублирования системного промпта. Глаголы в повелительном: «делай X», «не делай Y». Если не умещается в абзац — режь, пока не уместится.
 
-**Применяется к ТВОИМ правкам SKILL.md / CLAUDE.md / rules/\*.md / AGENTS.md.** Перед коммитом перечитай свой diff и для каждой добавленной секции > 5 строк выкинь треть. Если пользователь спросил «не раздул ли?» — правило уже провалено.
+Перед коммитом перечитай свой diff: для каждой добавленной секции > 5 строк выкинь треть. Если пользователь спросил «не раздул ли?» — правило уже провалено.
 
-## Не плодить дубли фоновых процессов
+## Тестирование хуков
 
-Перед запуском долгоживущего процесса (dev-server, watcher, туннель, `npm run dev` / `next dev` / `vite`, `tail -f`, ngrok) проверь, не запущен ли уже — свои bg-bash через `Monitor` / `BashOutput` по id, чужие через `pgrep -fa <pattern>` или `lsof -i :<port>`. Живой и отвечает → **переиспользуй**. Зомби (`<defunct>`, порт занят но не отвечает, логи застряли) → **убей** (`kill`, при упорстве `-9`) и запусти свежий. Один процесс на одну роль.
+```bash
+# unit + integration для Stop-хука
+node hooks/verify-changes.test.js
+node hooks/lib/checks.test.js
 
-## Логировать неуверенные места (постоянно, с ротацией, без секретов)
+# sh-синтаксис для SessionStart
+sh -n hooks/session-start.sh
+```
 
-Если не на 100% уверен в поведении кода (внешний API, async-цепочки, нетривиальное состояние, парсинг чужих форматов, редкие ветки) — ставь **постоянное structured-logging**, чтобы трейс уже лежал в файле к моменту, когда пользователь сообщит о баге.
+Любая правка `verify-changes.js` или `checks.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
 
-- **Стандартный logger языка/фреймворка** (Python `logging`, Node `pino`/`winston`, Go `slog`, Rust `tracing`, JVM `logback`) с file appender + ротацией. Не самописный.
-- **Ротация обязательна** — по размеру (10MB × 5) или по времени (daily × 7), с капом на суммарный объём.
-- **Уровни по смыслу**: `debug` (детальный трейс), `info` (бизнес-события), `warn` (отклонения), `error` (сбой с контекстом). Прод-дефолт `info`; `debug` включается через `LOG_LEVEL`, не правкой кода.
-- **Структурированный формат** (JSON / key=value), грепаемый: `logger.info("user.login", extra={"user_id": uid})`, не `print(f"user {uid} ...")`.
-- **Секреты НИКОГДА в логах**. Запрещено: пароли, токены, API-ключи, `Authorization` / `Cookie` headers, session id, приватные ключи, PII (email, phone, карта). Перед логированием объекта — redactor по regex ключей (`*token*`, `*secret*`, `*password*`, `*api[_-]?key*`, `authorization`, `cookie`) → `[REDACTED]`. URL — маскируй `token=` / `key=` в query. Если структура непредсказуема — логируй имена полей и типы, не значения.
-- **Путь к лог-файлу из env/конфига**, директория в `.gitignore` (`logs/`).
-- **Логгер не должен падать** — fallback на stderr, приложение живёт.
+## Размер SKILL.md
 
-Отладка начинается с `tail logs/app.log`, а не с добавления print-ов post-factum.
+Целевой кап — **под 5000 токенов** (≈ 20KB ASCII / ~12KB Cyrillic-heavy), потому что после компакции Claude Code перезагружает только первые 5000 токенов каждого вызванного skill. Контент за капом — в `references/*.md` со ссылкой из SKILL.md, либо в этот CLAUDE.md (если только dev-facing).
 
-## Доки обновлять в том же изменении, без напоминания
-
-Меняешь поведение, контракт, CLI, конфиг, env или любой user-facing surface — обнови существующие доки (`README`, `CLAUDE.md`, `/docs/*`, docstrings) в том же коммите. Перед завершением — `grep` по старому названию/флагу. Новых `NOTES.md`/`SUMMARY.md` не плодить.
-
-## Удаляй ненужное
-
-Что стало не нужно — выпиливай полностью: код, файлы, доки, хуки, зависимости, env-переменные, фиче-флаги, секции `CLAUDE.md`/`README`. Не оставляй `// removed`, TODO-надгробия, закомментированные блоки, deprecated shim-ы «на всякий случай», устаревшие примеры в доках. Сомневаешься, используется ли символ/файл — `grep` по репо; нет ссылок → удаляй. Git хранит историю, восстановить можно.
+500 строк — мягкая рекомендация Claude Code; 5000 токенов — реальное узкое место.

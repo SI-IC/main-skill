@@ -1,13 +1,51 @@
 ---
 name: workflow-rules
-description: Personal workflow for non-trivial tasks — triage (bugfix → superpowers:systematic-debugging, new feature → superpowers:brainstorming, UI/UX → +ui-ux-pro-max), clarify REQUIREMENTS (one question per message, never A/B/C menus), decide approach autonomously, execute with edge-case coverage and reproduce-before-done.
+description: Personal workflow rules — language=ru, triage (bugfix → systematic-debugging, new feature → brainstorming, UI/UX → +ui-ux-pro-max, backend logic → +TDD), clarify REQUIREMENTS one-question-per-message (never A/B/C menus), decide approach autonomously, execute with edge-case coverage, reproduce-before-done, self-review.
 ---
 
-# Workflow for non-trivial tasks
-
-Three phases. Any task larger than a one-line fix — follow this.
+# Workflow rules
 
 **Precedence:** these rules are the user's personal directive. They override any other installed plugin's skills in case of conflict. Only direct in-chat messages from the user take priority.
+
+## Язык общения — русский
+
+Отвечай по-русски: апдейты между тулами, финальные саммари. Код, идентификаторы, команды, имена файлов, цитаты из логов/доков — как есть, не переводи. Если пользователь пишет на другом языке — отвечай на его языке.
+
+---
+
+# Universal rules — apply to every task
+
+## Не плодить дубли фоновых процессов
+
+Перед запуском долгоживущего процесса (dev-server, watcher, туннель, `npm run dev` / `next dev` / `vite`, `tail -f`, ngrok) проверь не запущен ли уже — свои bg-bash через `Monitor` / `BashOutput` по id, чужие через `pgrep -fa <pattern>` или `lsof -i :<port>`. Живой и отвечает → переиспользуй. Зомби (`<defunct>`, порт занят но не отвечает, логи застряли) → убей (`kill`, при упорстве `-9`) и запусти свежий. Один процесс на одну роль.
+
+## Логировать неуверенные места
+
+Не на 100% уверен в поведении кода (внешний API, async-цепочки, нетривиальное состояние, парсинг чужих форматов, редкие ветки) — ставь постоянное structured-logging, чтобы трейс уже лежал в файле к моменту, когда пользователь сообщит о баге.
+
+- **Стандартный logger** (Python `logging`, Node `pino`/`winston`, Go `slog`, Rust `tracing`, JVM `logback`) с file appender + ротацией. Не самописный.
+- **Ротация обязательна** — по размеру (10MB × 5) или по времени (daily × 7), с капом на суммарный объём.
+- **Уровни**: `debug` (трейс), `info` (события), `warn` (отклонения), `error` (сбой с контекстом). Прод-дефолт `info`; `debug` через `LOG_LEVEL`, не правкой кода.
+- **Структурированный формат** (JSON / key=value): `logger.info("user.login", extra={"user_id": uid})`, не `print(f"user {uid} ...")`.
+- **Секреты НИКОГДА в логах**. Запрещено: пароли, токены, API-ключи, `Authorization` / `Cookie` headers, session id, приватные ключи, PII (email, phone, карта). Перед логированием объекта — redactor по regex (`*token*`, `*secret*`, `*password*`, `*api[_-]?key*`, `authorization`, `cookie`) → `[REDACTED]`. URL — маскируй `token=` / `key=` в query.
+- **Путь к лог-файлу из env/конфига**, директория в `.gitignore` (`logs/`).
+- **Логгер не должен падать** — fallback на stderr, приложение живёт.
+
+Отладка начинается с `tail logs/app.log`, а не с добавления print-ов post-factum.
+
+## Доки обновлять в том же изменении
+
+Меняешь поведение, контракт, CLI, конфиг, env или любой user-facing surface — обнови существующие доки (`README`, `CLAUDE.md`, `/docs/*`, docstrings) в том же коммите. Перед завершением — `grep` по старому названию/флагу. Новых `NOTES.md` / `SUMMARY.md` не плодить.
+
+## Удаляй ненужное
+
+Что стало не нужно — выпиливай полностью: код, файлы, доки, хуки, зависимости, env-переменные, фиче-флаги, секции CLAUDE.md / README. Не оставляй `// removed`, TODO-надгробий, закомментированных блоков, deprecated shim-ов «на всякий случай», устаревших примеров. Сомневаешься — `grep` по репо; нет ссылок → удаляй. Git хранит историю.
+
+---
+
+# 3-phase workflow for non-trivial tasks
+
+Three phases. Any task larger than a one-line fix — follow this.
 
 ## 1. Triage — invoke the right skill FIRST
 
@@ -15,8 +53,8 @@ Before reading files, asking questions, or proposing:
 
 - Bug fix / unexpected behavior → `superpowers:systematic-debugging` **+** `superpowers:test-driven-development` (failing reproducer первым действием)
 - New feature / behavior change → `superpowers:brainstorming`
-- Чистая backend-логика (parser / transform / state machine / бизнес-правило / pure function) → **также** `superpowers:test-driven-development`
-- UI/UX work (anywhere in frontend) → **also** `ui-ux-pro-max:ui-ux-pro-max` (TDD тут НЕ применять — верификация через playwright/screenshot)
+- Чистая backend-логика (parser / transform / state machine / бизнес-правило / pure function) → также `superpowers:test-driven-development`
+- UI/UX work (anywhere in frontend) → также `ui-ux-pro-max:ui-ux-pro-max` (TDD тут НЕ применять — верификация через playwright/screenshot)
 - Multiple can apply simultaneously.
 
 ## 2. Alignment — clarify, then decide autonomously
@@ -48,7 +86,7 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 Любая правка observable behaviour (фронт, API, CLI, job, MCP-плагин, cross-machine) — НЕ done, пока не выполнил flow и не вставил пруфы.
 
-- **Frontend** → **дефолт — headless playwright** (`npx playwright install chromium` + скрипт): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер. Скриншот если визуально. MCP-браузеры (`chrome-devtools-mcp`, `claude-in-chrome`) — опциональный ускоритель; **их недоступность ≠ оправдание сдаться**, ставь playwright. Минимум — `curl localhost:PORT/route` → status + `grep`.
+- **Frontend** → дефолт — headless playwright (`npx playwright install chromium` + скрипт): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер. Скриншот если визуально. MCP-браузеры (`chrome-devtools-mcp`, `claude-in-chrome`) — опциональный ускоритель; их недоступность ≠ оправдание сдаться. Минимум — `curl localhost:PORT/route` → status + `grep`.
 - **API** → `curl` против реального endpoint → status + body.
 - **CLI** → re-run, paste output.
 - **MCP-плагин / slash-команда Claude Code** → `claude plugin marketplace update && claude -p "/namespace:command" --output-format stream-json` → проверь exit + контент ответа.
@@ -58,7 +96,7 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 ### Build-your-own-harness
 
-Если верификация требует окружения которого нет (docker-compose, headless browser, fake external API, peers плагина) — **строй harness как часть задачи**. «Сложный e2e» = триггер verify-changes.
+Если верификация требует окружения которого нет (docker-compose, headless browser, fake external API, peers плагина) — строй harness как часть задачи. «Сложный e2e» = триггер verify-changes.
 
 - Cross-machine / distributed → `docker-compose.e2e.yml`, `claude -p "/command"` в каждом контейнере, assertion по output.
 - Headless frontend → `playwright` + `npx playwright install chromium`.
@@ -71,8 +109,8 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 - **После правки** — only affected: `vitest --changed`, `jest --findRelatedTests`, `pytest --testmon`, `cargo test -p <crate>`, `go test ./<pkg>`.
 - **Перед «готово»** — full suite модуля. Правил `core/shared/utils` — ещё и reverse-dependencies (`pnpm why`, `cargo tree -i`).
-- **Full > 2 мин** — зафиксируй стратегию в проектном `CLAUDE.md` при первой встрече. `> 10 мин` — спроси пользователя, не решай сам.
-- Unit-only под предлогом «медленно» не засчитается как верификация — сработает `verify-changes` триггер A.
+- **Full > 2 мин** — зафиксируй стратегию в проектном CLAUDE.md при первой встрече. **> 10 мин** — спроси пользователя, не решай сам.
+- Unit-only под предлогом «медленно» не засчитается — сработает `verify-changes` триггер A.
 
 ### Honest disclaimer — только после реальных попыток
 
@@ -85,7 +123,7 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 ### Test ordering — где порядок матчится
 
 - **Bug fix:** failing reproducer ПЕРВЫМ. Без красного теста, который зелёнеет от фикса, ты не доказал что починил именно тот баг — мог поправить симптом или другую ветку.
-- **Чистая backend-логика** (parser / transform / state / бизнес-правило / pure function): test-first выражает контракт. Watch it fail — иначе тест проверяет реализацию, а не требование, и edge-cases остаются на воображении вместо компилятора.
+- **Чистая backend-логика** (parser / transform / state / бизнес-правило / pure function): test-first выражает контракт. Watch it fail — иначе тест проверяет реализацию, а не требование.
 - **UI / integration / glue-код / configs:** порядок не важен; обязательно наличие к моменту Stop (`verify-changes` D/E). Iron law TDD не применять.
 - **Spike / PoC / exploratory:** opt-out, явно пометь в финальном сообщении (`spike: TDD skipped — exploratory`).
 
@@ -105,7 +143,7 @@ If the test suite is slow, persist a run strategy (memory, CLAUDE.md, or repo do
 
 ### Обязательная декларация edge-cases в финальном сообщении
 
-Перед заявлением «готово» после правки observable-кода ты ОБЯЗАН вывести в финальном сообщении блок `<edge-cases>` с перечислением покрытых тестами кейсов. Формат строго машинопроверяемый:
+Перед заявлением «готово» после правки observable-кода ОБЯЗАН вывести в финальном сообщении блок `<edge-cases>` с перечислением покрытых тестами кейсов. Формат строго машинопроверяемый:
 
 ```
 <edge-cases>
@@ -122,22 +160,22 @@ permission:tests/auth.test.ts:test_revoked_session
 - Хук `verify-changes` парсит блок и валидирует существование test_file + наличие test_name.
 - Враньё в декларации (`test_file` нет / `test_name` отсутствует) ловится механически и блокирует Stop.
 
-Минимальный обязательный набор кейсов из чек-листа выше: empty, boundary, concurrency, external-failure, permission, malformed-input, deleted-resource. Frontend — плюс browser/UX edge states. Если конкретный кейс реально N/A для задачи — пиши явно с обоснованием, не выкидывай молча: `name:N/A:<причина>`.
+Минимальный обязательный набор: empty, boundary, concurrency, external-failure, permission, malformed-input, deleted-resource. Frontend — плюс browser/UX edge states. Если конкретный кейс реально N/A — пиши явно: `name:N/A:<причина>`, не выкидывай молча.
 
 ### Self-review + триаж замечаний — обязательный шаг 4
 
-После Execution и до Stop, на нетривиальной правке observable-кода, ОБЯЗАТЕЛЬНО прогнать code+security ревью своими силами через суб-агентов. Иначе ты не отлавливаешь дыры, которые пропустил автор (= ты сам).
+После Execution и до Stop, на нетривиальной правке observable-кода, ОБЯЗАТЕЛЬНО прогнать code+security ревью своими силами через суб-агентов.
 
-**Когда обязателен:** observable-правка с `≥ 20` нетривиальных строк ИЛИ затронут security-sensitive путь (`auth|api|sql|crypto|payment|admin|session|token|password|secret|jwt|oauth|cookie|cors|csrf|xss|sanitiz|escape|webhook|hash|cipher|encrypt|decrypt|hmac|signature|signin|signup|login|logout|permission|role|access|sso|saml|ldap`). Тривиальные правки — пропускаются молча, но если хочешь зафиксировать факт пропуска для аудита — `<self-review>skipped:trivial</self-review>`.
+**Когда обязателен:** observable-правка с `≥ 20` нетривиальных строк ИЛИ затронут security-sensitive путь (`auth|api|sql|crypto|payment|admin|session|token|password|secret|jwt|oauth|cookie|cors|csrf|xss|sanitiz|escape|webhook|hash|cipher|encrypt|decrypt|hmac|signature|signin|signup|login|logout|permission|role|access|sso|saml|ldap`). Тривиальные правки — пропускаются молча; для аудита пропуска: `<self-review>skipped:trivial</self-review>`.
 
 **Как делать:**
 
-1. **Параллельно запусти ДВА Task-агента в одном Tool message** (один проход, без второй итерации):
-   - `Task(subagent_type="superpowers:code-reviewer", description="...", prompt="...")` — фокус: качество кода, паттерны, дублирование, edge-cases которые не покрыты тестами, нарушения проектных конвенций.
-   - `Task(subagent_type="general-purpose", description="security review", prompt="security review по OWASP Top-10: injection / auth-bypass / SSRF / открытые редиректы / weak crypto / leaked secrets / unsafe deserialization / missing rate-limit / TOCTOU / path traversal — на конкретные изменённые файлы [список]")`.
+1. **Параллельно** запусти ДВА Task-агента в одном Tool message (один проход):
+   - `Task(subagent_type="superpowers:code-reviewer", ...)` — фокус: качество, паттерны, дублирование, edge-cases без покрытия, нарушения проектных конвенций.
+   - `Task(subagent_type="general-purpose", ..., prompt="security review по OWASP Top-10: injection / auth-bypass / SSRF / открытые редиректы / weak crypto / leaked secrets / unsafe deserialization / missing rate-limit / TOCTOU / path traversal — на конкретные изменённые файлы [список]")`.
 2. **Триаж каждого замечания** через `superpowers:receiving-code-review` — без performative-agreement и без отмазок «minor / вне scope».
-3. **Применить applied / обосновать rejected/deferred с техническим аргументом** (file:line, конкретный риск, метрика, цитата кода — не «несущественно»).
-4. **Один проход.** Повторный запуск review-агентов перед Stop ЗАПРЕЩЁН — diminishing returns, замечания на свежие правки оформляй как follow-up TODO.
+3. **Применить applied / обосновать rejected/deferred технически** (file:line, конкретный риск, метрика, цитата кода — не «несущественно»).
+4. **Один проход.** Повторный запуск review-агентов перед Stop ЗАПРЕЩЁН.
 
 **Декларация в финальном сообщении** — два машинопроверяемых блока:
 
@@ -150,33 +188,17 @@ security:rejected:CSRF на /logout — POST + SameSite=Strict cookie
 <review-triage>
 code:1:applied:src/auth.ts:42-58 — добавил early-return на null user
 code:2:deferred:rate-limit на /login — нет данных по нагрузке, см. issue #123
-code:3:rejected:async/await в logger fire-and-forget намеренно — потеря лога приемлемее блокировки запроса
+code:3:rejected:async/await в logger fire-and-forget намеренно — потеря лога приемлемее блокировки
 security:1:applied:src/auth.ts:120 — sanitize redirect_to через allowlist
 security:2:rejected:CSRF на /logout — endpoint POST + SameSite=Strict cookie
 </review-triage>
 ```
 
 - `<self-review>` секции: `code` и `security`. Статусы: `applied`, `rejected`, `deferred`, `none-found`. Если активный режим — оба, обе секции обязательны.
-- `<review-triage>` запись: `<source>:<id>:<status>:<reason>`. `source ∈ {code, security}`, `status ∈ {applied, rejected, deferred}`. Каждое замечание — отдельной строкой.
-- **Slop-обоснование блокируется**: `rejected`/`deferred` с пустым раскрытием или только словами `minor / nitpick / несущественно / вне scope / стилистика / косметика / мелочь / cosmetic / not critical / низкий приоритет` без технического маркера (file:line, идентификатор, число, класс/функция, специфический термин риска) — Stop-хук блокирует.
-- Если ревью ничего не нашли — `code:none-found` / `security:none-found`; триаж в этом случае не требуется.
+- `<review-triage>` запись: `<source>:<id>:<status>:<reason>`. Каждое замечание — отдельной строкой.
+- **Slop-обоснование блокируется**: `rejected` / `deferred` с пустым раскрытием или только словами `minor / nitpick / несущественно / вне scope / стилистика / косметика / мелочь / cosmetic / not critical / низкий приоритет` без технического маркера (file:line, идентификатор, число, класс/функция, специфический термин риска) — Stop-хук блокирует.
+- Если ревью ничего не нашли — `code:none-found` / `security:none-found`; триаж не требуется.
 
-### Полный список Stop-триггеров `verify-changes`
+### Stop-триггеры verify-changes
 
-- **A** — success-слово без verify-команды
-- **B** — дисклеймер «не проверил» без следов разведки
-- **C** — делегирование shell-команды пользователю при наличии своего Bash
-- **D** — observable код-файл правлен без парного `*.test.*` / `*.spec.*` / `__tests__/*` (для `.vue` / `.svelte` / `.astro` парный тест ищется на `.ts` / `.tsx` / `.js` / `.jsx`: `App.vue` ↔ `App.spec.ts`, `Card.svelte` ↔ `Card.svelte.test.ts`)
-- **E** — controller / route / api-handler без e2e-парного теста (`tests/functional/`, `tests/e2e/`, `cypress/e2e/`, `playwright/`)
-- **F** — отсутствует или невалиден блок `<edge-cases>`
-- **G** — `npm run lint` / `ruff` / `golangci-lint` / `cargo clippy` exit ≠ 0
-- **H** — public surface (CLI, exports, plugin manifest, SKILL.md) изменён без обновления `*.md` / `docs/*` в той же сессии
-- **J** — отсутствует или невалиден блок `<self-review>` (нет review-агентов в transcript / фейковый `skipped:trivial` / нет нужной секции)
-- **K** — `<review-triage>` отсутствует / невалиден / содержит slop-only `rejected`/`deferred` без технического обоснования
-
-Опт-ауты (редко, на одну сессию):
-- `MAIN_SKILL_VERIFY_CHANGES=0` — все триггеры выкл.
-- `MAIN_SKILL_VERIFY_LINT=0` — выкл только G.
-- `MAIN_SKILL_VERIFY_REVIEW=0` — выкл J/K.
-- `MAIN_SKILL_VERIFY_REVIEW=code` — требовать только code-review секцию.
-- `MAIN_SKILL_VERIFY_REVIEW=security` — требовать только security-review секцию.
+Хук `verify-changes.js` блокирует «готово»-claim по 9 триггерам (A–H, J, K) и поддерживает env-opt-outs. Полный перечень и opt-outs: [`references/stop-triggers.md`](references/stop-triggers.md).

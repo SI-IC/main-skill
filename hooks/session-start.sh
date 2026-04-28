@@ -6,15 +6,15 @@
 #    banner so the user (and Claude) get a visible "actually upgraded" signal
 #    — Claude Code's /plugin UI is bound to the version loaded at process
 #    start and won't reflect mid-session updates.
-# 4. cat SKILL.md + CLAUDE.md from the LATEST cached version (not from
-#    ${CLAUDE_PLUGIN_ROOT}, which is bound to the version active at
-#    session start and would yield stale content after an update).
+# 4. Emit a short instruction telling Claude to invoke the workflow-rules
+#    skill. Skill content arrives via the Skill-tool channel, which is NOT
+#    subject to the 10KB cap that applies to SessionStart hook stdout.
 #
 # Opt-out: MAIN_SKILL_AUTO_UPDATE=0 disables the update check.
 
-CACHE_BASE="$HOME/.claude/plugins/cache/main-skill/main-skill"
 MP_DIR="$HOME/.claude/plugins/marketplaces/main-skill"
 STAMP="$HOME/.claude/plugins/.main-skill-update-stamp"
+CACHE_BASE="$HOME/.claude/plugins/cache/main-skill/main-skill"
 
 maybe_update() {
   [ "${MAIN_SKILL_AUTO_UPDATE:-1}" = "0" ] && return
@@ -52,17 +52,11 @@ maybe_update() {
   fi
 }
 
-emit_latest() {
-  if [ -d "$CACHE_BASE" ]; then
-    LATEST=$(ls "$CACHE_BASE" 2>/dev/null | sort -V | tail -1)
-    if [ -n "$LATEST" ]; then
-      cat "$CACHE_BASE/$LATEST/skills/workflow-rules/SKILL.md" "$CACHE_BASE/$LATEST/CLAUDE.md" 2>/dev/null
-      return
-    fi
-  fi
-  # Fallback: ${CLAUDE_PLUGIN_ROOT} (current session's version path)
-  cat "${CLAUDE_PLUGIN_ROOT}/skills/workflow-rules/SKILL.md" "${CLAUDE_PLUGIN_ROOT}/CLAUDE.md" 2>/dev/null
+emit_skill_invocation() {
+  cat <<'EOF'
+ОБЯЗАТЕЛЬНО — перед любым ответом, включая clarifying questions, вызови `Skill` tool со skill `main-skill:workflow-rules`. Это твои персональные workflow-правила (язык общения, триаж, edge-cases, verify, self-review). Содержимое приходит через skill-канал и не обрезается 10KB-капом хуков. Не «и так помню» — версия в плагине меняется, перечитай свежее. После загрузки следуй ему до конца сессии.
+EOF
 }
 
 maybe_update
-emit_latest
+emit_skill_invocation
