@@ -44,9 +44,11 @@ function isDocFile(fp) {
 }
 
 // Файлы с кодом, для которых имеет смысл искать парный unit-тест (триггер D).
-// Конфиги (.json/.yml/.toml), Docker/Make-файлы, ассеты — не считаются.
+// Конфиги (.json/.yml/.toml), Docker/Make-файлы, ассеты, стили (.css/.scss/.html)
+// — не считаются. Стили проверяются визуально / через snapshot на уровне
+// компонентов, а не unit-тестами на сам файл стилей.
 const CODE_FILE_RE =
-  /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|astro|py|go|rs|rb|java|kt|kts|scala|php|cs|fs|fsx|ex|exs|clj|cljs|erl|hs|ml|mli|swift|dart|lua|sh|bash|zsh|fish|ps1|sql|html|htm|css|scss|sass|less)$/i;
+  /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|astro|py|go|rs|rb|java|kt|kts|scala|php|cs|fs|fsx|ex|exs|clj|cljs|erl|hs|ml|mli|swift|dart|lua|sh|bash|zsh|fish|ps1|sql)$/i;
 
 function isCodeFile(fp) {
   return CODE_FILE_RE.test(String(fp || ""));
@@ -210,6 +212,8 @@ const SKIP_PATH_PATTERNS = [
   // покрывается unit-тестами). config/ и deploy/ намеренно НЕ включены —
   // там бывает реальная логика; для них юзер ставит MAIN_SKILL_VERIFY_IGNORE_GLOBS.
   /(^|\/)(infra|infrastructure)\//i,
+  // Jest module mocks — конвенция, не application-код.
+  /(^|\/)__mocks__\//i,
 ];
 
 // Filename-паттерны.
@@ -230,6 +234,8 @@ const SKIP_FILENAME_PATTERNS = [
   // run.sh / entrypoint.sh / healthcheck.sh намеренно НЕ включены — слишком
   // generic, может содержать реальную логику.
   /(^|\/)(install|deploy|bootstrap|setup|provision|teardown|sync[-_]config)\.sh$/i,
+  // Storybook stories — визуальные fixtures, не unit-тестируются как код.
+  /\.stories\.(tsx|jsx|ts|js)$/i,
 ];
 
 const GENERATED_HEADER_RE =
