@@ -65,7 +65,7 @@ sh -n hooks/session-start.sh
 
 Источник истины — `SKIP_PATH_PATTERNS` / `SKIP_FILENAME_PATTERNS` в `hooks/lib/checks.js`. Если меняешь — синхронизируй и advertise-message в `verify-changes.js` (`reasonD`), и эту секцию.
 
-- **Path-skip**: `migrations?/`, `migrate/`, `alembic/`, `seed(ers|s)?/`, `fixtures?/`, `locales?/i18n/translations?/`, `__generated__/`, `.generated/`, `start/`, `bootstrap/`, `infra/`, `infrastructure/`, `__mocks__/`.
+- **Path-skip**: `migrations?/`, `migrate/`, `alembic/`, `seed(ers|s)?/`, `fixtures?/`, `locales?/i18n/translations?/`, `__generated__/`, `.generated/`, `start/`, `bootstrap/`, `infra/`, `infrastructure/`, `__mocks__/` (применяется на любой глубине: `src/__mocks__/`, `packages/foo/__mocks__/lib/x.ts` — всё внутри `__mocks__/` считается Jest-моками; компромисс — если положить туда реальную логику, она не будет требовать тест).
 - **Filename-skip**: timestamped migrations, `*.d.ts`, `*.generated.*`, `*.gen.*`, `*.pb.go`, `*_pb2(_grpc)?.py`, `*.sql.go`, framework-configs (`vite|next|nuxt|svelte|astro|tailwind|postcss|babel|jest|vitest|rollup|tsup|webpack|esbuild|drizzle|playwright`), операционные shell-скрипты (`install|deploy|bootstrap|setup|provision|teardown|sync[-_]config`).sh, Storybook stories (`*.stories.{tsx,jsx,ts,js}`).
 - **Content-skip**: `@generated` заголовок, type-only TS-файлы (только `interface`/`type`/`const enum`).
 - **Не code-файлы для триггера D** (`isCodeFile = false`, никакого парного теста не ищется): стили `.css/.scss/.sass/.less` и разметка `.html/.htm` — визуальная верификация, не unit-тест на сам файл стилей.

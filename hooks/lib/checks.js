@@ -235,6 +235,8 @@ const SKIP_FILENAME_PATTERNS = [
   // generic, может содержать реальную логику.
   /(^|\/)(install|deploy|bootstrap|setup|provision|teardown|sync[-_]config)\.sh$/i,
   // Storybook stories — визуальные fixtures, не unit-тестируются как код.
+  // .mdx-stories здесь намеренно отсутствуют — они отфильтровываются раньше
+  // через DOC_FILE_RE / classify()='docs' до достижения triggera D.
   /\.stories\.(tsx|jsx|ts|js)$/i,
 ];
 
