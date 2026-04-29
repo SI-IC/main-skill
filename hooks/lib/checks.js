@@ -206,6 +206,9 @@ const SKIP_PATH_PATTERNS = [
   /(^|\/)(locales?|i18n|translations?)\//i,
   /(^|\/)(__generated__|\.generated)\//i,
   /(^|\/)(start|bootstrap)\//i,
+  // Operational / wiring directories: deploy/install/bootstrap скрипты,
+  // конфиг-объекты без логики. Содержимое не покрывается unit-тестами.
+  /(^|\/)(infra|infrastructure|deploy|config)\//i,
 ];
 
 // Filename-паттерны.
@@ -222,6 +225,8 @@ const SKIP_FILENAME_PATTERNS = [
   /\.sql\.go$/i,
   // Framework configs (без логики, для них тестов не пишут).
   /(^|\/)(vite|next|nuxt|svelte|astro|tailwind|postcss|babel|jest|vitest|rollup|tsup|webpack|esbuild|drizzle|playwright)\.config\.(ts|tsx|js|jsx|mjs|cjs)$/i,
+  // Operational shell-scripts (deploy/install/bootstrap по любому пути).
+  /(^|\/)(install|deploy|bootstrap|setup|provision|teardown|sync[-_]config|run|entrypoint|healthcheck)\.sh$/i,
 ];
 
 const GENERATED_HEADER_RE =

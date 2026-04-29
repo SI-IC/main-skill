@@ -488,6 +488,45 @@ test("shouldSkipForTestPairing: wiring/start/bootstrap", () => {
   assert.ok(checks.shouldSkipForTestPairing("bootstrap/app.ts"));
 });
 
+test("shouldSkipForTestPairing: infra/ deploy/ config/ — operational/wiring каталоги", () => {
+  assert.ok(checks.shouldSkipForTestPairing("infra/server/bootstrap.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("infra/server/lib/common.sh"));
+  assert.ok(
+    checks.shouldSkipForTestPairing("infra/server/templates/ufw-rules.sh"),
+  );
+  assert.ok(
+    checks.shouldSkipForTestPairing("/workspace/infra/server/install.sh"),
+  );
+  assert.ok(
+    checks.shouldSkipForTestPairing("infrastructure/k8s/manifests.yaml"),
+  );
+  assert.ok(checks.shouldSkipForTestPairing("deploy/staging.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("backend/config/database.ts"));
+  assert.ok(checks.shouldSkipForTestPairing("apps/web/config/env.ts"));
+  // boundary: не путать с произвольным префиксом
+  assert.ok(!checks.shouldSkipForTestPairing("src/myinfra/foo.ts"));
+  assert.ok(!checks.shouldSkipForTestPairing("src/myconfig.ts"));
+  assert.ok(!checks.shouldSkipForTestPairing("src/configurator/parser.ts"));
+});
+
+test("shouldSkipForTestPairing: операционные shell-скрипты по имени файла", () => {
+  assert.ok(checks.shouldSkipForTestPairing("install.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("deploy.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("bootstrap.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("setup.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("provision.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("teardown.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("sync-config.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("sync_config.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("entrypoint.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("healthcheck.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("scripts/install.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("/workspace/deploy.sh"));
+  // boundary: не путать с произвольным префиксом/суффиксом
+  assert.ok(!checks.shouldSkipForTestPairing("my-deploy.sh"));
+  assert.ok(!checks.shouldSkipForTestPairing("install-deps.sh"));
+});
+
 test("shouldSkipForTestPairing: type-only файл по содержимому (только interface/type/const enum)", () => {
   const dir = tmp();
   writeFile(
