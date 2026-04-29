@@ -473,6 +473,13 @@ test("shouldSkipForTestPairing: framework configs", () => {
   assert.ok(checks.shouldSkipForTestPairing("tailwind.config.js"));
   assert.ok(checks.shouldSkipForTestPairing("jest.config.cjs"));
   assert.ok(checks.shouldSkipForTestPairing("postcss.config.js"));
+  assert.ok(checks.shouldSkipForTestPairing("playwright.config.ts"));
+  assert.ok(checks.shouldSkipForTestPairing("playwright.config.js"));
+  assert.ok(checks.shouldSkipForTestPairing("playwright.config.mjs"));
+  assert.ok(checks.shouldSkipForTestPairing("/workspace/playwright.config.ts"));
+  assert.ok(checks.shouldSkipForTestPairing("apps/web/playwright.config.ts"));
+  // boundary: не путать с произвольным префиксом
+  assert.ok(!checks.shouldSkipForTestPairing("src/myplaywright.config.ts"));
 });
 
 test("shouldSkipForTestPairing: wiring/start/bootstrap", () => {

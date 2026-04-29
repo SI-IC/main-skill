@@ -221,7 +221,7 @@ const SKIP_FILENAME_PATTERNS = [
   /_pb2(_grpc)?\.py$/i,
   /\.sql\.go$/i,
   // Framework configs (без логики, для них тестов не пишут).
-  /(^|\/)(vite|next|nuxt|svelte|astro|tailwind|postcss|babel|jest|vitest|rollup|tsup|webpack|esbuild|drizzle)\.config\.(ts|tsx|js|jsx|mjs|cjs)$/i,
+  /(^|\/)(vite|next|nuxt|svelte|astro|tailwind|postcss|babel|jest|vitest|rollup|tsup|webpack|esbuild|drizzle|playwright)\.config\.(ts|tsx|js|jsx|mjs|cjs)$/i,
 ];
 
 const GENERATED_HEADER_RE =
