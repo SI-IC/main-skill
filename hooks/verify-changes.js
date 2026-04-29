@@ -27,6 +27,16 @@ const fs = require("fs");
 const path = require("path");
 const checks = require("./lib/checks");
 
+// Cap для чтения transcript: ~50 MB. Real transcripts < 5 MB; большие чаще
+// признак подделки или сессии с image-вложениями. Над лимитом — silent exit.
+const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024;
+
+// Strip ANSI/control-chars из строк, которые приходят из transcript и идут
+// в stdout/stderr. Защита от terminal-injection через имена файлов.
+function sanitize(s) {
+  return String(s == null ? "" : s).replace(/[\x00-\x1f\x7f]/g, "");
+}
+
 let payload = "";
 process.stdin.on("data", (c) => (payload += c));
 process.stdin.on("end", () => {
@@ -48,8 +58,20 @@ function main(p) {
   const tp = p.transcript_path;
   if (!tp || !fs.existsSync(tp)) return;
 
+  // Защита от слепого чтения произвольного файла: resolve symlinks, требуем
+  // регулярный файл, размер в пределах cap-а. Любая аномалия — silent exit.
+  let resolvedTp;
+  try {
+    resolvedTp = fs.realpathSync(tp);
+    const st = fs.statSync(resolvedTp);
+    if (!st.isFile()) return;
+    if (st.size > MAX_TRANSCRIPT_BYTES) return;
+  } catch {
+    return;
+  }
+
   const lines = fs
-    .readFileSync(tp, "utf8")
+    .readFileSync(resolvedTp, "utf8")
     .split("\n")
     .filter((l) => l.trim())
     .map((l) => {
@@ -630,7 +652,7 @@ function main(p) {
     "ни среди правок этой сессии. Запрещено правилом workflow-rules §3 («happy path NOT enough»).",
     "",
     "Файлы без тестов:",
-    ...(triggerData?.missingTests || []).map((f) => `  • ${f}`),
+    ...(triggerData?.missingTests || []).map((f) => `  • ${sanitize(f)}`),
     "",
     "Конвенции, по которым ищу парный тест (mirror-discovery в monorepo):",
     "  • <name>.test.<ext> / <name>.spec.<ext> рядом с src",
@@ -669,7 +691,7 @@ function main(p) {
     "(например @japa/api-client / supertest / playwright / cypress).",
     "",
     "Без e2e-теста:",
-    ...(triggerData?.missingE2e || []).map((f) => `  • ${f}`),
+    ...(triggerData?.missingE2e || []).map((f) => `  • ${sanitize(f)}`),
     "",
     "Ищу в: tests/functional/, tests/e2e/, tests/integration/, e2e/, cypress/e2e/, playwright/.",
     "",
@@ -714,7 +736,10 @@ function main(p) {
       "[main-skill:verify-changes] Stop заблокирован (триггер F: декларация edge-cases невалидна).",
       "",
       "Невалидные записи в блоке <edge-cases>:",
-      ...failed.map((v) => `  • ${v.entry?.raw || "<unparsed>"} — ${v.reason}`),
+      ...failed.map(
+        (v) =>
+          `  • ${sanitize(v.entry?.raw || "<unparsed>")} — ${sanitize(v.reason)}`,
+      ),
       "",
       "Каждая запись должна быть name:test_file:test_name; test_file существует;",
       "в нём — it/test/describe/def, чьё имя содержит test_name (case-insensitive).",
@@ -745,7 +770,7 @@ function main(p) {
     "CLAUDE.md плагина: «Меняешь поведение/контракт/CLI/конфиг — обнови доки в том же изменении».",
     "",
     "Public surface tронут:",
-    ...(triggerData?.publicEdits || []).map((f) => `  • ${f}`),
+    ...(triggerData?.publicEdits || []).map((f) => `  • ${sanitize(f)}`),
     "",
     "Сделай: пройди grep по старому контракту, обнови README / SKILL.md / docs/* в той же сессии.",
     "",
@@ -887,7 +912,8 @@ function main(p) {
         "",
         "Невалидные записи:",
         ...(triggerData.failed || []).map(
-          (v) => `  • ${v.entry?.raw || "<unparsed>"} — ${v.reason}`,
+          (v) =>
+            `  • ${sanitize(v.entry?.raw || "<unparsed>")} — ${sanitize(v.reason)}`,
         ),
         "",
         ...slopHelp,

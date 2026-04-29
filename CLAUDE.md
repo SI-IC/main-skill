@@ -73,6 +73,17 @@ sh -n hooks/session-start.sh
 
 Принцип: skip-default-ы консервативные (low false-negatives). Project-specific tradeoff делается на уровне проекта env-переменной, не глобальным паттерном.
 
+## Hardening hook input
+
+`verify-changes.js` принимает `transcript_path` через stdin и читает файл с диска. Защиты:
+
+- `realpathSync` — резолвит symlinks, чтобы attacker не мог через `~/.claude/x.jsonl → /etc/passwd` подсунуть произвольный файл.
+- `isFile()` guard — отказ если путь это директория, FIFO, socket. Иначе хук может застрять на блокирующем чтении.
+- `MAX_TRANSCRIPT_BYTES = 50 MB` — отказ на больших файлах. Без cap-а длинная сессия с image-вложениями могла бы съесть OOM Node-процесс.
+- `sanitize(s)` стрипует все control-chars (`[\x00-\x1f\x7f]`) перед эхо в `reason`. Без него имя файла вида `src/\x1b[2K\x1b[1Aevil.ts` (ANSI-инжекция) при выводе перезапишет предыдущие строки терминала юзера.
+
+Любая аномалия (broken symlink, не файл, размер свыше cap-а, exception на stat) — silent exit без `decision:block`. Хук должен fail-soft, чтобы не блокировать Stop из-за инфраструктурной странности.
+
 ## Размер SKILL.md
 
 Целевой кап — **под 5000 токенов** (≈ 20KB ASCII / ~12KB Cyrillic-heavy), потому что после компакции Claude Code перезагружает только первые 5000 токенов каждого вызванного skill. Контент за капом — в `references/*.md` со ссылкой из SKILL.md, либо в этот CLAUDE.md (если только dev-facing).
