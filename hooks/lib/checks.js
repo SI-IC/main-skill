@@ -206,9 +206,10 @@ const SKIP_PATH_PATTERNS = [
   /(^|\/)(locales?|i18n|translations?)\//i,
   /(^|\/)(__generated__|\.generated)\//i,
   /(^|\/)(start|bootstrap)\//i,
-  // Operational / wiring directories: deploy/install/bootstrap скрипты,
-  // конфиг-объекты без логики. Содержимое не покрывается unit-тестами.
-  /(^|\/)(infra|infrastructure|deploy|config)\//i,
+  // Infra-as-code / operational scripts directory (almost универсально не
+  // покрывается unit-тестами). config/ и deploy/ намеренно НЕ включены —
+  // там бывает реальная логика; для них юзер ставит MAIN_SKILL_VERIFY_IGNORE_GLOBS.
+  /(^|\/)(infra|infrastructure)\//i,
 ];
 
 // Filename-паттерны.
@@ -225,8 +226,10 @@ const SKIP_FILENAME_PATTERNS = [
   /\.sql\.go$/i,
   // Framework configs (без логики, для них тестов не пишут).
   /(^|\/)(vite|next|nuxt|svelte|astro|tailwind|postcss|babel|jest|vitest|rollup|tsup|webpack|esbuild|drizzle|playwright)\.config\.(ts|tsx|js|jsx|mjs|cjs)$/i,
-  // Operational shell-scripts (deploy/install/bootstrap по любому пути).
-  /(^|\/)(install|deploy|bootstrap|setup|provision|teardown|sync[-_]config|run|entrypoint|healthcheck)\.sh$/i,
+  // Operational shell-scripts по любому пути. Имена выбраны однозначные:
+  // run.sh / entrypoint.sh / healthcheck.sh намеренно НЕ включены — слишком
+  // generic, может содержать реальную логику.
+  /(^|\/)(install|deploy|bootstrap|setup|provision|teardown|sync[-_]config)\.sh$/i,
 ];
 
 const GENERATED_HEADER_RE =

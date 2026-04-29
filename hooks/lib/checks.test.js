@@ -488,7 +488,7 @@ test("shouldSkipForTestPairing: wiring/start/bootstrap", () => {
   assert.ok(checks.shouldSkipForTestPairing("bootstrap/app.ts"));
 });
 
-test("shouldSkipForTestPairing: infra/ deploy/ config/ — operational/wiring каталоги", () => {
+test("shouldSkipForTestPairing: infra/ infrastructure/ — IaC/operational каталоги", () => {
   assert.ok(checks.shouldSkipForTestPairing("infra/server/bootstrap.sh"));
   assert.ok(checks.shouldSkipForTestPairing("infra/server/lib/common.sh"));
   assert.ok(
@@ -500,13 +500,13 @@ test("shouldSkipForTestPairing: infra/ deploy/ config/ — operational/wiring к
   assert.ok(
     checks.shouldSkipForTestPairing("infrastructure/k8s/manifests.yaml"),
   );
-  assert.ok(checks.shouldSkipForTestPairing("deploy/staging.sh"));
-  assert.ok(checks.shouldSkipForTestPairing("backend/config/database.ts"));
-  assert.ok(checks.shouldSkipForTestPairing("apps/web/config/env.ts"));
   // boundary: не путать с произвольным префиксом
   assert.ok(!checks.shouldSkipForTestPairing("src/myinfra/foo.ts"));
-  assert.ok(!checks.shouldSkipForTestPairing("src/myconfig.ts"));
-  assert.ok(!checks.shouldSkipForTestPairing("src/configurator/parser.ts"));
+  // config/ и deploy/ намеренно НЕ skip-ятся (могут содержать логику);
+  // юзер выключает их через MAIN_SKILL_VERIFY_IGNORE_GLOBS на уровне проекта.
+  assert.ok(!checks.shouldSkipForTestPairing("backend/config/database.ts"));
+  assert.ok(!checks.shouldSkipForTestPairing("apps/web/config/env.ts"));
+  assert.ok(!checks.shouldSkipForTestPairing("deploy/staging.sh"));
 });
 
 test("shouldSkipForTestPairing: операционные shell-скрипты по имени файла", () => {
@@ -518,13 +518,15 @@ test("shouldSkipForTestPairing: операционные shell-скрипты п
   assert.ok(checks.shouldSkipForTestPairing("teardown.sh"));
   assert.ok(checks.shouldSkipForTestPairing("sync-config.sh"));
   assert.ok(checks.shouldSkipForTestPairing("sync_config.sh"));
-  assert.ok(checks.shouldSkipForTestPairing("entrypoint.sh"));
-  assert.ok(checks.shouldSkipForTestPairing("healthcheck.sh"));
   assert.ok(checks.shouldSkipForTestPairing("scripts/install.sh"));
   assert.ok(checks.shouldSkipForTestPairing("/workspace/deploy.sh"));
   // boundary: не путать с произвольным префиксом/суффиксом
   assert.ok(!checks.shouldSkipForTestPairing("my-deploy.sh"));
   assert.ok(!checks.shouldSkipForTestPairing("install-deps.sh"));
+  // generic ops-имена намеренно НЕ skip-ятся — могут содержать логику.
+  assert.ok(!checks.shouldSkipForTestPairing("entrypoint.sh"));
+  assert.ok(!checks.shouldSkipForTestPairing("healthcheck.sh"));
+  assert.ok(!checks.shouldSkipForTestPairing("run.sh"));
 });
 
 test("shouldSkipForTestPairing: type-only файл по содержимому (только interface/type/const enum)", () => {
