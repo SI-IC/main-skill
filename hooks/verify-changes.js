@@ -14,6 +14,7 @@
 //   H — public surface изменён без обновления *.md / docs/* в этой же сессии.
 //   J — нет валидного <self-review> блока (code+security ревью своими силами).
 //   K — <review-triage> отсутствует / невалиден / содержит slop-only обоснования.
+//   L — manifest dep добавлен/изменён без version-lookup в реестре в этой сессии.
 //
 // Опт-ауты:
 //   MAIN_SKILL_VERIFY_CHANGES=0   — все триггеры выкл.
@@ -21,6 +22,7 @@
 //   MAIN_SKILL_VERIFY_REVIEW=0    — выкл J/K.
 //   MAIN_SKILL_VERIFY_REVIEW=code — требовать только code-review секцию.
 //   MAIN_SKILL_VERIFY_REVIEW=security — требовать только security-review секцию.
+//   MAIN_SKILL_VERIFY_DEPS=0      — выкл только L.
 // Старое имя переменной тоже уважается: MAIN_SKILL_VERIFY_FRONTEND=0.
 
 const fs = require("fs");
@@ -33,8 +35,15 @@ const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024;
 
 // Strip ANSI/control-chars из строк, которые приходят из transcript и идут
 // в stdout/stderr. Защита от terminal-injection через имена файлов.
+// - C0 controls + DEL: [\x00-\x1f\x7f]
+// - C1 controls (8-bit ESC esc.): [\x80-\x9f] — U+009B = CSI в 8-bit режиме,
+//   xterm/gnome-terminal интерпретируют как ESC [ → cursor-up / line-erase.
+// - BiDi overrides (U+202A-202E, U+2066-2069) — не control-chars, но позволяют
+//   спуфить расширения файлов: `package.json‮gnp.exe` рендерится как `package.jsonexe.png`.
 function sanitize(s) {
-  return String(s == null ? "" : s).replace(/[\x00-\x1f\x7f]/g, "");
+  return String(s == null ? "" : s)
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+    .replace(/[‪-‮⁦-⁩]/g, "");
 }
 
 let payload = "";
@@ -561,6 +570,32 @@ function main(p) {
     }
   }
 
+  // L: manifest dep добавлен без version-lookup. Работает независимо от observable-правок
+  // — package.json / .github/workflows/*.yml classify-ятся как 'config', т.е. lastEditIdx
+  // на них может быть -1, но dep всё равно нужен lookup. Условия: hasSuccess + есть
+  // manifest-edits в сессии + есть deps без lookup. Anti-loop: если был блок после
+  // последней manifest-правки — даём слово пользователю.
+  if (!trigger && hasSuccess && process.env.MAIN_SKILL_VERIFY_DEPS !== "0") {
+    const addedDeps = checks.collectManifestDepsFromEdits(lines);
+    if (addedDeps.length > 0) {
+      // Найдём idx последней правки manifest-файла для anti-loop guard.
+      let lastManifestEditIdx = -1;
+      const MANIFEST_RE =
+        /(^|\/)(package\.json|requirements[\w-]*\.txt|constraints\.txt|pyproject\.toml|Cargo\.toml|go\.mod|Dockerfile(\.[\w-]+)?|\.nvmrc|\.python-version|\.tool-versions)$|(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/;
+      for (const e of allEdits) {
+        if (MANIFEST_RE.test(e.file_path)) lastManifestEditIdx = e.idx;
+      }
+      if (!(lastBlockIdx > lastManifestEditIdx)) {
+        const lookupMap = checks.findVersionLookups(lines);
+        const missing = checks.getDepsWithoutLookup(addedDeps, lookupMap);
+        if (missing.length > 0) {
+          trigger = "L";
+          triggerData = { missing };
+        }
+      }
+    }
+  }
+
   if (!trigger) return;
 
   const hintsByKind = {
@@ -949,6 +984,60 @@ function main(p) {
     ].join("\n");
   })();
 
+  const reasonL = (() => {
+    const missing = triggerData?.missing || [];
+    const byType = {};
+    for (const d of missing) {
+      const k = d.type;
+      (byType[k] = byType[k] || []).push(d);
+    }
+    const lookupCmd = {
+      npm: "npm view <pkg> version  (или: pnpm/yarn/bun view|info|show <pkg>)",
+      pip: "pip index versions <pkg>",
+      cargo: "cargo search <pkg> --limit 1",
+      go: "go list -m -versions <module>",
+      docker:
+        "docker manifest inspect <image>:<tag> или https://hub.docker.com/_/<image>",
+      "gh-action":
+        "gh api repos/<org>/<repo>/releases/latest или https://github.com/<org>/<repo>/releases",
+      runtime:
+        "https://endoflife.date/api/<product>.json (node: https://nodejs.org/dist/index.json)",
+    };
+    const head = [
+      "[main-skill:verify-changes] Stop заблокирован (триггер L: dep добавлен без version-lookup).",
+      "",
+      "Ты добавил/обновил зависимость(и) в manifest-файле, но в этой сессии НЕ запросил",
+      "актуальную версию из реестра. Знания модели о версиях устаревают на месяцы —",
+      "правило workflow-rules «Свежие версии при init / add-dep» обязывает сделать lookup",
+      "в реестре до выбора версии.",
+      "",
+      "Зависимости без lookup-а:",
+    ];
+    const body = [];
+    for (const [type, deps] of Object.entries(byType)) {
+      body.push(`  ${type}:`);
+      for (const d of deps) {
+        body.push(
+          `    • ${sanitize(d.name)}@${sanitize(d.version)} (${sanitize(d.file_path)})`,
+        );
+      }
+      body.push(`    → запусти: ${lookupCmd[type] || "<реестр>"}`);
+    }
+    const tail = [
+      "",
+      "После lookup-а: используй latest stable / LTS. В существующем проекте latest",
+      "подчинён совместимости — если peer-dep / project-target / другой пакет требует ≤N,",
+      "бери максимально свежую совместимую и объяви ограничение в формате",
+      "«ставлю X@N вместо latest M, потому что Y требует ≤N».",
+      "",
+      "Любое другое отклонение от latest (личное предпочтение, опасение, привычка) —",
+      "спроси «использую X вместо latest Y, причина: Z — ок?» и дождись ack.",
+      "",
+      "Опт-аут (для проектов с фиксированным стеком): MAIN_SKILL_VERIFY_DEPS=0",
+    ];
+    return [...head, ...body, ...tail].join("\n");
+  })();
+
   const reasonByTrigger = {
     A: reasonA,
     B: reasonB,
@@ -960,6 +1049,7 @@ function main(p) {
     H: reasonH,
     J: reasonJ,
     K: reasonK,
+    L: reasonL,
   };
   const reason = reasonByTrigger[trigger] || reasonA;
   process.stdout.write(JSON.stringify({ decision: "block", reason }));

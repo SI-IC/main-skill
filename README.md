@@ -39,13 +39,13 @@ Opt out of the update check with `export MAIN_SKILL_AUTO_UPDATE=0`.
 
 `hooks/auto-format.js` runs after every `Edit` / `Write` / `MultiEdit` / `NotebookEdit` and formats the file in-place using the right tool for the language:
 
-| Extensions | Formatter | Install (auto-detected) |
-| --- | --- | --- |
-| `.js .jsx .ts .tsx .mjs .cjs .css .scss .sass .less .html .json .yaml .md .mdx .vue .svelte .graphql` | `prettier` | `bun add -d prettier` (bun.lockb) → `pnpm add -D prettier` (pnpm-lock.yaml) → `yarn add -D prettier` (yarn.lock) → `npm install -D prettier` |
-| `.py .pyi` | `ruff format` (fallback `black`) | `uv add --dev ruff` (uv.lock) → `poetry add --group dev ruff` (poetry.lock) → `pipenv install --dev ruff` (Pipfile) → `pip install ruff` |
-| `.go` | `gofmt -w` | (ships with Go SDK — install Go) |
-| `.rs` | `rustfmt` | `rustup component add rustfmt` |
-| `.c .cpp .cc .h .hpp .m .mm` | `clang-format -i` | `brew install clang-format` (macOS) |
+| Extensions                                                                                            | Formatter                        | Install (auto-detected)                                                                                                                      |
+| ----------------------------------------------------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.js .jsx .ts .tsx .mjs .cjs .css .scss .sass .less .html .json .yaml .md .mdx .vue .svelte .graphql` | `prettier`                       | `bun add -d prettier` (bun.lockb) → `pnpm add -D prettier` (pnpm-lock.yaml) → `yarn add -D prettier` (yarn.lock) → `npm install -D prettier` |
+| `.py .pyi`                                                                                            | `ruff format` (fallback `black`) | `uv add --dev ruff` (uv.lock) → `poetry add --group dev ruff` (poetry.lock) → `pipenv install --dev ruff` (Pipfile) → `pip install ruff`     |
+| `.go`                                                                                                 | `gofmt -w`                       | (ships with Go SDK — install Go)                                                                                                             |
+| `.rs`                                                                                                 | `rustfmt`                        | `rustup component add rustfmt`                                                                                                               |
+| `.c .cpp .cc .h .hpp .m .mm`                                                                          | `clang-format -i`                | `brew install clang-format` (macOS)                                                                                                          |
 
 Search order: project-local (`node_modules/.bin/`, `.venv/bin/`, `venv/bin/`) → global PATH. If the formatter is missing, the hook returns `additionalContext` to Claude with the exact install command for the detected package manager — Claude installs and re-applies the edit. Lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `Cargo.lock`, etc.), `*.min.js/css`, and files inside `node_modules`/`dist`/`build`/`.next`/`target`/`vendor`/`.git` are skipped.
 
@@ -62,11 +62,13 @@ export MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/legacy/**:**/scripts/**:packages/proto
 ```
 
 Hard opt-outs:
+
 - `MAIN_SKILL_VERIFY_CHANGES=0` — disable all hook triggers.
 - `MAIN_SKILL_VERIFY_LINT=0` — keep test/docs checks but skip auto-lint.
 - `MAIN_SKILL_VERIFY_REVIEW=0` — disable J/K (self-review + review-triage).
 - `MAIN_SKILL_VERIFY_REVIEW=code` — require only code-review section.
 - `MAIN_SKILL_VERIFY_REVIEW=security` — require only security-review section.
+- `MAIN_SKILL_VERIFY_DEPS=0` — disable L (dep version-lookup enforcement). Useful for projects with a frozen lockfile where dep upgrades are batched manually.
 
 ## Editing the rules
 

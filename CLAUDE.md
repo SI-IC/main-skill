@@ -73,6 +73,37 @@ sh -n hooks/session-start.sh
 
 Принцип: skip-default-ы консервативные (low false-negatives). Project-specific tradeoff делается на уровне проекта env-переменной, не глобальным паттерном.
 
+## Триггер L — dep version-lookup enforcement
+
+`verify-changes.js` детектит правки manifest-файлов через `collectManifestDepsFromEdits` (parses **то что Claude написал в Edit/Write/MultiEdit** — не итог на диске, чтобы не флагать legacy deps). Поддержанные форматы — в `parseManifestDeps` (`hooks/lib/checks.js`):
+
+- `package.json` (JSON.parse целиком + regex-fallback для фрагментов; `engines.node` → type=runtime)
+- `requirements*.txt` / `constraints.txt`
+- `pyproject.toml` (`[project.dependencies]` PEP-621, `[tool.poetry.dependencies]`)
+- `Cargo.toml` (`[dependencies]` / `[dev-dependencies]` / `[build-dependencies]`)
+- `go.mod` (require block + single-line require + `go 1.x` → runtime)
+- `Dockerfile`, `Dockerfile.<suffix>` (FROM lines; `latest` / `scratch` / без tag — skip)
+- `.nvmrc`, `.python-version`, `.tool-versions` (asdf)
+- `.github/workflows/*.yml` (`uses: org/repo@vX`; локальные `./...` — skip)
+
+Lookup-детектор `findVersionLookups` ловит:
+
+- Bash: `npm view|info|show <pkg>`, `pip3? index versions <pkg>` / `pip show`, `cargo search <pkg>`, `go list -m -versions`, `gh api repos/<org>/<repo>/releases`, `git ls-remote <github-url>`, `docker manifest inspect`
+- WebFetch / WebSearch: `endoflife.date/api/<product>` (норм. `nodejs`→`node`), `nodejs.org/dist`, `python.org/downloads`, `registry.npmjs.org/<pkg>`, `npmjs.com/package/<pkg>`, `pypi.org/(pypi|project)/<pkg>`, `crates.io/(api/v\d+/)?crates/<pkg>`, `pkg.go.dev/<module>`, `proxy.golang.org/<module>`, `hub.docker.com/(_|r/<owner>)/<image>`, `github.com/<org>/<repo>/releases`
+- Cross-type fallback: lookup в `runtime` покрывает совпадающее имя в `docker` и наоборот (FROM node:18 + endoflife/api/nodejs → ОК).
+
+Loose-версии не требуют lookup-а: `latest`, `*`, `x`, `>=0`, голый `>=`. Так Claude может явно писать «не пиню» — пакет-менеджер резолвит latest при install.
+
+Размещение в pipeline: L срабатывает **отдельно** от ветки `if (lastEditIdx >= 0)` — потому что `package.json`/`*.yml` classify-ятся как `config`, не `observable`. Anti-loop guard: если `lastBlockIdx > lastManifestEditIdx` — пропускаем (юзер ещё не ответил на предыдущий блок).
+
+**Known limitations:**
+
+- **Корпоративные прокси npm/pypi** (Verdaccio, Artifactory, JFrog) — `WebFetch verdaccio.corp/<pkg>` НЕ ловится; считается false-negative для трига L. Workaround: `MAIN_SKILL_VERIFY_DEPS=0` в проектах с приватным registry, либо альтернативный lookup через `npm view` (его ловит).
+- **`[project.optional-dependencies]`** в pyproject.toml как массив строк — не парсится (только `[project.dependencies]`). Минор, optional-deps редко критичны.
+- **Docker SHA-pinned** (`FROM node@sha256:...`) — silently skip (SHA-pin = максимально специфичен, lookup не нужен). Корректное поведение, не баг.
+
+Любая правка форматов → синхронизируй парсер, тесты в `checks.test.js`, integration-тесты в `verify-changes.test.js`, advertise-message `reasonL` в `verify-changes.js`, и эту секцию.
+
 ## Hardening hook input
 
 `verify-changes.js` принимает `transcript_path` через stdin и читает файл с диска. Защиты:

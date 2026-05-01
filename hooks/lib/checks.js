@@ -1090,6 +1090,527 @@ function validateReviewTriage(parsed) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Триггер L: парсеры manifest-форматов + сбор version-lookup-ов из transcript
+// ────────────────────────────────────────────────────────────────────────────
+
+// Топ-уровневые поля package.json — НЕ являются dependency-ями. Используется
+// для фильтрации при regex-парсинге фрагментов (когда JSON.parse целиком не
+// проходит).
+const _PKG_TOPLEVEL_FIELDS = new Set([
+  "name",
+  "version",
+  "description",
+  "main",
+  "type",
+  "private",
+  "license",
+  "author",
+  "homepage",
+  "bugs",
+  "repository",
+  "keywords",
+  "files",
+  "bin",
+  "scripts",
+  "config",
+  "browserslist",
+  "publishConfig",
+  "workspaces",
+  "module",
+  "types",
+  "typings",
+  "exports",
+  "imports",
+  "sideEffects",
+  "engines",
+  "os",
+  "cpu",
+  "funding",
+  "contributors",
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "optionalDependencies",
+  "peerDependenciesMeta",
+  "bundledDependencies",
+  "bundleDependencies",
+  "resolutions",
+  "overrides",
+  "packageManager",
+]);
+
+const _RUNTIME_NAME_RE =
+  /^(node|nodejs|npm|yarn|pnpm|bun|deno|python|python3|ruby|go|golang|rust|java|jdk|kotlin|php|dotnet|swift|elixir|erlang)$/i;
+
+function _parsePackageJson(content) {
+  const out = [];
+  let parsed = null;
+  try {
+    parsed = JSON.parse(content);
+  } catch {}
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    for (const key of [
+      "dependencies",
+      "devDependencies",
+      "peerDependencies",
+      "optionalDependencies",
+    ]) {
+      const block = parsed[key];
+      if (block && typeof block === "object") {
+        for (const [name, version] of Object.entries(block)) {
+          if (typeof version === "string")
+            out.push({ type: "npm", name, version });
+        }
+      }
+    }
+    if (parsed.engines && typeof parsed.engines === "object") {
+      for (const [name, version] of Object.entries(parsed.engines)) {
+        if (typeof version === "string")
+          out.push({ type: "runtime", name, version });
+      }
+    }
+    return out;
+  }
+  // Fragment fallback — regex pass.
+  for (const m of String(content).matchAll(
+    /"([@a-zA-Z0-9._\-/]+)"\s*:\s*"([^"]+)"/g,
+  )) {
+    const name = m[1];
+    const version = m[2];
+    if (_PKG_TOPLEVEL_FIELDS.has(name)) continue;
+    if (
+      !/^[\^~>=<]?\s*\d/.test(version) &&
+      !/^(latest|next|beta|alpha|rc|\*|x)$/i.test(version)
+    )
+      continue;
+    if (_RUNTIME_NAME_RE.test(name)) {
+      out.push({ type: "runtime", name, version });
+    } else {
+      out.push({ type: "npm", name, version });
+    }
+  }
+  return out;
+}
+
+function _parsePepReq(s) {
+  const m = String(s).match(/^([A-Za-z][A-Za-z0-9._\-]*)/);
+  if (!m) return null;
+  return { name: m[1], version: s.slice(m[1].length).trim() || "*" };
+}
+
+function _parseRequirementsTxt(content) {
+  const out = [];
+  for (const rawLine of String(content).split("\n")) {
+    const line = rawLine.replace(/#.*/, "").trim();
+    if (!line) continue;
+    if (
+      line.startsWith("-r ") ||
+      line.startsWith("-c ") ||
+      line.startsWith("--") ||
+      line.startsWith("-e ")
+    )
+      continue;
+    const m = line.match(
+      /^([A-Za-z][A-Za-z0-9._\-]*)(\[[^\]]+\])?\s*([=<>~!]+\s*[^\s;]+)?/,
+    );
+    if (!m) continue;
+    const name = m[1];
+    const version =
+      (m[3] || "")
+        .replace(/\s+/g, "")
+        .replace(/^[=<>~!]+/, "")
+        .trim() || "*";
+    out.push({ type: "pip", name, version });
+  }
+  return out;
+}
+
+function _parsePyprojectToml(content) {
+  const out = [];
+  const lines = String(content).split("\n");
+  let section = null;
+  let inListDeps = false;
+  const POETRY_DEP_SECTIONS = new Set([
+    "tool.poetry.dependencies",
+    "tool.poetry.dev-dependencies",
+    "tool.poetry.group.dev.dependencies",
+    "tool.poetry.group.test.dependencies",
+    "project.dependencies",
+    "dependency-groups",
+  ]);
+  const collectInline = (s) => {
+    for (const m of String(s).matchAll(/"([^"]+)"/g)) {
+      const dep = _parsePepReq(m[1]);
+      if (dep) out.push({ type: "pip", ...dep });
+    }
+  };
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const sec = line.match(/^\[([^\]]+)\]/);
+    if (sec) {
+      section = sec[1];
+      inListDeps = false;
+      continue;
+    }
+    if (section === "project" && /^dependencies\s*=\s*\[/.test(line)) {
+      const inline = line.match(/=\s*\[(.*?)\]/);
+      if (inline) {
+        collectInline(inline[1]);
+        inListDeps = false;
+      } else {
+        inListDeps = true;
+      }
+      continue;
+    }
+    if (inListDeps) {
+      collectInline(line);
+      if (/\]/.test(line)) inListDeps = false;
+      continue;
+    }
+    if (POETRY_DEP_SECTIONS.has(section)) {
+      const m = line.match(/^([a-zA-Z][a-zA-Z0-9._\-]*)\s*=\s*(.+)$/);
+      if (m) {
+        const name = m[1];
+        const rest = m[2];
+        let version = "*";
+        const ver = rest.match(/^"([^"]+)"/);
+        if (ver) version = ver[1];
+        else {
+          const ver2 = rest.match(/version\s*=\s*"([^"]+)"/);
+          if (ver2) version = ver2[1];
+        }
+        if (_RUNTIME_NAME_RE.test(name))
+          out.push({ type: "runtime", name, version });
+        else out.push({ type: "pip", name, version });
+      }
+    }
+  }
+  return out;
+}
+
+function _parseCargoToml(content) {
+  const out = [];
+  const lines = String(content).split("\n");
+  let section = null;
+  const DEP_SECTIONS = new Set([
+    "dependencies",
+    "dev-dependencies",
+    "build-dependencies",
+  ]);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const sec = line.match(/^\[([^\]]+)\]/);
+    if (sec) {
+      section = sec[1];
+      continue;
+    }
+    if (DEP_SECTIONS.has(section)) {
+      const m = line.match(/^([a-zA-Z][a-zA-Z0-9_\-]*)\s*=\s*(.+)$/);
+      if (m) {
+        const name = m[1];
+        const rest = m[2];
+        let version = "*";
+        const ver = rest.match(/^"([^"]+)"/);
+        if (ver) version = ver[1];
+        else {
+          const ver2 = rest.match(/version\s*=\s*"([^"]+)"/);
+          if (ver2) version = ver2[1];
+        }
+        out.push({ type: "cargo", name, version });
+      }
+    }
+  }
+  return out;
+}
+
+function _parseGoMod(content) {
+  const out = [];
+  let inRequireBlock = false;
+  for (const rawLine of String(content).split("\n")) {
+    const line = rawLine.replace(/\/\/.*$/, "").trim();
+    if (!line) continue;
+    const goVer = line.match(/^go\s+(\d+(?:\.\d+){0,2})\s*$/);
+    if (goVer) {
+      out.push({ type: "runtime", name: "go", version: goVer[1] });
+      continue;
+    }
+    if (/^require\s*\(\s*$/.test(line)) {
+      inRequireBlock = true;
+      continue;
+    }
+    if (inRequireBlock && line === ")") {
+      inRequireBlock = false;
+      continue;
+    }
+    const single = line.match(/^require\s+([\w./\-]+)\s+(v[\d.\w\-+]+)/);
+    if (single) {
+      out.push({ type: "go", name: single[1], version: single[2] });
+      continue;
+    }
+    if (inRequireBlock) {
+      const m = line.match(/^([\w./\-]+)\s+(v[\d.\w\-+]+)/);
+      if (m) out.push({ type: "go", name: m[1], version: m[2] });
+    }
+  }
+  return out;
+}
+
+function _parseDockerfile(content) {
+  const out = [];
+  for (const rawLine of String(content).split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const m = line.match(
+      /^FROM\s+(?:--platform=\S+\s+)?([\w.\-]+(?:\/[\w.\-]+)*)(?::([^\s]+))?(?:\s+AS\s+\S+)?\s*$/i,
+    );
+    if (!m) continue;
+    const image = m[1];
+    const tag = m[2];
+    if (image === "scratch") continue;
+    if (!tag) continue;
+    if (/^latest$/i.test(tag)) continue;
+    if (!/\d/.test(tag)) continue;
+    out.push({ type: "docker", name: image, version: tag });
+  }
+  return out;
+}
+
+function _parseToolVersions(content) {
+  const out = [];
+  for (const rawLine of String(content).split("\n")) {
+    const line = rawLine.replace(/#.*/, "").trim();
+    if (!line) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 2) continue;
+    out.push({ type: "runtime", name: parts[0], version: parts[1] });
+  }
+  return out;
+}
+
+function _parseGhActionsWorkflow(content) {
+  const out = [];
+  for (const m of String(content).matchAll(
+    /uses\s*:\s*([^\s@'"]+)@([^\s'"#]+)/g,
+  )) {
+    const name = m[1];
+    const version = m[2];
+    if (name.startsWith("./") || name.startsWith("../")) continue;
+    if (name.startsWith("docker://")) continue;
+    out.push({ type: "gh-action", name, version });
+  }
+  return out;
+}
+
+function parseManifestDeps(filePath, content) {
+  if (!filePath || content == null) return [];
+  const fp = String(filePath).replace(/\\/g, "/");
+  const c = String(content || "");
+  if (!c.trim()) return [];
+  if (/(^|\/)package\.json$/.test(fp)) return _parsePackageJson(c);
+  if (/(^|\/)(requirements[\w-]*\.txt|constraints\.txt)$/.test(fp))
+    return _parseRequirementsTxt(c);
+  if (/(^|\/)pyproject\.toml$/.test(fp)) return _parsePyprojectToml(c);
+  if (/(^|\/)Cargo\.toml$/.test(fp)) return _parseCargoToml(c);
+  if (/(^|\/)go\.mod$/.test(fp)) return _parseGoMod(c);
+  if (/(^|\/)Dockerfile(\.[\w-]+)?$/.test(fp)) return _parseDockerfile(c);
+  if (/(^|\/)\.nvmrc$/.test(fp)) {
+    const v = c.trim();
+    return v ? [{ type: "runtime", name: "node", version: v }] : [];
+  }
+  if (/(^|\/)\.python-version$/.test(fp)) {
+    const v = c.trim();
+    return v ? [{ type: "runtime", name: "python", version: v }] : [];
+  }
+  if (/(^|\/)\.tool-versions$/.test(fp)) return _parseToolVersions(c);
+  if (/(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/.test(fp))
+    return _parseGhActionsWorkflow(c);
+  return [];
+}
+
+function _scanUrlsInText(text, map) {
+  const t = String(text || "");
+  for (const m of t.matchAll(/endoflife\.date\/api\/([a-z0-9_-]+)/gi)) {
+    let prod = m[1].toLowerCase();
+    if (prod === "nodejs") prod = "node";
+    map.runtime.add(prod);
+  }
+  if (/nodejs\.org\/(dist|download|en\/download)/i.test(t))
+    map.runtime.add("node");
+  if (/python\.org\/(downloads|ftp\/python)/i.test(t))
+    map.runtime.add("python");
+  for (const m of t.matchAll(
+    /registry\.npmjs\.org\/(@[a-z0-9._\-]+\/[a-z0-9._\-]+|[a-z0-9._\-]+)/gi,
+  )) {
+    map.npm.add(decodeURIComponent(m[1]).toLowerCase());
+  }
+  for (const m of t.matchAll(
+    /npmjs\.com\/package\/(@[a-z0-9._\-]+\/[a-z0-9._\-]+|[a-z0-9._\-]+)/gi,
+  )) {
+    map.npm.add(decodeURIComponent(m[1]).toLowerCase());
+  }
+  for (const m of t.matchAll(
+    /pypi\.org\/(?:pypi|project)\/([a-z0-9._\-]+)/gi,
+  )) {
+    map.pip.add(m[1].toLowerCase());
+  }
+  for (const m of t.matchAll(
+    /crates\.io\/(?:api\/v\d+\/)?crates\/([a-z0-9._\-]+)/gi,
+  )) {
+    map.cargo.add(m[1].toLowerCase());
+  }
+  for (const m of t.matchAll(/pkg\.go\.dev\/([\w./\-]+)/gi)) {
+    map.go.add(m[1].toLowerCase());
+  }
+  for (const m of t.matchAll(/proxy\.golang\.org\/([\w./\-]+)/gi)) {
+    map.go.add(m[1].toLowerCase());
+  }
+  for (const m of t.matchAll(
+    /hub\.docker\.com\/(?:_|r\/[\w.\-]+)\/([\w.\-]+)/gi,
+  )) {
+    map.docker.add(m[1].toLowerCase());
+  }
+  for (const m of t.matchAll(/github\.com\/([\w.\-]+\/[\w.\-]+)\/releases/gi)) {
+    const repo = m[1].replace(/\.git$/, "");
+    map["gh-action"].add(repo.toLowerCase());
+  }
+}
+
+function findVersionLookups(lines) {
+  const map = {
+    npm: new Set(),
+    pip: new Set(),
+    cargo: new Set(),
+    go: new Set(),
+    docker: new Set(),
+    "gh-action": new Set(),
+    runtime: new Set(),
+  };
+  for (const e of lines || []) {
+    if (e.type !== "assistant") continue;
+    const content = e.message?.content || [];
+    for (const b of content) {
+      if (!b || b.type !== "tool_use") continue;
+      const name = b.name || "";
+      const inp = b.input || {};
+      if (name === "Bash") {
+        const cmd = String(inp.command || "");
+        for (const m of cmd.matchAll(
+          /\b(?:npm|pnpm|yarn|bun)\s+(?:view|info|show)\s+([@a-zA-Z0-9._\-/]+)/g,
+        )) {
+          map.npm.add(m[1].toLowerCase());
+        }
+        // docker pull image:tag — эффективно проверяет существование тэга в registry,
+        // считаем как lookup. Тэг отбрасываем, ключ — только image-name.
+        for (const m of cmd.matchAll(/\bdocker\s+pull\s+([\w.\-/]+)/g)) {
+          map.docker.add(m[1].split(":")[0].toLowerCase());
+        }
+        for (const m of cmd.matchAll(
+          /\bpip3?\s+(?:index\s+versions|show)\s+([a-zA-Z0-9._\-]+)/g,
+        )) {
+          map.pip.add(m[1].toLowerCase());
+        }
+        for (const m of cmd.matchAll(
+          /\bcargo\s+search\s+([a-zA-Z0-9._\-]+)/g,
+        )) {
+          map.cargo.add(m[1].toLowerCase());
+        }
+        for (const m of cmd.matchAll(
+          /\bgo\s+list\s+-m\s+-versions\s+([\w./\-]+)/g,
+        )) {
+          map.go.add(m[1].toLowerCase());
+        }
+        for (const m of cmd.matchAll(
+          /\bgh\s+api\s+(?:repos\/)?([\w.\-]+\/[\w.\-]+)\/releases/g,
+        )) {
+          map["gh-action"].add(m[1].toLowerCase());
+        }
+        for (const m of cmd.matchAll(
+          /\bgit\s+ls-remote[^\n]*github\.com[\/:]([\w.\-]+\/[\w.\-]+)/g,
+        )) {
+          map["gh-action"].add(m[1].replace(/\.git$/, "").toLowerCase());
+        }
+        for (const m of cmd.matchAll(
+          /\bdocker\s+manifest\s+inspect\s+([\w.\-/]+)/g,
+        )) {
+          map.docker.add(m[1].split(":")[0].toLowerCase());
+        }
+        _scanUrlsInText(cmd, map);
+      }
+      if (name === "WebFetch" || name === "WebSearch") {
+        _scanUrlsInText(String(inp.url || ""), map);
+        _scanUrlsInText(String(inp.query || ""), map);
+        _scanUrlsInText(String(inp.prompt || ""), map);
+      }
+    }
+  }
+  return map;
+}
+
+// ReDoS-safe: один `(?:\.0)*` вместо `(\.0)*(\.0)*` — двойная звезда давала
+// catastrophic backtracking O(N²) на хитро подобранной строке `>=0` + `.0`*N + хвост.
+// Семантически эквивалентно: матчит `>=0`, `>=0.0`, `>=0.0.0`, `>=0.0.0.0`...
+const _LOOSE_VERSION_RE =
+  /^\s*(latest|next|beta|alpha|rc|\*|x|\.|>=?\s*0(?:\.0)*)\s*$/i;
+
+function getDepsWithoutLookup(deps, lookupMap) {
+  if (!Array.isArray(deps) || !lookupMap) return [];
+  const out = [];
+  for (const d of deps) {
+    if (!d || !d.name || !d.type) continue;
+    const v = String(d.version || "").trim();
+    if (_LOOSE_VERSION_RE.test(v)) continue;
+    const set = lookupMap[d.type];
+    const lower = d.name.toLowerCase();
+    if (set && set.has(lower)) continue;
+    // Cross-type fallback: docker image и runtime — это часто один и тот же
+    // продукт. Lookup на endoflife.date/api/nodejs покрывает и `runtime/node`
+    // (.nvmrc), и `docker/node` (FROM node:18). И наоборот: docker manifest
+    // inspect node:18 покрывает и runtime/node.
+    if (d.type === "docker" && lookupMap.runtime?.has(lower)) continue;
+    if (d.type === "runtime" && lookupMap.docker?.has(lower)) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+function collectManifestDepsFromEdits(lines) {
+  const out = [];
+  for (const e of lines || []) {
+    if (e.type !== "assistant") continue;
+    const content = e.message?.content || [];
+    for (const b of content) {
+      if (!b || b.type !== "tool_use") continue;
+      const name = b.name || "";
+      const inp = b.input || {};
+      const fp = String(inp.file_path || "");
+      if (!fp) continue;
+      const collect = (text) => {
+        for (const d of parseManifestDeps(fp, text)) {
+          out.push({ ...d, file_path: fp });
+        }
+      };
+      if (name === "Edit") collect(String(inp.new_string || ""));
+      else if (name === "Write") collect(String(inp.content || ""));
+      else if (name === "MultiEdit") {
+        const edits = Array.isArray(inp.edits) ? inp.edits : [];
+        for (const ed of edits) collect(String(ed?.new_string || ""));
+      }
+    }
+  }
+  const seen = new Set();
+  const dedup = [];
+  for (const d of out) {
+    const k = `${d.type}::${d.name.toLowerCase()}::${d.version}::${d.file_path}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    dedup.push(d);
+  }
+  return dedup;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Resolve repo root.
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1132,4 +1653,9 @@ module.exports = {
   parseReviewTriage,
   validateReviewTriage,
   SECURITY_SENSITIVE_RE,
+  // L: dep version-lookup enforcement
+  parseManifestDeps,
+  findVersionLookups,
+  getDepsWithoutLookup,
+  collectManifestDepsFromEdits,
 };

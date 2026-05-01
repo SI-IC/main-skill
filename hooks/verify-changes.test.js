@@ -42,6 +42,7 @@ function runHook(transcript_path, env = {}) {
       ...process.env,
       MAIN_SKILL_VERIFY_LINT: "0", // лайнт отдельно тестируем; в общем потоке отключаем.
       MAIN_SKILL_VERIFY_REVIEW: "0", // J/K тестируем отдельно; иначе старые тесты сломаются.
+      MAIN_SKILL_VERIFY_DEPS: "0", // L тестируется отдельно; в общем потоке отключён.
       CLAUDE_PROJECT_DIR:
         env.CLAUDE_PROJECT_DIR || path.dirname(transcript_path),
       ...env,
@@ -959,4 +960,216 @@ test("hardening: ANSI escapes в file_path strip-аются из reason", () => 
     !/[\x00-\x1f\x7f]/.test(sanitizedCheck),
     "reason содержит control-chars кроме \\n",
   );
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Триггер L: dep version-lookup enforcement
+// ────────────────────────────────────────────────────────────────────────────
+
+// Helper: симулирует "Edit на manifest-файл" с конкретным new_string.
+function asstEditWith(file_path, new_string) {
+  return {
+    type: "assistant",
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          name: "Edit",
+          input: { file_path, new_string },
+        },
+      ],
+    },
+  };
+}
+
+function asstWriteWith(file_path, content) {
+  return {
+    type: "assistant",
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          name: "Write",
+          input: { file_path, content },
+        },
+      ],
+    },
+  };
+}
+
+// runHookWithDeps: тот же helper что runHook, но без MAIN_SKILL_VERIFY_DEPS=0.
+function runHookWithDeps(transcript_path, env = {}) {
+  const r = spawnSync("node", [HOOK], {
+    input: JSON.stringify({ transcript_path }),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      MAIN_SKILL_VERIFY_LINT: "0",
+      MAIN_SKILL_VERIFY_REVIEW: "0",
+      // MAIN_SKILL_VERIFY_DEPS НЕ выставлен — по умолчанию active.
+      CLAUDE_PROJECT_DIR:
+        env.CLAUDE_PROJECT_DIR || path.dirname(transcript_path),
+      ...env,
+    },
+    timeout: 15_000,
+  });
+  return { stdout: r.stdout || "", stderr: r.stderr || "", status: r.status };
+}
+
+test("L: блок при добавлении npm dep без lookup", () => {
+  const dir = tmp();
+  // Имитируем сценарий: Claude добавил react в package.json без вызова npm view.
+  const pkgPath = path.join(dir, "package.json");
+  // Файл существует, чтобы пара test-файла не валила D раньше.
+  fs.writeFileSync(
+    pkgPath,
+    JSON.stringify({ name: "x", version: "1.0.0" }, null, 2),
+  );
+  const tp = writeTranscript(dir, [
+    asstEditWith(pkgPath, `"react": "^18.0.0"`),
+    asstBash("curl http://localhost:3000/"), // верификация для A
+    asstText(
+      "готово.\n\n<edge-cases>\nempty:N/A:текстовая правка\nboundary:N/A:n/a\nconcurrency:N/A:n/a\nexternal_failure:N/A:n/a\npermission:N/A:n/a\nmalformed_input:N/A:n/a\ndeleted_resource:N/A:n/a\n</edge-cases>",
+    ),
+  ]);
+  const r = runHookWithDeps(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "L");
+  const parsed = JSON.parse(r.stdout);
+  assert.match(parsed.reason, /react@\^18\.0\.0/);
+  assert.match(parsed.reason, /npm view <pkg> version/);
+});
+
+test("L: пропускает при наличии npm view <pkg>", () => {
+  const dir = tmp();
+  const pkgPath = path.join(dir, "package.json");
+  fs.writeFileSync(
+    pkgPath,
+    JSON.stringify({ name: "x", version: "1.0.0" }, null, 2),
+  );
+  const tp = writeTranscript(dir, [
+    asstBash("npm view react version"),
+    asstEditWith(pkgPath, `"react": "^18.0.0"`),
+    asstBash("curl http://localhost:3000/"),
+    asstText(
+      "готово.\n\n<edge-cases>\nempty:N/A:n\nboundary:N/A:n\nconcurrency:N/A:n\nexternal_failure:N/A:n\npermission:N/A:n\nmalformed_input:N/A:n\ndeleted_resource:N/A:n\n</edge-cases>",
+    ),
+  ]);
+  const r = runHookWithDeps(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("L: блок при FROM node:18 в Dockerfile без lookup", () => {
+  const dir = tmp();
+  const dockerPath = path.join(dir, "Dockerfile");
+  fs.writeFileSync(dockerPath, "FROM scratch\n"); // pre-existing
+  const tp = writeTranscript(dir, [
+    asstWriteWith(dockerPath, "FROM node:18-alpine\nWORKDIR /app\n"),
+    asstBash("docker build ."),
+    asstText(
+      "готово.\n\n<edge-cases>\nempty:N/A:n\nboundary:N/A:n\nconcurrency:N/A:n\nexternal_failure:N/A:n\npermission:N/A:n\nmalformed_input:N/A:n\ndeleted_resource:N/A:n\n</edge-cases>",
+    ),
+  ]);
+  const r = runHookWithDeps(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "L");
+  const parsed = JSON.parse(r.stdout);
+  assert.match(parsed.reason, /node@18-alpine/);
+});
+
+test("L: пропускает Dockerfile FROM node:18 если был fetch endoflife.date/api/nodejs", () => {
+  const dir = tmp();
+  const dockerPath = path.join(dir, "Dockerfile");
+  fs.writeFileSync(dockerPath, "FROM scratch\n");
+  const tp = writeTranscript(dir, [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "WebFetch",
+            input: {
+              url: "https://endoflife.date/api/nodejs.json",
+              prompt: "latest LTS",
+            },
+          },
+        ],
+      },
+    },
+    asstWriteWith(dockerPath, "FROM node:18-alpine\n"),
+    asstBash("docker build ."),
+    asstText(
+      "готово.\n\n<edge-cases>\nempty:N/A:n\nboundary:N/A:n\nconcurrency:N/A:n\nexternal_failure:N/A:n\npermission:N/A:n\nmalformed_input:N/A:n\ndeleted_resource:N/A:n\n</edge-cases>",
+    ),
+  ]);
+  const r = runHookWithDeps(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("L: блок при actions/checkout@v3 в workflow без gh api", () => {
+  const dir = tmp();
+  const wfPath = path.join(dir, ".github/workflows/ci.yml");
+  fs.mkdirSync(path.dirname(wfPath), { recursive: true });
+  fs.writeFileSync(wfPath, "name: CI\non: [push]\n");
+  const tp = writeTranscript(dir, [
+    asstWriteWith(
+      wfPath,
+      `name: CI\non: [push]\njobs:\n  build:\n    steps:\n      - uses: actions/checkout@v3\n`,
+    ),
+    asstBash("curl http://localhost:3000/"),
+    asstText(
+      "готово.\n\n<edge-cases>\nempty:N/A:n\nboundary:N/A:n\nconcurrency:N/A:n\nexternal_failure:N/A:n\npermission:N/A:n\nmalformed_input:N/A:n\ndeleted_resource:N/A:n\n</edge-cases>",
+    ),
+  ]);
+  const r = runHookWithDeps(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "L");
+  assert.match(JSON.parse(r.stdout).reason, /actions\/checkout/);
+});
+
+test("L: latest / * версии не блокируют", () => {
+  const dir = tmp();
+  const pkgPath = path.join(dir, "package.json");
+  fs.writeFileSync(pkgPath, JSON.stringify({ name: "x" }, null, 2));
+  const tp = writeTranscript(dir, [
+    asstEditWith(pkgPath, `"react": "latest"`),
+    asstBash("curl http://localhost:3000/"),
+    asstText(
+      "готово.\n\n<edge-cases>\nempty:N/A:n\nboundary:N/A:n\nconcurrency:N/A:n\nexternal_failure:N/A:n\npermission:N/A:n\nmalformed_input:N/A:n\ndeleted_resource:N/A:n\n</edge-cases>",
+    ),
+  ]);
+  const r = runHookWithDeps(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("L: opt-out MAIN_SKILL_VERIFY_DEPS=0 пропускает", () => {
+  const dir = tmp();
+  const pkgPath = path.join(dir, "package.json");
+  fs.writeFileSync(pkgPath, JSON.stringify({ name: "x" }, null, 2));
+  const tp = writeTranscript(dir, [
+    asstEditWith(pkgPath, `"react": "^18.0.0"`),
+    asstBash("curl http://localhost:3000/"),
+    asstText(
+      "готово.\n\n<edge-cases>\nempty:N/A:n\nboundary:N/A:n\nconcurrency:N/A:n\nexternal_failure:N/A:n\npermission:N/A:n\nmalformed_input:N/A:n\ndeleted_resource:N/A:n\n</edge-cases>",
+    ),
+  ]);
+  const r = runHookWithDeps(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_DEPS: "0",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("L: не активируется без manifest-правки", () => {
+  const dir = tmp();
+  // Только src-правка с парным тестом, никаких manifest-edit.
+  writeFile(dir, "src/foo.ts", "x");
+  writeFile(dir, "src/foo.test.ts", "test('x', ()=>{});");
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/foo.ts")),
+    asstBash("curl http://localhost:3000/"),
+    asstText(
+      "готово.\n\n<edge-cases>\nempty:N/A:n\nboundary:N/A:n\nconcurrency:N/A:n\nexternal_failure:N/A:n\npermission:N/A:n\nmalformed_input:N/A:n\ndeleted_resource:N/A:n\n</edge-cases>",
+    ),
+  ]);
+  const r = runHookWithDeps(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
 });

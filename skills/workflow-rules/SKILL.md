@@ -41,6 +41,24 @@ description: Personal workflow rules — language=ru, triage (bugfix → systema
 
 Что стало не нужно — выпиливай полностью: код, файлы, доки, хуки, зависимости, env-переменные, фиче-флаги, секции CLAUDE.md / README. Не оставляй `// removed`, TODO-надгробий, закомментированных блоков, deprecated shim-ов «на всякий случай», устаревших примеров. Сомневаешься — `grep` по репо; нет ссылок → удаляй. Git хранит историю.
 
+## Свежие версии при init / add-dep
+
+Знания модели о версиях устаревают на месяцы — **не угадывай**. При создании нового проекта (scaffolding, `init`, `create-*`) и при добавлении новой зависимости в существующий — сначала запроси актуальную версию из реестра. Покрывает любой manifest, не только package.json:
+
+- npm → `npm view <pkg> version`
+- pip → `pip index versions <pkg>`
+- cargo → `cargo search <pkg> --limit 1`
+- go → `go list -m -versions <module>` (последняя строка — latest)
+- runtime / LTS (`.nvmrc`, `.python-version`, `.tool-versions`, `engines.node`, `FROM node:` в Dockerfile, `go 1.x` в go.mod) → `https://endoflife.date/api/<product>.json` (для node также `https://nodejs.org/dist/index.json` — фильтр по `.lts`)
+- Docker base images (`FROM node:18`, `FROM python:3.11`) → `docker manifest inspect <image>:<tag>` или `https://hub.docker.com/_/<image>` или endoflife.date по runtime
+- GitHub Actions (`uses: actions/checkout@v3`) → `gh api repos/<org>/<repo>/releases/latest` или `https://github.com/<org>/<repo>/releases`
+
+Используй latest stable / LTS. В **существующем** проекте latest подчинён совместимости: peer-dep, project-target, мажор уже зафиксирован в lockfile / другой пакет требует ≤N — бери максимально свежую совместимую и явно объяви ограничение в формате «ставлю X@N вместо latest M, потому что Y требует ≤N».
+
+Любое **другое** отклонение от latest (личное предпочтение, опасение нестабильности, привычка) — спроси «использую X вместо latest Y, причина: Z — ок?» и **дождись ack**. Без явного согласия пользователя не продолжай.
+
+Enforcement: Stop-триггер L в `verify-changes.js` блокирует «готово»-claim, если в сессии есть Edit/Write на manifest, но нет соответствующего lookup-вызова. Per-project opt-out (для проектов с фиксированным стеком и lockfile-ом, где апгрейды делаются плановым batch-ем): `MAIN_SKILL_VERIFY_DEPS=0`.
+
 ---
 
 # 3-phase workflow for non-trivial tasks

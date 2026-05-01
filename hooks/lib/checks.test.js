@@ -757,3 +757,480 @@ test("runLint возвращает null если ничего не настро�
   const r = checks.runLint(dir);
   assert.strictEqual(r, null);
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// Триггер L: парсеры manifest-форматов + поиск version-lookup-ов в transcript
+// ────────────────────────────────────────────────────────────────────────────
+
+test("parseManifestDeps: package.json фрагмент в Edit", () => {
+  const content = `"react": "^18.0.0",\n"next": "^13.4.0"`;
+  const deps = checks.parseManifestDeps("package.json", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, ["next", "react"]);
+  assert.ok(deps.every((d) => d.type === "npm"));
+});
+
+test("parseManifestDeps: package.json полный файл с dependencies/devDependencies", () => {
+  const content = JSON.stringify({
+    name: "my-app",
+    version: "1.0.0",
+    description: "x",
+    dependencies: { react: "^18.0.0" },
+    devDependencies: { jest: "^29.0.0" },
+  });
+  const deps = checks.parseManifestDeps("package.json", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, ["jest", "react"]);
+});
+
+test("parseManifestDeps: package.json — корневые поля name/version не в deps", () => {
+  // Когда пишется фрагмент `"name": "my-app"` он НЕ должен попасть как dep.
+  const content = `"name": "my-app",\n"version": "1.0.0"`;
+  const deps = checks.parseManifestDeps("package.json", content);
+  assert.deepStrictEqual(deps, []);
+});
+
+test("parseManifestDeps: package.json engines.node — это runtime", () => {
+  const content = JSON.stringify({
+    name: "x",
+    engines: { node: ">=20" },
+  });
+  const deps = checks.parseManifestDeps("package.json", content);
+  const node = deps.find((d) => d.name === "node");
+  assert.ok(node);
+  assert.strictEqual(node.type, "runtime");
+});
+
+test("parseManifestDeps: requirements.txt", () => {
+  const content = `django==4.2.0\nrequests>=2.31.0\n# comment\n  flask~=2.3.0\n-r other.txt\n`;
+  const deps = checks.parseManifestDeps("requirements.txt", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, ["django", "flask", "requests"]);
+  assert.ok(deps.every((d) => d.type === "pip"));
+});
+
+test("parseManifestDeps: pyproject.toml [project.dependencies] и [tool.poetry.dependencies]", () => {
+  const content = `[project]\nname = "my-app"\nversion = "0.1.0"\n[project.dependencies]\ndjango = "^4.2"\n[tool.poetry.dependencies]\nrequests = "^2.31"\nfastapi = { version = "^0.100", extras = ["all"] }\n[tool.ruff]\nline-length = 100\n`;
+  const deps = checks.parseManifestDeps("pyproject.toml", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, ["django", "fastapi", "requests"]);
+  assert.ok(deps.every((d) => d.type === "pip"));
+});
+
+test("parseManifestDeps: pyproject.toml dependencies = [...] список (PEP-621)", () => {
+  const content = `[project]\nname = "my-app"\ndependencies = [\n  "django>=4.2",\n  "requests",\n]\n`;
+  const deps = checks.parseManifestDeps("pyproject.toml", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, ["django", "requests"]);
+});
+
+test("parseManifestDeps: Cargo.toml [dependencies] + [dev-dependencies]", () => {
+  const content = `[package]\nname = "x"\nversion = "0.1.0"\n[dependencies]\nserde = "1.0"\ntokio = { version = "1.35", features = ["full"] }\n[dev-dependencies]\nrstest = "0.18"\n[build-dependencies]\ncc = "1.0"\n`;
+  const deps = checks.parseManifestDeps("Cargo.toml", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, ["cc", "rstest", "serde", "tokio"]);
+  assert.ok(deps.every((d) => d.type === "cargo"));
+});
+
+test("parseManifestDeps: go.mod require block + single-line require", () => {
+  const content = `module my/app\n\ngo 1.21\n\nrequire (\n  github.com/gin-gonic/gin v1.9.1\n  go.uber.org/zap v1.26.0\n)\n\nrequire golang.org/x/sync v0.5.0\n`;
+  const deps = checks.parseManifestDeps("go.mod", content);
+  const goModules = deps.filter((d) => d.type === "go").map((d) => d.name);
+  goModules.sort();
+  assert.deepStrictEqual(goModules, [
+    "github.com/gin-gonic/gin",
+    "go.uber.org/zap",
+    "golang.org/x/sync",
+  ]);
+  // Также `go 1.21` должно попасть как runtime
+  const goRuntime = deps.find((d) => d.type === "runtime" && d.name === "go");
+  assert.ok(goRuntime);
+  assert.strictEqual(goRuntime.version, "1.21");
+});
+
+test("parseManifestDeps: go.mod — 'go 1.21' не должен попасть как dep", () => {
+  const content = `module my/app\ngo 1.21\n`;
+  const deps = checks.parseManifestDeps("go.mod", content);
+  // Go runtime version — это runtime, должен попасть как runtime/go
+  const goRuntime = deps.find(
+    (d) => d.type === "runtime" && (d.name === "go" || d.name === "golang"),
+  );
+  assert.ok(goRuntime);
+  // Никаких "module my/app" как dep
+  const namesNotRuntime = deps
+    .filter((d) => d.type === "go")
+    .map((d) => d.name);
+  assert.deepStrictEqual(namesNotRuntime, []);
+});
+
+test("parseManifestDeps: Dockerfile FROM lines", () => {
+  const content = `FROM node:18-alpine AS builder\nWORKDIR /app\nFROM python:3.11\nFROM nginx:1.25\n`;
+  const deps = checks.parseManifestDeps("Dockerfile", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, ["nginx", "node", "python"]);
+  assert.ok(deps.every((d) => d.type === "docker"));
+});
+
+test("parseManifestDeps: Dockerfile.dev / Dockerfile.prod", () => {
+  const content = `FROM golang:1.21\n`;
+  const deps = checks.parseManifestDeps("Dockerfile.prod", content);
+  assert.strictEqual(deps.length, 1);
+  assert.strictEqual(deps[0].name, "golang");
+});
+
+test("parseManifestDeps: Dockerfile FROM scratch / FROM image:latest — skip (нет точной version)", () => {
+  const content = `FROM scratch\nFROM node:latest\nFROM python\n`;
+  const deps = checks.parseManifestDeps("Dockerfile", content);
+  // scratch — нет version. latest — placeholder, не version. Без tag — нет version.
+  assert.deepStrictEqual(deps, []);
+});
+
+test("parseManifestDeps: .nvmrc", () => {
+  const deps = checks.parseManifestDeps(".nvmrc", "20.10.0\n");
+  assert.deepStrictEqual(deps, [
+    { type: "runtime", name: "node", version: "20.10.0" },
+  ]);
+});
+
+test("parseManifestDeps: .python-version", () => {
+  const deps = checks.parseManifestDeps(".python-version", "3.12\n");
+  assert.deepStrictEqual(deps, [
+    { type: "runtime", name: "python", version: "3.12" },
+  ]);
+});
+
+test("parseManifestDeps: .tool-versions (asdf)", () => {
+  const content = `nodejs 20.10.0\npython 3.12.1\nruby 3.2.0\n# comment\n`;
+  const deps = checks.parseManifestDeps(".tool-versions", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, ["nodejs", "python", "ruby"]);
+  assert.ok(deps.every((d) => d.type === "runtime"));
+});
+
+test("parseManifestDeps: GitHub Actions workflow uses:", () => {
+  const content = `name: CI\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v3\n      - uses: actions/setup-node@v4\n      - uses: docker/build-push-action@v5\n      - uses: ./.github/actions/local  # local action — skip\n`;
+  const deps = checks.parseManifestDeps(".github/workflows/ci.yml", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, [
+    "actions/checkout",
+    "actions/setup-node",
+    "docker/build-push-action",
+  ]);
+  assert.ok(deps.every((d) => d.type === "gh-action"));
+});
+
+test("parseManifestDeps: возвращает [] для не-manifest файлов", () => {
+  assert.deepStrictEqual(checks.parseManifestDeps("src/foo.ts", "x"), []);
+  assert.deepStrictEqual(checks.parseManifestDeps("README.md", "x"), []);
+  assert.deepStrictEqual(checks.parseManifestDeps("config.yml", "x"), []);
+});
+
+test("parseManifestDeps: пустой / null content", () => {
+  assert.deepStrictEqual(checks.parseManifestDeps("package.json", ""), []);
+  assert.deepStrictEqual(checks.parseManifestDeps("package.json", null), []);
+});
+
+test("parseManifestDeps: requirements.txt с extras и markers", () => {
+  const content = `requests[security]>=2.31.0\nuvicorn[standard]==0.24.0; python_version >= "3.8"\n`;
+  const deps = checks.parseManifestDeps("requirements.txt", content);
+  const names = deps.map((d) => d.name).sort();
+  assert.deepStrictEqual(names, ["requests", "uvicorn"]);
+});
+
+test("findVersionLookups: npm view / npm info / npm show", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: { command: "npm view react version" },
+          },
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: { command: "npm info next" },
+          },
+        ],
+      },
+    },
+  ];
+  const map = checks.findVersionLookups(lines);
+  assert.ok(map.npm.has("react"));
+  assert.ok(map.npm.has("next"));
+});
+
+test("findVersionLookups: pip index versions / pip show", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: { command: "pip index versions django" },
+          },
+        ],
+      },
+    },
+  ];
+  const map = checks.findVersionLookups(lines);
+  assert.ok(map.pip.has("django"));
+});
+
+test("findVersionLookups: cargo search / go list -m -versions", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: { command: "cargo search serde --limit 1" },
+          },
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: {
+              command: "go list -m -versions golang.org/x/sync",
+            },
+          },
+        ],
+      },
+    },
+  ];
+  const map = checks.findVersionLookups(lines);
+  assert.ok(map.cargo.has("serde"));
+  assert.ok(map.go.has("golang.org/x/sync"));
+});
+
+test("findVersionLookups: WebFetch на endoflife.date / nodejs.org → runtime", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "WebFetch",
+            input: { url: "https://endoflife.date/api/nodejs.json" },
+          },
+        ],
+      },
+    },
+  ];
+  const map = checks.findVersionLookups(lines);
+  // 'nodejs' — нормализуется в 'node' для соответствия type='runtime', name='node'
+  assert.ok(map.runtime.has("node") || map.runtime.has("nodejs"));
+});
+
+test("findVersionLookups: WebFetch registry.npmjs.org → npm", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "WebFetch",
+            input: { url: "https://registry.npmjs.org/react/latest" },
+          },
+        ],
+      },
+    },
+  ];
+  const map = checks.findVersionLookups(lines);
+  assert.ok(map.npm.has("react"));
+});
+
+test("findVersionLookups: gh api releases/latest → gh-action", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: {
+              command: "gh api repos/actions/checkout/releases/latest",
+            },
+          },
+        ],
+      },
+    },
+  ];
+  const map = checks.findVersionLookups(lines);
+  assert.ok(map["gh-action"].has("actions/checkout"));
+});
+
+test("findVersionLookups: docker hub WebFetch → docker", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "WebFetch",
+            input: { url: "https://hub.docker.com/_/node" },
+          },
+        ],
+      },
+    },
+  ];
+  const map = checks.findVersionLookups(lines);
+  assert.ok(map.docker.has("node"));
+});
+
+test("getDepsWithoutLookup: возвращает только deps без lookup", () => {
+  const deps = [
+    { type: "npm", name: "react", version: "^18" },
+    { type: "npm", name: "next", version: "^13" },
+    { type: "pip", name: "django", version: "==4.2" },
+  ];
+  const map = {
+    npm: new Set(["react"]),
+    pip: new Set(["django"]),
+    cargo: new Set(),
+    go: new Set(),
+    docker: new Set(),
+    "gh-action": new Set(),
+    runtime: new Set(),
+  };
+  const missing = checks.getDepsWithoutLookup(deps, map);
+  assert.strictEqual(missing.length, 1);
+  assert.strictEqual(missing[0].name, "next");
+});
+
+test("getDepsWithoutLookup: latest / * версии не требуют lookup", () => {
+  const deps = [
+    { type: "npm", name: "x", version: "latest" },
+    { type: "npm", name: "y", version: "*" },
+    { type: "npm", name: "z", version: "^1.2.3" },
+  ];
+  const empty = {
+    npm: new Set(),
+    pip: new Set(),
+    cargo: new Set(),
+    go: new Set(),
+    docker: new Set(),
+    "gh-action": new Set(),
+    runtime: new Set(),
+  };
+  const missing = checks.getDepsWithoutLookup(deps, empty);
+  assert.strictEqual(missing.length, 1);
+  assert.strictEqual(missing[0].name, "z");
+});
+
+test("getDepsWithoutLookup: case-insensitive matching", () => {
+  const deps = [{ type: "npm", name: "React", version: "^18" }];
+  const map = {
+    npm: new Set(["react"]),
+    pip: new Set(),
+    cargo: new Set(),
+    go: new Set(),
+    docker: new Set(),
+    "gh-action": new Set(),
+    runtime: new Set(),
+  };
+  const missing = checks.getDepsWithoutLookup(deps, map);
+  assert.strictEqual(missing.length, 0);
+});
+
+test("getDepsWithoutLookup: ReDoS-regression на _LOOSE_VERSION_RE (pathological version)", () => {
+  // Атака: `>=0` + `.0`*N + хвост заставляли regex `(\.0)*(\.0)*` уходить в
+  // catastrophic backtracking. Теперь `(?:\.0)*` (один star) — линейно.
+  const pathological = ">=0" + ".0".repeat(10000) + "!";
+  const deps = [{ type: "npm", name: "x", version: pathological }];
+  const empty = {
+    npm: new Set(),
+    pip: new Set(),
+    cargo: new Set(),
+    go: new Set(),
+    docker: new Set(),
+    "gh-action": new Set(),
+    runtime: new Set(),
+  };
+  const t0 = Date.now();
+  const missing = checks.getDepsWithoutLookup(deps, empty);
+  const elapsed = Date.now() - t0;
+  // Раньше при 10K точек уходило в десятки секунд. Cap ставлю с большим запасом.
+  assert.ok(elapsed < 200, `_LOOSE_VERSION_RE снова медленный: ${elapsed}ms`);
+  // Pathological version НЕ должен скипаться (это не loose) — должен попасть в missing.
+  assert.strictEqual(missing.length, 1);
+});
+
+test("findVersionLookups: pnpm view / yarn info / bun view / docker pull", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: { command: "pnpm view react version" },
+          },
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: { command: "yarn info next" },
+          },
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: { command: "bun view svelte version" },
+          },
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: { command: "docker pull node:20-alpine" },
+          },
+        ],
+      },
+    },
+  ];
+  const map = checks.findVersionLookups(lines);
+  assert.ok(map.npm.has("react"));
+  assert.ok(map.npm.has("next"));
+  assert.ok(map.npm.has("svelte"));
+  assert.ok(map.docker.has("node"));
+});
+
+test("collectManifestDepsFromEdits: extracts deps только из Edit/Write/MultiEdit content", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Edit",
+            input: {
+              file_path: "/proj/package.json",
+              new_string: `"react": "^18.0.0",\n"next": "^13.4.0"`,
+            },
+          },
+          {
+            type: "tool_use",
+            name: "Write",
+            input: {
+              file_path: "/proj/Dockerfile",
+              content: `FROM node:18-alpine\n`,
+            },
+          },
+        ],
+      },
+    },
+  ];
+  const deps = checks.collectManifestDepsFromEdits(lines);
+  const names = deps.map((d) => d.name).sort();
+  assert.ok(names.includes("react"));
+  assert.ok(names.includes("next"));
+  assert.ok(names.includes("node"));
+});
