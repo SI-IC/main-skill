@@ -716,6 +716,40 @@ test("triggerK: none-found в обеих секциях → триаж не тр
   expectNoBlock(r.stdout);
 });
 
+test("triggerJ: fallback — code-review через general-purpose (без superpowers:code-reviewer) засчитывается", () => {
+  // Регресс: SKILL.md шаг 4 разрешает fallback на встроенный general-purpose,
+  // когда subagent_type superpowers:code-reviewer недоступен в среде
+  // (агент удалён из superpowers 5.1.0). Хук обязан засчитывать code-review
+  // по тексту промпта, а не по конкретному subagent_type.
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask(
+      "general-purpose",
+      "code review",
+      "code review: качество, паттерны, дублирование, непокрытые edge-cases, нарушения конвенций",
+    ),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        SELF_REVIEW_OK("none-found", "none-found"),
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+  });
+  expectNoBlock(r.stdout);
+});
+
 test("triggerJ: per-section `code:skipped` НЕ принимается (regression: bypass через skipped)", () => {
   const dir = tmp();
   const base = setupReviewBase(dir);

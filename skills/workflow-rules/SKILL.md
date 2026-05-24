@@ -74,6 +74,7 @@ Before reading files, asking questions, or proposing:
 - Чистая backend-логика (parser / transform / state machine / бизнес-правило / pure function) → также `superpowers:test-driven-development`
 - UI/UX work (anywhere in frontend) → также `ui-ux-pro-max:ui-ux-pro-max` (TDD тут НЕ применять — верификация через playwright/screenshot)
 - Multiple can apply simultaneously.
+- Скиллы `superpowers:*` и `ui-ux-pro-max:*` — из соседних плагинов. Не установлены → применяй ту же дисциплину напрямую, ничего не блокируется (правила ниже от этих плагинов не зависят).
 
 ## 2. Alignment — clarify, then decide autonomously
 
@@ -152,7 +153,7 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 - [ ] Integration / e2e tests where relevant
 - [ ] Regression test for the exact bug
 - [ ] Security review (injection, auth bypass, secret leaks)
-- [ ] Code review via `superpowers:requesting-code-review`
+- [ ] Code review (см. шаг 4 self-review)
 - [ ] Linters + formatters green
 - [ ] Docs updated if behavior/contract changed
 - [ ] **`<edge-cases>` блок в финальном сообщении** (см. ниже)
@@ -189,9 +190,9 @@ permission:tests/auth.test.ts:test_revoked_session
 **Как делать:**
 
 1. **Параллельно** запусти ДВА Task-агента в одном Tool message (один проход):
-   - `Task(subagent_type="superpowers:code-reviewer", model="sonnet", ...)` — фокус: качество, паттерны, дублирование, edge-cases без покрытия, нарушения проектных конвенций. Модель **обязательно `sonnet`** — экономия ~5× при минимальном регрессе на структурном обходе diff'а.
+   - code-review — `Task(subagent_type="general-purpose", ...)` с code-review-промптом (качество, паттерны, дублирование, непокрытые edge-cases, нарушения конвенций), модель **обязательно `sonnet`** (≈5× экономия на структурном обходе diff'а). Есть superpowers → бери промпт из его скилла `requesting-code-review` (шаблон `code-reviewer.md`).
    - `Task(subagent_type="general-purpose", ..., prompt="security review по OWASP Top-10: injection / auth-bypass / SSRF / открытые редиректы / weak crypto / leaked secrets / unsafe deserialization / missing rate-limit / TOCTOU / path traversal — на конкретные изменённые файлы [список]")` — **без `model` override** (inherit от родителя). Security-ревью должно идти на максимально capable модели (false negative дороже стоимости).
-2. **Триаж каждого замечания** через `superpowers:receiving-code-review` — без performative-agreement и без отмазок «minor / вне scope».
+2. **Триаж каждого замечания** — через `superpowers:receiving-code-review` если установлен, иначе той же дисциплиной напрямую. Без performative-agreement и без отмазок «minor / вне scope».
 3. **Применить applied / обосновать rejected/deferred технически** (file:line, конкретный риск, метрика, цитата кода — не «несущественно»).
 4. **Один проход.** Повторный запуск review-агентов перед Stop ЗАПРЕЩЁН.
 

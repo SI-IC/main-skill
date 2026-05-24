@@ -831,8 +831,8 @@ function main(p) {
     const howTo = [
       "Что должен сделать:",
       "  1. Параллельно запусти ДВА агента в одном сообщении (один Tool message, два Task call):",
-      '       • code-review — Task(subagent_type="superpowers:code-reviewer") или Task с',
-      "         требованием в промпте провести code review;",
+      '       • code-review — Task(subagent_type="general-purpose") с требованием в',
+      "         промпте провести code review;",
       '       • security-review — Task(subagent_type="general-purpose") с промптом',
       "         «security review по OWASP Top-10 + injection / auth-bypass / SSRF / weak-crypto /",
       "         secret leaks» на конкретные изменённые файлы.",

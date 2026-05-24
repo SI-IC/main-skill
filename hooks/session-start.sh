@@ -6,11 +6,15 @@
 #    banner so the user (and Claude) get a visible "actually upgraded" signal
 #    — Claude Code's /plugin UI is bound to the version loaded at process
 #    start and won't reflect mid-session updates.
-# 4. Emit a short instruction telling Claude to invoke the workflow-rules
+# 4. Show a non-blocking banner if recommended plugins (superpowers,
+#    ui-ux-pro-max) are not enabled. Detection lives in the tested
+#    lib/plugin-check.js; work is never blocked (мягкая деградация).
+# 5. Emit a short instruction telling Claude to invoke the workflow-rules
 #    skill. Skill content arrives via the Skill-tool channel, which is NOT
 #    subject to the 10KB cap that applies to SessionStart hook stdout.
 #
-# Opt-out: MAIN_SKILL_AUTO_UPDATE=0 disables the update check.
+# Opt-outs: MAIN_SKILL_AUTO_UPDATE=0 (update check),
+#           MAIN_SKILL_PLUGIN_CHECK=0 (recommended-plugins banner).
 
 MP_DIR="$HOME/.claude/plugins/marketplaces/main-skill"
 STAMP="$HOME/.claude/plugins/.main-skill-update-stamp"
@@ -52,6 +56,15 @@ maybe_update() {
   fi
 }
 
+emit_plugin_check() {
+  [ "${MAIN_SKILL_PLUGIN_CHECK:-1}" = "0" ] && return
+  command -v node >/dev/null 2>&1 || return
+  HERE=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd) || return
+  [ -f "$HERE/lib/plugin-check.js" ] || return
+  # stderr подавлен намеренно: fail-soft, SessionStart не должен блокироваться.
+  node "$HERE/lib/plugin-check.js" 2>/dev/null
+}
+
 emit_skill_invocation() {
   cat <<'EOF'
 ОБЯЗАТЕЛЬНО — перед любым ответом, включая clarifying questions, вызови `Skill` tool со skill `main-skill:workflow-rules`. Это твои персональные workflow-правила (язык общения, триаж, edge-cases, verify, self-review). Содержимое приходит через skill-канал и не обрезается 10KB-капом хуков. Не «и так помню» — версия в плагине меняется, перечитай свежее. После загрузки следуй ему до конца сессии.
@@ -59,4 +72,5 @@ EOF
 }
 
 maybe_update
+emit_plugin_check
 emit_skill_invocation

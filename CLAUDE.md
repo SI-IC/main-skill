@@ -21,7 +21,8 @@ main-skill/
 │       └── references/     # справочные файлы (Stop-triggers и т.п.)
 ├── hooks/
 │   ├── hooks.json          # регистрация SessionStart + PostToolUse + Stop
-│   ├── session-start.sh    # update-check + инструкция вызвать skill
+│   ├── session-start.sh    # update-check + plugin-check баннер + инструкция вызвать skill
+│   ├── session-start.test.sh # integration-тесты для session-start.sh
 │   ├── auto-format.js      # PostToolUse-хук: форматирует файл prettier/ruff/gofmt/rustfmt/clang-format
 │   ├── auto-format.test.js
 │   ├── verify-changes.js   # Stop-хук с триггерами A–K
@@ -30,7 +31,9 @@ main-skill/
 │       ├── checks.js       # src↔test mapping (включая generic same-dir
 │       │                   # fallback `<base>.test.<ext>` для sh/lua/dart/...),
 │       │                   # edge-cases parser, auto-lint
-│       └── checks.test.js
+│       ├── checks.test.js
+│       ├── plugin-check.js  # детект рекомендованных плагинов для SessionStart-баннера
+│       └── plugin-check.test.js
 ├── CLAUDE.md               # ← этот файл (dev-facing only)
 └── README.md
 ```
@@ -55,11 +58,21 @@ node hooks/lib/checks.test.js
 # unit для PostToolUse auto-format
 node hooks/auto-format.test.js
 
-# sh-синтаксис для SessionStart
+# unit для SessionStart plugin-check
+node hooks/lib/plugin-check.test.js
+
+# integration для SessionStart-хука (+ sh-синтаксис)
 sh -n hooks/session-start.sh
+sh hooks/session-start.test.sh
 ```
 
-Любая правка `verify-changes.js` / `checks.js` / `auto-format.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
+Любая правка `verify-changes.js` / `checks.js` / `auto-format.js` / `plugin-check.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
+
+## SessionStart plugin-check баннер
+
+`session-start.sh` → `emit_plugin_check` зовёт `lib/plugin-check.js`, который читает `~/.claude/settings.json` (`enabledPlugins`) и печатает **неблокирующий** баннер, если рекомендованный плагин не включён. Набор `RECOMMENDED` — источник истины то, на что ссылается `SKILL.md` (триаж/UI): `superpowers`, `ui-ux-pro-max`. Матч по base-имени до `@` (любой marketplace-суффикс считается). `value=false` (установлен, но выключен) = missing. Нет валидного `enabledPlugins` → `[]` (не шумим ложным баннером). Fail-soft: любая ошибка чтения/парса → тишина, SessionStart не ломается. Опт-аут: `MAIN_SKILL_PLUGIN_CHECK=0`.
+
+**Known limitation:** читается только user-level `~/.claude/settings.json`. Плагин, включённый через project-level `.claude/settings.json`, может ложно попасть в «не установлен». Минор — `enabledPlugins` Claude Code хранит на user-level.
 
 ## Skip-rules для триггера D — что НЕ требует парного теста
 
