@@ -711,11 +711,17 @@ function main(p) {
     "  файлы с @generated заголовком, type-only TS-файлы (только interface/type/enum).",
     "Стили и разметка (.css/.scss/.sass/.less/.html) исключены из code-файлов —",
     "  на них trigger D не срабатывает (визуальная верификация, не unit-тест).",
-    "Для config/ deploy/ и project-specific каталогов — MAIN_SKILL_VERIFY_IGNORE_GLOBS.",
+    "",
+    "SFC (.vue/.svelte/.astro): авто-skip ТОЛЬКО для презентационных — template/markup",
+    "  без логики в <script> (либо script отсутствует, либо в нём лишь import /",
+    "  defineProps / defineEmits / типы). Если в <script> есть computed/watch/функция/",
+    "  control-flow/await/.map().filter()/Options-methods — это логика, и тест ОБЯЗАТЕЛЕН.",
+    "  Не игнорь .vue целиком по расширению: глобальный `**/*.vue` спрячет и логику тоже.",
     "",
     "Сделай: напиши тесты → прогони → отчитайся.",
     "Опт-аут целиком: MAIN_SKILL_VERIFY_CHANGES=0",
-    'Per-project ignore: MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/legacy/**:**/scripts/**" (через `:`).',
+    "Per-project ignore (для config/ deploy/ legacy-каталогов, НЕ для компонентов с логикой):",
+    '  MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/legacy/**:**/scripts/**" (через `:`).',
   ].join("\n");
 
   const reasonE = [

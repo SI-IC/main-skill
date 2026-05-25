@@ -263,6 +263,79 @@ function isTypeOnlyTsFile(content) {
   return true;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Презентационный SFC (Vue/Svelte/Astro): компонент без логики в <script>.
+// Аналог isTypeOnlyTsFile — content-based skip. Консервативен: «презентационный»
+// (skip) только при НУЛЕ сигналов логики; любое сомнение → логика → тест нужен.
+// ────────────────────────────────────────────────────────────────────────────
+
+// Достаёт «исходник логики» из SFC: содержимое всех <script>-блоков (Vue/Svelte)
+// + Astro-frontmatter (между ведущими `---`).
+function extractScriptSource(content) {
+  const c = String(content || "");
+  const parts = [];
+  for (const m of c.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
+    parts.push(m[1]);
+  }
+  // Astro frontmatter: файл начинается с `---\n ... \n---`.
+  const fm = c.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
+  if (fm) parts.push(fm[1]);
+  return parts.join("\n");
+}
+
+// Сигналы реальной логики в script-блоке. Любое совпадение → НЕ презентационный.
+// Подобраны так, чтобы типовые аннотации (`onClick: () => void`) НЕ считались
+// логикой — arrow ловим только в позиции значения/коллбэка (`= (..) =>`, `(() =>`).
+//
+// ВСЕ квантификаторы внутри скобочных групп ОГРАНИЧЕНЫ ({0,N}, [^)\n]) — иначе на
+// adversarial SFC (`=((`×N, `f((`×N в пределах 200KB-капа) `[^)]*` + `[\w$]*\s*\(`
+// давали catastrophic backtracking O(N²): 60KB → 1.8s, 200KB → ~60s, вешая Stop-хук
+// на каждом turn. Bounded-версии линейны (~261 симв./позиция максимум).
+const _ARG = "[^)\\n]{0,200}"; // тело списка аргументов: без `)` и переноса, с капом
+const _SFC_LOGIC_SIGNALS = [
+  // Vue Composition: реактивность / состояние / DI.
+  /\b(?:ref|shallowRef|customRef|toRef|toRefs|reactive|shallowReactive|readonly|computed|watch|watchEffect|watchPostEffect|watchSyncEffect|effect|inject|provide)\s*\(/,
+  // Vue Composition: lifecycle-хуки (берут коллбэк = логика).
+  /\b(?:onMounted|onBeforeMount|onUnmounted|onBeforeUnmount|onUpdated|onBeforeUpdate|onActivated|onDeactivated|onErrorCaptured|onRenderTracked|onRenderTriggered)\s*\(/,
+  // Options API: логические блоки + lifecycle/data-методы.
+  /\b(?:methods|computed|watch)\s*:\s*\{/,
+  /\b(?:data|created|mounted|beforeCreate|beforeMount|updated|beforeUpdate|destroyed|beforeDestroy|setup|render)\s*\(/,
+  // function-объявление.
+  /\bfunction\b/,
+  // control-flow.
+  /\b(?:if|for|while|switch)\s*\(/,
+  /\btry\s*\{/,
+  /\b(?:await|async|throw|yield)\b/,
+  // data-transforms (итерация/трансформация коллекций).
+  /\.(?:map|filter|reduce|reduceRight|forEach|find|findIndex|findLast|some|every|flatMap|sort)\s*\(/,
+  // object-method shorthand / вызов с телом: `name(args) {` — ловит и методы
+  // (`data() {`, `defineExpose({ focus() {} })`), и control-flow с телом.
+  new RegExp(`[A-Za-z_$][\\w$]{0,60}\\s*\\(${_ARG}\\)\\s*\\{`),
+  // arrow-функция как значение: `= (args) =>` / `= async (..) =>`.
+  new RegExp(`=\\s*(?:async\\s+)?\\(${_ARG}\\)\\s*=>`),
+  // arrow-функция как значение с одним параметром без скобок: `= x =>`.
+  /=\s*(?:async\s+)?[A-Za-z_$][\w$]{0,60}\s*=>/,
+  // arrow-коллбэк первым аргументом вызова: `(() => ..)` / `((args) => ..)`.
+  new RegExp(`\\(\\s*(?:async\\s+)?\\(${_ARG}\\)\\s*=>`),
+  // Svelte: реактивные statements `$:` и руны $state/$derived/$effect.
+  /(?:^|\n)\s*\$:\s/,
+  /\$(?:state|derived|effect)\s*\(/,
+];
+
+// Возвращает true, если SFC-контент презентационный (template/markup без логики
+// в script). Базируется на <script> (Vue/Svelte) или frontmatter (Astro).
+function isPresentationalSFC(content) {
+  const src = extractScriptSource(content);
+  if (!src.trim()) return true; // нет script → чистый template/markup
+  // Стрипаем комментарии (как isTypeOnlyTsFile), чтобы закомментированный код
+  // не считался логикой.
+  const stripped = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+  for (const re of _SFC_LOGIC_SIGNALS) if (re.test(stripped)) return false;
+  return true;
+}
+
 // Возвращает true если для srcPath не нужен парный unit-тест.
 // Универсально по стекам. repoRoot опционален для content-чтения.
 function shouldSkipForTestPairing(srcPath, repoRoot = null) {
@@ -295,6 +368,9 @@ function shouldSkipForTestPairing(srcPath, repoRoot = null) {
   if (GENERATED_HEADER_RE.test(head)) return true;
   // TS type-only.
   if (/\.(ts|tsx)$/i.test(fp) && isTypeOnlyTsFile(body)) return true;
+  // Презентационный SFC (Vue/Svelte/Astro): template/markup без логики в script.
+  if (/\.(vue|svelte|astro)$/i.test(fp) && isPresentationalSFC(body))
+    return true;
   return false;
 }
 
@@ -1637,6 +1713,8 @@ module.exports = {
   isPublicSurface,
   isControllerOrRoute,
   shouldSkipForTestPairing,
+  isPresentationalSFC,
+  extractScriptSource,
   matchAnyGlob,
   findPackageRoots,
   findPairedTestFile,

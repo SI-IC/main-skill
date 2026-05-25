@@ -608,6 +608,272 @@ test("shouldSkipForTestPairing: обычный сервисный файл — f
   assert.ok(!checks.shouldSkipForTestPairing("src/components/Button.tsx"));
 });
 
+// ─── isPresentationalSFC (Vue/Svelte/Astro content heuristic) ─────────────
+
+test("isPresentationalSFC: template-only (нет <script>) → презентационный", () => {
+  assert.ok(checks.isPresentationalSFC("<template><div>hi</div></template>"));
+  assert.ok(
+    checks.isPresentationalSFC(
+      "<template><slot/></template>\n<style scoped>.x{color:red}</style>",
+    ),
+  );
+});
+
+test("isPresentationalSFC: <script setup> только defineProps/defineEmits/import → презентационный", () => {
+  const src = `<template><h1>{{ title }}</h1></template>
+<script setup lang="ts">
+import Icon from './Icon.vue'
+const props = defineProps<{ title: string; items: string[] }>()
+const emit = defineEmits<{ (e: 'close'): void }>()
+</script>`;
+  assert.ok(checks.isPresentationalSFC(src));
+});
+
+test("isPresentationalSFC: типизированный callback-проп `() => void` НЕ ложно-логика", () => {
+  const src = `<script setup lang="ts">
+const props = defineProps<{ onSelect: (id: number) => void; format: (v: number) => string }>()
+</script>`;
+  assert.ok(checks.isPresentationalSFC(src));
+});
+
+test("isPresentationalSFC: defineProps runtime-форма (массив/объект) → презентационный", () => {
+  assert.ok(
+    checks.isPresentationalSFC(
+      `<script setup>\nconst props = defineProps(['title', 'count'])\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: computed() → логика", () => {
+  const src = `<script setup>
+const full = computed(() => first.value + ' ' + last.value)
+</script>`;
+  assert.ok(!checks.isPresentationalSFC(src));
+});
+
+test("isPresentationalSFC: watch() → логика", () => {
+  const src = `<script setup>
+watch(count, (n) => { console.log(n) })
+</script>`;
+  assert.ok(!checks.isPresentationalSFC(src));
+});
+
+test("isPresentationalSFC: function-объявление → логика", () => {
+  const src = `<script setup>
+const n = ref(0)
+function increment() { n.value++ }
+</script>`;
+  assert.ok(!checks.isPresentationalSFC(src));
+});
+
+test("isPresentationalSFC: arrow-функция как значение → логика", () => {
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script setup>\nconst fmt = (x) => x.toFixed(2)\n</script>`,
+    ),
+  );
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script setup>\nconst handler = async () => { await save() }\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: control-flow → логика", () => {
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script setup>\nconst label = ref('')\nif (props.active) { label.value = 'on' }\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: data-transform (.map/.filter) → логика", () => {
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script setup>\nconst names = props.users.map((u) => u.name)\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: lifecycle-хук onMounted → логика", () => {
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script setup>\nonMounted(() => { fetchData() })\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: Options API props/name-only → презентационный", () => {
+  const src = `<script>
+export default {
+  name: 'UserBadge',
+  props: { title: String, count: Number },
+}
+</script>`;
+  assert.ok(checks.isPresentationalSFC(src));
+});
+
+test("isPresentationalSFC: Options API methods/computed → логика", () => {
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script>\nexport default { methods: { inc() { this.n++ } } }\n</script>`,
+    ),
+  );
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script>\nexport default { computed: { full() { return this.a + this.b } } }\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: закомментированная логика не считается логикой", () => {
+  const src = `<script setup>
+// function increment() { n++ }  ← закомментировано
+const props = defineProps(['title'])
+</script>`;
+  assert.ok(checks.isPresentationalSFC(src));
+});
+
+test("isPresentationalSFC: ref()/reactive() состояние → логика", () => {
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script setup>\nconst open = ref(false)\n</script>`,
+    ),
+  );
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script setup>\nconst state = reactive({ n: 0 })\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: object method shorthand (defineExpose) → логика", () => {
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script setup>\nconst el = ref()\ndefineExpose({ focus() { el.value.focus() } })\n</script>`,
+    ),
+  );
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script>\nexport default { data() { return { n: 0 } } }\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: Svelte 5 руна $state → логика", () => {
+  assert.ok(
+    !checks.isPresentationalSFC(`<script>\nlet count = $state(0)\n</script>`),
+  );
+});
+
+test("isPresentationalSFC: ReDoS-guard — adversarial 200KB ввод линеен", () => {
+  const big = "<script>" + "f((".repeat(66000) + "</script>"; // ~200KB
+  const t = Date.now();
+  const res = checks.isPresentationalSFC(big);
+  const ms = Date.now() - t;
+  assert.strictEqual(res, true); // нет валидной логики — презентационный
+  assert.ok(
+    ms < 1000,
+    `ожидал < 1000ms, получил ${ms}ms (catastrophic backtracking?)`,
+  );
+});
+
+test("isPresentationalSFC: Svelte reactive $: → логика", () => {
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script>\nexport let count = 0\n$: doubled = count * 2\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: Svelte только export let (props) → презентационный", () => {
+  assert.ok(
+    checks.isPresentationalSFC(
+      `<script>\nexport let title\nexport let count = 0\n</script>\n<h1>{title}</h1>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: Astro frontmatter с логикой → логика", () => {
+  const src = `---
+const { items } = Astro.props
+const names = items.map((i) => i.name)
+---
+<ul>{names.map((n) => <li>{n}</li>)}</ul>`;
+  assert.ok(!checks.isPresentationalSFC(src));
+});
+
+test("isPresentationalSFC: Astro frontmatter только props-destructure → презентационный", () => {
+  const src = `---
+const { title } = Astro.props
+---
+<h1>{title}</h1>`;
+  assert.ok(checks.isPresentationalSFC(src));
+});
+
+// ─── shouldSkipForTestPairing: презентационные SFC по содержимому ──────────
+
+test("shouldSkipForTestPairing: презентационный .vue → skip", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "src/components/Badge.vue",
+    `<template><span class="badge">{{ label }}</span></template>
+<script setup lang="ts">
+const props = defineProps<{ label: string }>()
+</script>`,
+  );
+  assert.ok(checks.shouldSkipForTestPairing("src/components/Badge.vue", dir));
+});
+
+test("shouldSkipForTestPairing: .vue с логикой → НЕ skip (тест обязателен)", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "src/components/Counter.vue",
+    `<template><button @click="inc">{{ doubled }}</button></template>
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+const n = ref(0)
+const doubled = computed(() => n.value * 2)
+function inc() { n.value++ }
+</script>`,
+  );
+  assert.ok(
+    !checks.shouldSkipForTestPairing("src/components/Counter.vue", dir),
+  );
+});
+
+test("shouldSkipForTestPairing: template-only .vue (нет script) → skip", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "src/components/Divider.vue",
+    `<template><hr class="divider"/></template>\n<style scoped>.divider{margin:8px 0}</style>`,
+  );
+  assert.ok(checks.shouldSkipForTestPairing("src/components/Divider.vue", dir));
+});
+
+test("shouldSkipForTestPairing: .svelte с логикой → НЕ skip", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "src/Toggle.svelte",
+    `<script>\nexport let on = false\nfunction flip() { on = !on }\n</script>\n<button on:click={flip}>{on}</button>`,
+  );
+  assert.ok(!checks.shouldSkipForTestPairing("src/Toggle.svelte", dir));
+});
+
+test("shouldSkipForTestPairing: презентационный .astro → skip", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "src/Hero.astro",
+    `---\nconst { title } = Astro.props\n---\n<section><h1>{title}</h1></section>`,
+  );
+  assert.ok(checks.shouldSkipForTestPairing("src/Hero.astro", dir));
+});
+
 // ─── matchAnyGlob (env override helper) ───────────────────────────────────
 
 test("matchAnyGlob: базовые glob-паттерны", () => {
