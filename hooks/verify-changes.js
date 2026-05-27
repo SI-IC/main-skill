@@ -1061,17 +1061,25 @@ function main(p) {
   process.stdout.write(JSON.stringify({ decision: "block", reason }));
 }
 
+// Терминальное сообщение хода — последнее assistant-text, ПОСЛЕ которого нет
+// tool_use. Промежуточный нарратив (текст, за которым идёт ещё tool_use в том же
+// ходе) — не «готово»-claim, оценивать его нельзя: иначе success-слово в нём даёт
+// ложный F/A, а при flush-гонке (финал ещё не на диске) хук блокирует по устаревшему
+// сообщению. Нет терминального текста (ход ещё не завершён / финал не сброшен) → "".
 function findLastAssistantText(lines) {
+  let sawToolUseAfter = false;
   for (let i = lines.length - 1; i >= 0; i--) {
     const e = lines[i];
-    if (e.type !== "assistant") continue;
+    if (!e || e.type !== "assistant") continue;
     const content = e.message?.content || [];
+    const hasToolUse = content.some((b) => b && b.type === "tool_use");
     const text = content
       .filter((b) => b && b.type === "text")
       .map((b) => b.text || "")
       .join("\n")
       .trim();
-    if (text) return text;
+    if (text && !hasToolUse && !sawToolUseAfter) return text;
+    if (hasToolUse) sawToolUseAfter = true;
   }
   return "";
 }

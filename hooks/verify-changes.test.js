@@ -237,6 +237,41 @@ test("triggerF: невалидная декларация блокируется
   expectBlock(r.stdout, "F");
 });
 
+test("lastText: промежуточный success-нарратив, за которым идёт tool_use, НЕ считается финальным claim", () => {
+  // Регресс: моё «Marking docs task done» сообщение (за ним TaskUpdate) ложно
+  // принималось за финальный claim → F-блок, хотя реальный финал (с блоком
+  // edge-cases) шёл позже / ещё не сброшен на диск (flush-гонка). Терминальное
+  // сообщение хода — то, после которого НЕТ tool_use. Если такого нет (только
+  // промежуточный текст + tool_use) — claim'а нет, блокировать нечего.
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/foo.ts")),
+    asstBash("curl -s http://localhost:3000/api/foo"),
+    asstText(SUCCESS + " (промежуточный нарратив, без edge-cases)"),
+    asstTask("general-purpose", "доделать", "ещё работаю"),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("lastText: терминальный текст после tool_use оценивается нормально (claim есть → F блокирует)", () => {
+  // Контр-проверка: легитимный финал (текст без tool_use после него) по-прежнему
+  // оценивается — детект не ослаблен предыдущим фиксом.
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/foo.ts")),
+    asstTask("general-purpose", "ревью", "code review"),
+    asstBash("curl -s http://localhost:3000/api/foo"),
+    asstText(SUCCESS + " (терминальный claim, без edge-cases)"),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "F");
+});
+
 test("triggerH: public surface (config) без doc edits блокируется", () => {
   const dir = tmp();
   writeFile(dir, ".claude-plugin/plugin.json", '{"name":"x"}');
