@@ -426,6 +426,105 @@ test("findPairedTestFile: lua — main.lua ↔ main.test.lua (нестандар
   assert.ok(found, `lua same-dir .test.lua should match, got ${found}`);
 });
 
+test("findPairedTestFile: AdonisJS app/services/X.ts ↔ tests/functional/X.spec.ts", () => {
+  const dir = tmp();
+  writeFile(dir, "app/services/user_backfill.ts", "export class X {}");
+  writeFile(
+    dir,
+    "tests/functional/user_backfill.spec.ts",
+    'test("x", () => {})',
+  );
+  const found = checks.findPairedTestFile("app/services/user_backfill.ts", dir);
+  assert.ok(found, `tests/functional spec should match, got ${found}`);
+  assert.match(found, /tests\/functional\/user_backfill\.spec\.ts$/);
+});
+
+test("findPairedTestFile: app/services/X.ts ↔ tests/integration/X.test.ts", () => {
+  const dir = tmp();
+  writeFile(dir, "app/services/report.ts", "export class X {}");
+  writeFile(dir, "tests/integration/report.test.ts", 'test("x", () => {})');
+  const found = checks.findPairedTestFile("app/services/report.ts", dir);
+  assert.ok(found, `tests/integration test should match, got ${found}`);
+  assert.match(found, /tests\/integration\/report\.test\.ts$/);
+});
+
+test("findPairedTestFile: AdonisJS monorepo apps/api/app/services/X.ts ↔ apps/api/tests/functional/X.spec.ts", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "apps/api/package.json", "{}");
+  writeFile(dir, "apps/api/app/services/user_backfill.ts", "export class X {}");
+  writeFile(
+    dir,
+    "apps/api/tests/functional/user_backfill.spec.ts",
+    'test("x", () => {})',
+  );
+  const found = checks.findPairedTestFile(
+    "apps/api/app/services/user_backfill.ts",
+    dir,
+  );
+  assert.ok(found, `monorepo tests/functional should match, got ${found}`);
+  assert.match(found, /apps\/api\/tests\/functional\/user_backfill\.spec\.ts$/);
+});
+
+test("findPairedTestFile: app/services/X.ts без теста нигде → null (детект не ослаблен)", () => {
+  const dir = tmp();
+  writeFile(dir, "app/services/orphan.ts", "export class X {}");
+  assert.strictEqual(
+    checks.findPairedTestFile("app/services/orphan.ts", dir),
+    null,
+  );
+});
+
+// ─── findReviewAgentCalls ─────────────────────────────────────────────────
+
+function asstTool(name, input) {
+  return {
+    type: "assistant",
+    message: { content: [{ type: "tool_use", name, input }] },
+  };
+}
+
+test("findReviewAgentCalls: распознаёт code+security через name=Task", () => {
+  const r = checks.findReviewAgentCalls([
+    asstTool("Task", {
+      subagent_type: "general-purpose",
+      prompt: "code review: качество",
+    }),
+    asstTool("Task", {
+      subagent_type: "general-purpose",
+      prompt: "security review OWASP injection",
+    }),
+  ]);
+  assert.strictEqual(r.code, true);
+  assert.strictEqual(r.security, true);
+});
+
+test("findReviewAgentCalls: распознаёт code+security через name=Agent", () => {
+  const r = checks.findReviewAgentCalls([
+    asstTool("Agent", {
+      subagent_type: "general-purpose",
+      prompt: "code review: паттерны, дублирование",
+    }),
+    asstTool("Agent", {
+      subagent_type: "general-purpose",
+      prompt: "security review per OWASP, auth bypass",
+    }),
+  ]);
+  assert.strictEqual(r.code, true);
+  assert.strictEqual(r.security, true);
+});
+
+test("findReviewAgentCalls: нерелевантный Agent-вызов без review-маркеров не засчитывается", () => {
+  const r = checks.findReviewAgentCalls([
+    asstTool("Agent", {
+      subagent_type: "Explore",
+      prompt: "найди где определён UserService",
+    }),
+  ]);
+  assert.strictEqual(r.code, false);
+  assert.strictEqual(r.security, false);
+});
+
 // ─── shouldSkipForTestPairing ─────────────────────────────────────────────
 
 test("shouldSkipForTestPairing: миграции (Knex/Adonis/Django/Rails)", () => {
@@ -897,6 +996,14 @@ test("findE2eFile находит functional-парный", () => {
   writeFile(dir, "tests/functional/auth.spec.ts", 'test("login", () => {})');
   const found = checks.findE2eFile("app/controllers/auth_controller.ts", dir);
   assert.ok(found);
+});
+
+test("findE2eFile находит integration-парный (anti-drift: общий с D набор)", () => {
+  const dir = tmp();
+  writeFile(dir, "app/controllers/auth_controller.ts", "x");
+  writeFile(dir, "tests/integration/auth.test.ts", 'test("login", () => {})');
+  const found = checks.findE2eFile("app/controllers/auth_controller.ts", dir);
+  assert.ok(found, `tests/integration should match in E too, got ${found}`);
 });
 
 test("findE2eFile: pnpm workspace — backend/tests/functional/auth.spec.ts", () => {

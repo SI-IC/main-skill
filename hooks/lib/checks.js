@@ -378,6 +378,17 @@ function shouldSkipForTestPairing(srcPath, repoRoot = null) {
 // Триггер D: поиск парного test-файла
 // ────────────────────────────────────────────────────────────────────────────
 
+// Директории, где лежат тесты бизнес-логики, ходящие в реальную БД/сервисы
+// (AdonisJS/Japa `tests/functional/`, общая `tests/integration/`). Это валидный
+// парный тест логики (не browser-e2e) — поэтому набор шарится между триггером D
+// (парный тест) и E (e2e/functional). E дополнительно знает чисто-браузерные
+// дир-ы (e2e/, cypress/, playwright/), которые в D намеренно НЕ входят: совпадение
+// basename с браузерным e2e не доказывает покрытие логики файла.
+const SHARED_LOGIC_TEST_DIRS = [
+  ["tests", "functional"],
+  ["tests", "integration"],
+];
+
 // Mirror-discovery: src-prefix → test-prefixes (внутри того же package-root).
 // Возвращает массив { fromRel, toReplacements: string[] } — список замен src-сегмента.
 function getMirrorPrefixReplacements(relFromPackageRoot) {
@@ -541,6 +552,13 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
       path.join("test", `${base}.test${gExt}`),
       path.join("spec", `${base}_spec${gExt}`),
     );
+    // tests/functional, tests/integration — DB-hitting логика-тесты (Adonis/Japa).
+    for (const segs of SHARED_LOGIC_TEST_DIRS) {
+      candidates.push(
+        path.join(...segs, `${base}.test${gExt}`),
+        path.join(...segs, `${base}.spec${gExt}`),
+      );
+    }
   }
 
   const baseRoots = findPackageRoots(srcPath, repoRoot);
@@ -632,13 +650,17 @@ function findE2eFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
 
   const candidates = [];
   for (const e of exts) {
+    // functional/integration — общий с триггером D набор логика-тест-дир.
+    for (const segs of SHARED_LOGIC_TEST_DIRS) {
+      candidates.push(
+        path.join(...segs, `${base}.spec${e}`),
+        path.join(...segs, `${base}.test${e}`),
+      );
+    }
+    // e2e-специфичные дир-ы — только здесь, в D намеренно не входят.
     candidates.push(
-      path.join("tests", "functional", `${base}.spec${e}`),
-      path.join("tests", "functional", `${base}.test${e}`),
       path.join("tests", "e2e", `${base}.test${e}`),
       path.join("tests", "e2e", `${base}.spec${e}`),
-      path.join("tests", "integration", `${base}.test${e}`),
-      path.join("tests", "integration", `${base}.spec${e}`),
       path.join("e2e", `${base}.spec${e}`),
       path.join("e2e", `${base}.test${e}`),
       path.join("cypress", "e2e", `${base}.cy${e}`),
@@ -938,8 +960,12 @@ function countNonTrivialDiffLines(lines, filterFn = null, cap = Infinity) {
   return total;
 }
 
-// Собирает все Task-вызовы из транскрипта и категоризирует по типу review.
-// Возвращает { code: bool, security: bool }.
+// Имена сабагент-инструментов: в разных сборках Claude Code диспатч сабагента
+// экспонирован как Task ИЛИ Agent (в Agent-окружении Task отсутствует вовсе).
+const SUBAGENT_TOOL_NAMES = new Set(["Task", "Agent"]);
+
+// Собирает все сабагент-вызовы (Task/Agent) из транскрипта и категоризирует по
+// типу review. Возвращает { code: bool, security: bool }.
 function findReviewAgentCalls(lines) {
   let code = false;
   let security = false;
@@ -947,7 +973,8 @@ function findReviewAgentCalls(lines) {
     if (e.type !== "assistant") continue;
     const content = e.message?.content || [];
     for (const b of content) {
-      if (!b || b.type !== "tool_use" || b.name !== "Task") continue;
+      if (!b || b.type !== "tool_use" || !SUBAGENT_TOOL_NAMES.has(b.name))
+        continue;
       const inp = b.input || {};
       const sub = String(inp.subagent_type || "");
       const desc = String(inp.description || "");

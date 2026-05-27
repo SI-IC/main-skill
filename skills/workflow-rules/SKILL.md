@@ -189,9 +189,9 @@ permission:tests/auth.test.ts:test_revoked_session
 
 **Как делать:**
 
-1. **Параллельно** запусти ДВА Task-агента в одном Tool message (один проход):
-   - code-review — `Task(subagent_type="general-purpose", ...)` с code-review-промптом (качество, паттерны, дублирование, непокрытые edge-cases, нарушения конвенций), модель **обязательно `sonnet`** (≈5× экономия на структурном обходе diff'а). Есть superpowers → бери промпт из его скилла `requesting-code-review` (шаблон `code-reviewer.md`).
-   - `Task(subagent_type="general-purpose", ..., prompt="security review по OWASP Top-10: injection / auth-bypass / SSRF / открытые редиректы / weak crypto / leaked secrets / unsafe deserialization / missing rate-limit / TOCTOU / path traversal — на конкретные изменённые файлы [список]")` — **без `model` override** (inherit от родителя). Security-ревью должно идти на максимально capable модели (false negative дороже стоимости).
+1. **Параллельно** запусти ДВА сабагента в одном Tool message (один проход). Инструмент диспатча — `Task` или `Agent` (что доступно в окружении; хук засчитывает оба):
+   - code-review — `Task/Agent(subagent_type="general-purpose", ...)` с code-review-промптом (качество, паттерны, дублирование, непокрытые edge-cases, нарушения конвенций), модель **обязательно `sonnet`** (≈5× экономия на структурном обходе diff'а). Есть superpowers → бери промпт из его скилла `requesting-code-review` (шаблон `code-reviewer.md`).
+   - `Task/Agent(subagent_type="general-purpose", ..., prompt="security review по OWASP Top-10: injection / auth-bypass / SSRF / открытые редиректы / weak crypto / leaked secrets / unsafe deserialization / missing rate-limit / TOCTOU / path traversal — на конкретные изменённые файлы [список]")` — **без `model` override** (inherit от родителя). Security-ревью должно идти на максимально capable модели (false negative дороже стоимости).
 2. **Триаж каждого замечания** — через `superpowers:receiving-code-review` если установлен, иначе той же дисциплиной напрямую. Без performative-agreement и без отмазок «minor / вне scope».
 3. **Применить applied / обосновать rejected/deferred технически** (file:line, конкретный риск, метрика, цитата кода — не «несущественно»).
 4. **Один проход.** Повторный запуск review-агентов перед Stop ЗАПРЕЩЁН.

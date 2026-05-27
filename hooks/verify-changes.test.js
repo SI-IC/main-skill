@@ -107,6 +107,21 @@ function asstTask(subagent_type, description, prompt) {
   };
 }
 
+function asstAgent(subagent_type, description, prompt) {
+  return {
+    type: "assistant",
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          name: "Agent",
+          input: { subagent_type, description, prompt },
+        },
+      ],
+    },
+  };
+}
+
 // Edit с реальным new_string — для тестов на nonTrivialDiffLines.
 function asstEditWith(file_path, new_string) {
   return {
@@ -731,6 +746,38 @@ test("triggerJ: fallback — code-review через general-purpose (без supe
       "code review: качество, паттерны, дублирование, непокрытые edge-cases, нарушения конвенций",
     ),
     asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        SELF_REVIEW_OK("none-found", "none-found"),
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: ревью через инструмент Agent (Task недоступен в окружении) засчитывается", () => {
+  // Регресс bug-1: в сборках Claude Code сабагент-инструмент экспонирован как
+  // Agent, а Task отсутствует. Хук обязан распознавать review-вызовы и по Agent.
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstAgent(
+      "general-purpose",
+      "code review",
+      "code review: качество, паттерны, дублирование, непокрытые edge-cases",
+    ),
+    asstAgent(
       "general-purpose",
       "security review",
       "security review per OWASP, injection, auth bypass",
