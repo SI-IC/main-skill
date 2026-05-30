@@ -20,9 +20,11 @@ main-skill/
 │       ├── SKILL.md        # ядро: 3-фазный workflow + universal rules
 │       └── references/     # справочные файлы (Stop-triggers и т.п.)
 ├── hooks/
-│   ├── hooks.json          # регистрация SessionStart + PostToolUse + Stop
+│   ├── hooks.json          # регистрация SessionStart + PreToolUse + PostToolUse + Stop
 │   ├── session-start.sh    # update-check + plugin-check баннер + инструкция вызвать skill
 │   ├── session-start.test.sh # integration-тесты для session-start.sh
+│   ├── claudemd-guard.js   # PreToolUse-хук: deny на крупное раздувание CLAUDE.md
+│   ├── claudemd-guard.test.js
 │   ├── auto-format.js      # PostToolUse-хук: форматирует файл prettier/ruff/gofmt/rustfmt/clang-format
 │   ├── auto-format.test.js
 │   ├── verify-changes.js   # Stop-хук с триггерами A–K
@@ -58,6 +60,9 @@ node hooks/lib/checks.test.js
 # unit для PostToolUse auto-format
 node hooks/auto-format.test.js
 
+# unit для PreToolUse claude-md-guard
+node hooks/claudemd-guard.test.js
+
 # unit для SessionStart plugin-check
 node hooks/lib/plugin-check.test.js
 
@@ -66,13 +71,26 @@ sh -n hooks/session-start.sh
 sh hooks/session-start.test.sh
 ```
 
-Любая правка `verify-changes.js` / `checks.js` / `auto-format.js` / `plugin-check.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
+Любая правка `verify-changes.js` / `checks.js` / `auto-format.js` / `plugin-check.js` / `claudemd-guard.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
 
 ## SessionStart plugin-check баннер
 
 `session-start.sh` → `emit_plugin_check` зовёт `lib/plugin-check.js`, который читает `~/.claude/settings.json` (`enabledPlugins`) и печатает **неблокирующий** баннер, если рекомендованный плагин не включён. Набор `RECOMMENDED` — источник истины то, на что ссылается `SKILL.md` (триаж/UI): `superpowers`, `ui-ux-pro-max`. Матч по base-имени до `@` (любой marketplace-суффикс считается). `value=false` (установлен, но выключен) = missing. Нет валидного `enabledPlugins` → `[]` (не шумим ложным баннером). Fail-soft: любая ошибка чтения/парса → тишина, SessionStart не ломается. Опт-аут: `MAIN_SKILL_PLUGIN_CHECK=0`.
 
 **Known limitation:** читается только user-level `~/.claude/settings.json`. Плагин, включённый через project-level `.claude/settings.json`, может ложно попасть в «не установлен». Минор — `enabledPlugins` Claude Code хранит на user-level.
+
+## PreToolUse claude-md-guard
+
+`claudemd-guard.js` гасит раздувание CLAUDE.md в точке письма. На `Edit`/`Write`/`MultiEdit` по basename `CLAUDE.md` считает **net-прирост строк правки** (`netAddedLines`: добавлено − удалено); дописывание в существующий файл ≥ порога → `permissionDecision:deny` с дистиллятом правил claude-md-management. Порог 20 (`MAIN_SKILL_CLAUDEMD_MAXADD`), опт-аут `MAIN_SKILL_CLAUDEMD_CHECK=0`.
+
+- **Net, не абсолютный размер:** у Claude Code нет официального капа на CLAUDE.md — абсолют фолсил бы на легитимно больших файлах.
+- **Создание-с-нуля не гардится** (`isCreation`: файл пуст/отсутствует) — свежий плотный CLAUDE.md не раздувание. `deny` только на дописывание.
+- **deny, а не `additionalContext`:** PreToolUse не переписывает pending-правку (content уже зафиксирован) — повлиять можно только deny+reason, Claude переиздаёт ужатую. Мелкие правки молчат.
+- **reason** захардкожен в `buildReason`: статичный текст + целые числа, недоверенного ввода нет → ANSI-санитизация не нужна (инвариант `formatBanner`). `claude-md-management` включён → reason зовёт `claude-md-improver`.
+- **Fail-soft:** аномалия чтения → `safeReadFile`=`null` → правка пропускается, Edit не ломается.
+- **Known gap:** «тысяча мелких правок» не ловится — метрика на одну операцию.
+
+Правка форматов входа / порога / reason → синхронизируй `claudemd-guard.test.js` и эту секцию.
 
 ## Skip-rules для триггера D — что НЕ требует парного теста
 
