@@ -11,6 +11,7 @@
 const fs = require("fs");
 const path = require("path");
 const { readSettings, enabledPluginNames } = require("./lib/plugin-check");
+const { isDisabled } = require("./lib/session-disabled");
 
 const DEFAULT_MAXADD = 20;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -107,6 +108,7 @@ function buildReason(netAdded, threshold, improverAvailable) {
 // Чистое ядро: payload + инъецируемые зависимости → {decision,reason} | null.
 function evaluate(payload, deps) {
   const env = (deps && deps.env) || {};
+  if (isDisabled(env)) return null; // /main-skill:off или MAIN_SKILL_OFF=1 — плагин выкл на сессию.
   if (env.MAIN_SKILL_CLAUDEMD_CHECK === "0") return null;
 
   const tool = (payload && payload.tool_name) || "";

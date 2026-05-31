@@ -21,21 +21,22 @@
 // Приоритет поиска бинаря: project-local (node_modules/.bin, .venv/bin) →
 // global PATH. Если ни там, ни там — additionalContext с install-командой.
 
-const fs = require('fs');
-const path = require('path');
-const { execFileSync } = require('child_process');
+const fs = require("fs");
+const path = require("path");
+const { execFileSync } = require("child_process");
+const { isDisabled } = require("./lib/session-disabled");
 
 if (require.main === module) {
-  let payload = '';
+  let payload = "";
   let aborted = false;
-  process.stdin.on('data', (c) => {
+  process.stdin.on("data", (c) => {
     payload += c;
     if (payload.length > 1024 * 1024) {
       aborted = true;
       process.stdin.destroy();
     }
   });
-  process.stdin.on('end', () => {
+  process.stdin.on("end", () => {
     if (aborted) return process.exit(0);
     try {
       main(JSON.parse(payload));
@@ -53,22 +54,44 @@ const EXCLUDE_FILE_RE =
 
 const EXTENSIONS = {
   prettier: new Set([
-    '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
-    '.css', '.scss', '.sass', '.less',
-    '.html', '.htm',
-    '.json', '.json5', '.jsonc',
-    '.yaml', '.yml',
-    '.md', '.mdx',
-    '.vue', '.svelte',
-    '.graphql', '.gql',
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".mjs",
+    ".cjs",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    ".html",
+    ".htm",
+    ".json",
+    ".json5",
+    ".jsonc",
+    ".yaml",
+    ".yml",
+    ".md",
+    ".mdx",
+    ".vue",
+    ".svelte",
+    ".graphql",
+    ".gql",
   ]),
-  ruff: new Set(['.py', '.pyi']),
-  gofmt: new Set(['.go']),
-  rustfmt: new Set(['.rs']),
+  ruff: new Set([".py", ".pyi"]),
+  gofmt: new Set([".go"]),
+  rustfmt: new Set([".rs"]),
   clang: new Set([
-    '.c', '.cpp', '.cc', '.cxx',
-    '.h', '.hpp', '.hh', '.hxx',
-    '.m', '.mm',
+    ".c",
+    ".cpp",
+    ".cc",
+    ".cxx",
+    ".h",
+    ".hpp",
+    ".hh",
+    ".hxx",
+    ".m",
+    ".mm",
   ]),
 };
 
@@ -83,11 +106,12 @@ function languageFor(file) {
 }
 
 function main(p) {
-  const tool = p.tool_name || '';
+  if (isDisabled()) return; // /main-skill:off или MAIN_SKILL_OFF=1 — плагин выкл на сессию.
+  const tool = p.tool_name || "";
   if (!/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(tool)) return;
 
   const filePath = p.tool_input?.file_path || p.tool_input?.notebook_path;
-  if (!filePath || typeof filePath !== 'string') return;
+  if (!filePath || typeof filePath !== "string") return;
   // Claude Code всегда шлёт абсолютные пути для Edit/Write; защита от деградации протокола.
   if (!path.isAbsolute(filePath)) return;
 
@@ -107,12 +131,12 @@ function main(p) {
   if (!lang) return;
 
   const result = formatFile(lang, abs);
-  if (!result || result.kind === 'success') return;
+  if (!result || result.kind === "success") return;
 
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
-        hookEventName: 'PostToolUse',
+        hookEventName: "PostToolUse",
         additionalContext: result.message,
       },
     }),
@@ -122,98 +146,107 @@ function main(p) {
 function formatFile(lang, file) {
   const dir = path.dirname(file);
   switch (lang) {
-    case 'prettier':
+    case "prettier":
       return runFormatter({
-        bin: findLocalBin(dir, 'prettier') || 'prettier',
-        args: ['--write', file],
+        bin: findLocalBin(dir, "prettier") || "prettier",
+        args: ["--write", file],
         cwd: dir,
         file,
-        toolName: 'prettier',
+        toolName: "prettier",
         installer: () => prettierInstaller(file),
       });
 
-    case 'ruff': {
-      const ruff = findLocalPyBin(dir, 'ruff') || 'ruff';
+    case "ruff": {
+      const ruff = findLocalPyBin(dir, "ruff") || "ruff";
       const r = runFormatter({
         bin: ruff,
-        args: ['format', file],
+        args: ["format", file],
         cwd: dir,
         file,
-        toolName: 'ruff',
+        toolName: "ruff",
         suppressMissing: true,
       });
-      if (r && r.kind !== 'missing') return r;
+      if (r && r.kind !== "missing") return r;
 
-      const black = findLocalPyBin(dir, 'black') || 'black';
+      const black = findLocalPyBin(dir, "black") || "black";
       return runFormatter({
         bin: black,
-        args: ['--quiet', file],
+        args: ["--quiet", file],
         cwd: dir,
         file,
-        toolName: 'ruff or black',
+        toolName: "ruff or black",
         installer: () => pythonInstaller(file),
       });
     }
 
-    case 'gofmt':
+    case "gofmt":
       return runFormatter({
-        bin: 'gofmt',
-        args: ['-w', file],
+        bin: "gofmt",
+        args: ["-w", file],
         cwd: dir,
         file,
-        toolName: 'gofmt',
+        toolName: "gofmt",
         installer: () => goInstaller(),
       });
 
-    case 'rustfmt':
+    case "rustfmt":
       return runFormatter({
-        bin: 'rustfmt',
+        bin: "rustfmt",
         args: [file],
         cwd: dir,
         file,
-        toolName: 'rustfmt',
+        toolName: "rustfmt",
         installer: () => rustfmtInstaller(),
       });
 
-    case 'clang':
+    case "clang":
       return runFormatter({
-        bin: 'clang-format',
-        args: ['-i', file],
+        bin: "clang-format",
+        args: ["-i", file],
         cwd: dir,
         file,
-        toolName: 'clang-format',
+        toolName: "clang-format",
         installer: () => clangInstaller(),
       });
   }
   return null;
 }
 
-function runFormatter({ bin, args, cwd, file, toolName, installer, suppressMissing, timeoutMs = 10_000 }) {
+function runFormatter({
+  bin,
+  args,
+  cwd,
+  file,
+  toolName,
+  installer,
+  suppressMissing,
+  timeoutMs = 10_000,
+}) {
   try {
     execFileSync(bin, args, {
       cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: timeoutMs,
-      encoding: 'utf8',
+      encoding: "utf8",
     });
-    return { kind: 'success' };
+    return { kind: "success" };
   } catch (e) {
     const rel = relPath(file);
 
-    if (e.code === 'ENOENT') {
-      if (suppressMissing) return { kind: 'missing' };
+    if (e.code === "ENOENT") {
+      if (suppressMissing) return { kind: "missing" };
       const installCmd = installer ? installer() : null;
-      return { kind: 'missing', message: missingMessage(toolName, installCmd) };
+      return { kind: "missing", message: missingMessage(toolName, installCmd) };
     }
-    if (e.killed || e.signal === 'SIGTERM' || e.signal === 'SIGKILL') {
+    if (e.killed || e.signal === "SIGTERM" || e.signal === "SIGKILL") {
       return {
-        kind: 'failed',
+        kind: "failed",
         message: `[main-skill auto-format] ${toolName} превысил timeout ${Math.round(timeoutMs / 1000)}s на ${rel}. Файл сохранён без переформатирования.`,
       };
     }
-    const stderr = sanitizeStderr(e.stderr || e.stdout || '');
+    const stderr = sanitizeStderr(e.stderr || e.stdout || "");
     return {
-      kind: 'failed',
+      kind: "failed",
       message:
         `[main-skill auto-format] ${toolName} упал на ${rel}.\n` +
         `<formatter-stderr>\n${stderr}\n</formatter-stderr>\n` +
@@ -225,19 +258,19 @@ function runFormatter({ bin, args, cwd, file, toolName, installer, suppressMissi
 // Защита от prompt-injection через stderr форматтера: ANSI escape убираем,
 // control chars вырезаем, каждую строку обрезаем до 200 символов, всего ≤8 строк.
 function sanitizeStderr(raw, maxLines = 8, maxLineChars = 200) {
-  return String(raw || '')
+  return String(raw || "")
     .trim()
-    .split('\n')
+    .split("\n")
     .slice(0, maxLines)
     .map((line) =>
       line
         // eslint-disable-next-line no-control-regex
-        .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+        .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
         // eslint-disable-next-line no-control-regex
-        .replace(/[\x00-\x08\x0B-\x1F\x7F]/g, '')
+        .replace(/[\x00-\x08\x0B-\x1F\x7F]/g, "")
         .slice(0, maxLineChars),
     )
-    .join('\n');
+    .join("\n");
 }
 
 function missingMessage(toolName, installCmd) {
@@ -246,7 +279,7 @@ function missingMessage(toolName, installCmd) {
     `Не правь форматирование вручную; установи форматтер и повтори последнюю правку файла.`,
   ];
   if (installCmd) lines.push(`Установи: ${installCmd}`);
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 function relPath(p) {
@@ -265,8 +298,13 @@ function relPath(p) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PROJECT_ROOT_MARKERS = [
-  '.git', 'package.json', 'pyproject.toml',
-  'Cargo.toml', 'go.mod', 'Pipfile', 'Gemfile',
+  ".git",
+  "package.json",
+  "pyproject.toml",
+  "Cargo.toml",
+  "go.mod",
+  "Pipfile",
+  "Gemfile",
 ];
 
 function isProjectRoot(dir) {
@@ -278,7 +316,7 @@ function isProjectRoot(dir) {
 
 function findLocalBin(startDir, name) {
   return walkUp(startDir, (dir) => {
-    const candidate = path.join(dir, 'node_modules', '.bin', name);
+    const candidate = path.join(dir, "node_modules", ".bin", name);
     if (!fs.existsSync(candidate)) return null;
     // symlink-бинарь не доверяем, если он указывает наружу (защита от
     // подброшенного `/tmp/node_modules/.bin/prettier -> /bin/sh`)
@@ -297,8 +335,8 @@ function findLocalBin(startDir, name) {
 
 function findLocalPyBin(startDir, name) {
   return walkUp(startDir, (dir) => {
-    for (const venv of ['.venv', 'venv']) {
-      const candidate = path.join(dir, venv, 'bin', name);
+    for (const venv of [".venv", "venv"]) {
+      const candidate = path.join(dir, venv, "bin", name);
       if (!fs.existsSync(candidate)) continue;
       try {
         const lst = fs.lstatSync(candidate);
@@ -343,32 +381,33 @@ function walkUp(startDir, predicate) {
 
 function prettierInstaller(file) {
   const dir = path.dirname(file);
-  if (findUp(dir, ['bun.lockb', 'bun.lock'])) return 'bun add -d prettier';
-  if (findUp(dir, ['pnpm-lock.yaml'])) return 'pnpm add -D prettier';
-  if (findUp(dir, ['yarn.lock'])) return 'yarn add -D prettier';
-  return 'npm install -D prettier';
+  if (findUp(dir, ["bun.lockb", "bun.lock"])) return "bun add -d prettier";
+  if (findUp(dir, ["pnpm-lock.yaml"])) return "pnpm add -D prettier";
+  if (findUp(dir, ["yarn.lock"])) return "yarn add -D prettier";
+  return "npm install -D prettier";
 }
 
 function pythonInstaller(file) {
   const dir = path.dirname(file);
-  if (findUp(dir, ['uv.lock'])) return 'uv add --dev ruff';
-  if (findUp(dir, ['poetry.lock'])) return 'poetry add --group dev ruff';
-  if (findUp(dir, ['Pipfile'])) return 'pipenv install --dev ruff';
-  return 'pip install ruff';
+  if (findUp(dir, ["uv.lock"])) return "uv add --dev ruff";
+  if (findUp(dir, ["poetry.lock"])) return "poetry add --group dev ruff";
+  if (findUp(dir, ["Pipfile"])) return "pipenv install --dev ruff";
+  return "pip install ruff";
 }
 
 function goInstaller() {
-  return 'gofmt входит в Go SDK — установи Go (https://go.dev/doc/install или `brew install go`).';
+  return "gofmt входит в Go SDK — установи Go (https://go.dev/doc/install или `brew install go`).";
 }
 
 function rustfmtInstaller() {
-  return 'rustup component add rustfmt';
+  return "rustup component add rustfmt";
 }
 
 function clangInstaller() {
-  if (process.platform === 'darwin') return 'brew install clang-format';
-  if (process.platform === 'linux') return 'установи пакет clang-format системным пакетным менеджером (apt/dnf/pacman)';
-  return 'установи clang-format системным пакетным менеджером';
+  if (process.platform === "darwin") return "brew install clang-format";
+  if (process.platform === "linux")
+    return "установи пакет clang-format системным пакетным менеджером (apt/dnf/pacman)";
+  return "установи clang-format системным пакетным менеджером";
 }
 
 module.exports = {

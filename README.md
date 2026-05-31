@@ -35,6 +35,12 @@ First command registers this repo as a Claude Code marketplace; second installs 
 
 Opt out of the update check with `export MAIN_SKILL_AUTO_UPDATE=0`.
 
+## Disabling for a single session
+
+Run **`/main-skill:off`** mid-session (e.g. right after `/clear`) to turn the plugin off for the rest of that session — no restart needed. It drops a sentinel (`~/.claude/plugins/.main-skill-off`) that all hooks (`verify-changes`, `claudemd-guard`, `auto-format`) read at runtime and no-op on, and tells Claude to stop applying the workflow rules. **`/main-skill:on`** re-enables it. The sentinel is cleared automatically on the next `startup`/`resume`/`clear`, so a fresh session always starts with the plugin on.
+
+Launch-time equivalent for a whole session: `MAIN_SKILL_OFF=1 claude`. Note the sentinel is user-level, not session-scoped — while active it also silences other open Claude Code windows.
+
 ## Auto-format (PostToolUse hook)
 
 `hooks/auto-format.js` runs after every `Edit` / `Write` / `MultiEdit` / `NotebookEdit` and formats the file in-place using the right tool for the language:

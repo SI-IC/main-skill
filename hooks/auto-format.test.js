@@ -469,3 +469,27 @@ test('isProjectRoot: распознаёт стандартные маркеры'
     assert.ok(af.isProjectRoot(dir), `${m} должен распознаваться как project-root marker`);
   }
 });
+
+// ─── session-disabled (/main-skill:off, MAIN_SKILL_OFF=1) ─────────────────────
+
+test('main: MAIN_SKILL_OFF=1 → no-op даже когда без него был бы additionalContext', () => {
+  const root = tmp();
+  writeFile(root, 'pnpm-lock.yaml', '');
+  const f = writeFile(root, 'src/app.ts', 'export const a = 1;\n');
+  // без выключения (PATH без prettier) хук эмитит additionalContext с install-командой.
+  assert.notEqual(runMain({ tool_name: 'Edit', tool_input: { file_path: f } }), '');
+  // с выключением — полная тишина.
+  const out = runMain({ tool_name: 'Edit', tool_input: { file_path: f } }, { MAIN_SKILL_OFF: '1' });
+  assert.equal(out, '');
+});
+
+test('main: сентинел-файл под HOME → no-op', () => {
+  const root = tmp();
+  writeFile(root, 'pnpm-lock.yaml', '');
+  const f = writeFile(root, 'src/app.ts', 'export const a = 1;\n');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'msaf-home-'));
+  fs.mkdirSync(path.join(home, '.claude', 'plugins'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'plugins', '.main-skill-off'), '');
+  const out = runMain({ tool_name: 'Edit', tool_input: { file_path: f } }, { HOME: home });
+  assert.equal(out, '');
+});

@@ -1289,3 +1289,41 @@ test("L: не активируется без manifest-правки", () => {
   const r = runHookWithDeps(tp, { CLAUDE_PROJECT_DIR: dir });
   expectNoBlock(r.stdout);
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// session-disabled: /main-skill:off (сентинел) и env MAIN_SKILL_OFF=1 → no-op.
+// Базовый блокирующий сценарий — как triggerD, но при выключенном плагине Stop
+// не должен блокироваться (хук ведёт себя так, будто не установлен).
+// ────────────────────────────────────────────────────────────────────────────
+
+function blockingDscenario() {
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/foo.ts")),
+    asstBash("curl -s http://localhost:3000/api/foo"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("tests/unit/foo.test.ts", "empty")),
+  ]);
+  return { dir, tp };
+}
+
+test("session-disabled: env MAIN_SKILL_OFF=1 → Stop не блокирует", () => {
+  const { dir, tp } = blockingDscenario();
+  // sanity: без выключения этот сценарий блокирует (триггер D).
+  expectBlock(runHook(tp, { CLAUDE_PROJECT_DIR: dir }).stdout, "D");
+  // с выключением — тишина.
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_OFF: "1" });
+  expectNoBlock(r.stdout);
+});
+
+test("session-disabled: сентинел-файл под HOME → Stop не блокирует", () => {
+  const { dir, tp } = blockingDscenario();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "msv-home-"));
+  fs.mkdirSync(path.join(home, ".claude", "plugins"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, ".claude", "plugins", ".main-skill-off"),
+    "",
+  );
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, HOME: home });
+  expectNoBlock(r.stdout);
+});

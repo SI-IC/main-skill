@@ -19,6 +19,17 @@
 MP_DIR="$HOME/.claude/plugins/marketplaces/main-skill"
 STAMP="$HOME/.claude/plugins/.main-skill-update-stamp"
 CACHE_BASE="$HOME/.claude/plugins/cache/main-skill/main-skill"
+OFF_SENTINEL="$HOME/.claude/plugins/.main-skill-off"
+
+# Per-session disable reset: каждый SessionStart (startup|resume|clear) снимает
+# сентинел `/main-skill:off` → плагин снова включён по умолчанию в новой сессии.
+# Сам сентинел создаётся слэш-командой ПОСРЕДИ сессии и читается хуками в рантайме
+# (lib/session-disabled.js), поэтому выключение работает без перезапуска Claude Code.
+rm -f "$OFF_SENTINEL" 2>/dev/null
+
+# Launch-time полное отключение: `MAIN_SKILL_OFF=1 claude` — ни апдейта, ни баннеров,
+# ни skill-инструкции (node-хуки при этой env тоже делают no-op).
+[ "${MAIN_SKILL_OFF:-0}" = "1" ] && exit 0
 
 maybe_update() {
   [ "${MAIN_SKILL_AUTO_UPDATE:-1}" = "0" ] && return

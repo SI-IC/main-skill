@@ -381,3 +381,28 @@ test("main: мелкая правка → ничего не пишет в stdout
   }
   assert.equal(captured, "");
 });
+
+// ─── session-disabled (/main-skill:off, MAIN_SKILL_OFF=1) ─────────────────────
+
+test("evaluate: session-disabled (env + сентинел) → null, хотя иначе был бы deny", () => {
+  const p = {
+    tool_name: "Edit",
+    tool_input: {
+      file_path: "/x/CLAUDE.md",
+      old_string: "a",
+      new_string: Array.from({ length: 30 }, () => "x").join("\n"),
+    },
+  };
+  // sanity: без выключения этот payload даёт deny.
+  assert.ok(g.evaluate(p, denyDeps()));
+  // env-выключение.
+  assert.equal(g.evaluate(p, denyDeps({ env: { MAIN_SKILL_OFF: "1" } })), null);
+  // сентинел-файл под HOME.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "msg-home-"));
+  fs.mkdirSync(path.join(home, ".claude", "plugins"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, ".claude", "plugins", ".main-skill-off"),
+    "",
+  );
+  assert.equal(g.evaluate(p, denyDeps({ env: { HOME: home } })), null);
+});

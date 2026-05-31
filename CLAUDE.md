@@ -15,13 +15,16 @@ main-skill/
 ├── .claude-plugin/
 │   ├── plugin.json         # манифест плагина (version → bump на каждом коммите)
 │   └── marketplace.json    # делает репо installable как marketplace
+├── commands/
+│   ├── off.md              # /main-skill:off — выключить плагин в текущей сессии
+│   └── on.md               # /main-skill:on — снова включить
 ├── skills/
 │   └── workflow-rules/
 │       ├── SKILL.md        # ядро: 3-фазный workflow + universal rules
 │       └── references/     # справочные файлы (Stop-triggers и т.п.)
 ├── hooks/
 │   ├── hooks.json          # регистрация SessionStart + PreToolUse + PostToolUse + Stop
-│   ├── session-start.sh    # update-check + plugin-check баннер + инструкция вызвать skill
+│   ├── session-start.sh    # update-check + plugin-check + skill-инструкция + сброс off-сентинела
 │   ├── session-start.test.sh # integration-тесты для session-start.sh
 │   ├── claudemd-guard.js   # PreToolUse-хук: deny на крупное раздувание CLAUDE.md
 │   ├── claudemd-guard.test.js
@@ -35,7 +38,9 @@ main-skill/
 │       │                   # edge-cases parser, auto-lint
 │       ├── checks.test.js
 │       ├── plugin-check.js  # детект рекомендованных плагинов для SessionStart-баннера
-│       └── plugin-check.test.js
+│       ├── plugin-check.test.js
+│       ├── session-disabled.js  # рантайм-проверка off-сентинела / MAIN_SKILL_OFF для всех хуков
+│       └── session-disabled.test.js
 ├── CLAUDE.md               # ← этот файл (dev-facing only)
 └── README.md
 ```
@@ -66,12 +71,27 @@ node hooks/claudemd-guard.test.js
 # unit для SessionStart plugin-check
 node hooks/lib/plugin-check.test.js
 
+# unit для per-session disable
+node hooks/lib/session-disabled.test.js
+
 # integration для SessionStart-хука (+ sh-синтаксис)
 sh -n hooks/session-start.sh
 sh hooks/session-start.test.sh
 ```
 
-Любая правка `verify-changes.js` / `checks.js` / `auto-format.js` / `plugin-check.js` / `claudemd-guard.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
+Любая правка `verify-changes.js` / `checks.js` / `auto-format.js` / `plugin-check.js` / `claudemd-guard.js` / `session-disabled.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
+
+## Per-session disable (`/main-skill:off`)
+
+`commands/off.md` создаёт сентинел `~/.claude/plugins/.main-skill-off`; `lib/session-disabled.js` (`isDisabled`) читает его в рантайме, и все три node-хука (`verify-changes`, `claudemd-guard`, `auto-format`) при его наличии делают no-op. `commands/on.md` удаляет сентинел. `MAIN_SKILL_OFF=1` (launch-time env) — эквивалент на всю сессию.
+
+- **Файл, а не env:** env фиксируется при старте процесса → не выключить посреди сессии после `/clear`. Сентинел читается на каждый вызов → команда работает без перезапуска.
+- **Авто-сброс:** `session-start.sh` удаляет сентинел на каждом SessionStart (`startup|resume|clear`) и при `MAIN_SKILL_OFF=1` выходит сразу (ни апдейта, ни skill-инструкции). Значит disable живёт только до следующего `/clear`/рестарта — ровно «эта сессия».
+- **Команда — это промпт:** слэш-команда не выгружает уже зарегистрированные хуки; сентинел глушит их teeth (Stop-блок), а тело команды велит Claude не применять workflow-rules.
+- **Fail-soft:** аномалия чтения (нет HOME, ошибка stat) → `isDisabled`=false (плагин ВКЛ), при сомнении не отключаемся молча.
+- **Known limitation:** сентинел глобальный (user-level), не привязан к `session_id` → пока активен, заденет параллельные окна Claude Code. Для одно-оконного потока корректно; многооконный — компромисс в пользу простоты.
+
+Правка форматов сентинела / команд / reset-логики → синхронизируй `session-disabled.test.js`, `session-start.test.sh` и эту секцию.
 
 ## SessionStart plugin-check баннер
 

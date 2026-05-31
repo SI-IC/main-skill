@@ -70,6 +70,36 @@ else
   FAIL=1
 fi
 
+# 5. сброс per-session disable: сентинел .main-skill-off удаляется на SessionStart.
+H=$(mk_home '{"enabledPlugins":{}}')
+mkdir -p "$H/.claude/plugins"
+touch "$H/.claude/plugins/.main-skill-off"
+OUT=$(HOME="$H" MAIN_SKILL_AUTO_UPDATE=0 sh "$HOOK")
+if [ -e "$H/.claude/plugins/.main-skill-off" ]; then
+  echo "not ok - SessionStart должен удалять сентинел .main-skill-off"
+  FAIL=1
+else
+  echo "ok - SessionStart удаляет сентинел .main-skill-off (re-enable на новой сессии)"
+fi
+assert_contains "$OUT" "$SKILL_MARKER" "после сброса сентинела skill-инструкция есть"
+rm -rf "$H"
+
+# 6. launch-time MAIN_SKILL_OFF=1 → полная тишина (ни баннера, ни skill-инструкции),
+#    но сброс сентинела всё равно отрабатывает (rm идёт ДО early-exit).
+H=$(mk_home '{"enabledPlugins":{}}')
+mkdir -p "$H/.claude/plugins"
+touch "$H/.claude/plugins/.main-skill-off"
+OUT=$(HOME="$H" MAIN_SKILL_AUTO_UPDATE=0 MAIN_SKILL_OFF=1 sh "$HOOK")
+assert_not_contains "$OUT" "$SKILL_MARKER" "MAIN_SKILL_OFF=1 → нет skill-инструкции"
+assert_not_contains "$OUT" "$BANNER_MARKER" "MAIN_SKILL_OFF=1 → нет баннера"
+if [ -e "$H/.claude/plugins/.main-skill-off" ]; then
+  echo "not ok - MAIN_SKILL_OFF=1 → сентинел всё равно должен удаляться"
+  FAIL=1
+else
+  echo "ok - MAIN_SKILL_OFF=1 → сентинел удалён (rm до early-exit)"
+fi
+rm -rf "$H"
+
 if [ "$FAIL" -eq 0 ]; then
   echo "# all session-start.sh integration tests passed"
 else

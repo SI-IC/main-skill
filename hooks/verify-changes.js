@@ -28,6 +28,7 @@
 const fs = require("fs");
 const path = require("path");
 const checks = require("./lib/checks");
+const { isDisabled } = require("./lib/session-disabled");
 
 // Cap для чтения transcript: ~50 MB. Real transcripts < 5 MB; большие чаще
 // признак подделки или сессии с image-вложениями. Над лимитом — silent exit.
@@ -57,6 +58,7 @@ process.stdin.on("end", () => {
 });
 
 function main(p) {
+  if (isDisabled()) return; // /main-skill:off или MAIN_SKILL_OFF=1 — плагин выкл на сессию.
   if (
     process.env.MAIN_SKILL_VERIFY_CHANGES === "0" ||
     process.env.MAIN_SKILL_VERIFY_FRONTEND === "0"
