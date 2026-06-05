@@ -221,3 +221,11 @@ security:2:rejected:CSRF на /logout — endpoint POST + SameSite=Strict cookie
 ### Stop-триггеры verify-changes
 
 Хук `verify-changes.js` блокирует «готово»-claim по 9 триггерам (A–H, J, K) и поддерживает env-opt-outs. Полный перечень и opt-outs: [`references/stop-triggers.md`](references/stop-triggers.md).
+
+---
+
+# Большой план → circle-skill
+
+Если в конце планирующего флоу (brainstorming → writing-plans) план выходит многодоменным или оценочно > одной сессии (≈ >40% контекста на один проход) — **предложи** оформить его под плагин circle-skill (пофазное исполнение, по фазе на свежую фоновую сессию). Решение за пользователем; не оформляй без спроса и не жди явной просьбы — инициатива на тебе.
+
+Согласился — авторь план строго по [`references/circle-plan-authoring.md`](references/circle-plan-authoring.md): формат-маркеры circle, самодостаточные фазы (pre-authorized default+fallback вместо вопросов в фоновой сессии; `needs-human` только для необратимого/прод-риска), размер фаз домен-первично с целью ~30% контекста. После записи выдай команду `/circle-skill <path>`. Сам circle не запускай — это user-invoked.

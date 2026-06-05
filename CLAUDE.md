@@ -21,7 +21,8 @@ main-skill/
 ├── skills/
 │   └── workflow-rules/
 │       ├── SKILL.md        # ядро: 3-фазный workflow + universal rules
-│       └── references/     # справочные файлы (Stop-triggers и т.п.)
+│       └── references/     # справочные файлы (stop-triggers,
+│                           # circle-plan-authoring — формат плана под circle-skill)
 ├── hooks/
 │   ├── hooks.json          # регистрация SessionStart + PreToolUse + PostToolUse + Stop
 │   ├── session-start.sh    # update-check + plugin-check + skill-инструкция + сброс off-сентинела
