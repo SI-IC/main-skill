@@ -105,6 +105,8 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 Любая правка observable behaviour (фронт, API, CLI, job, MCP-плагин, cross-machine) — НЕ done, пока не выполнил flow и не вставил пруфы.
 
+**Сначала выбери самое дешёвое достаточное доказательство — калибруй под класс правки, не выкручивай на максимум.** Косметика / визуал-онли (CSS, лейаут, отступы, цвет, анимация, спиннер, текст-copy — и НЕ тронуты логика, состояние, данные, навигация/роуты, authz) → один скриншот до/после (или разовый headless open→screenshot); НЕ строй измеряющий / пиксель-ассертящий харнесс и НЕ промотируй в закоммиченный регресс-e2e. Тронута логика / API / состояние / навигация / authz → полный flow ниже + регресс-тест. **При сомнении в классе — бери пруф дороже, не дешевле.**
+
 - **Frontend** → дефолт — headless playwright (`npx playwright install chromium` + скрипт): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер. Скриншот если визуально. MCP-браузеры (`chrome-devtools-mcp`, `claude-in-chrome`) — опциональный ускоритель; их недоступность ≠ оправдание сдаться. Минимум — `curl localhost:PORT/route` → status + `grep`. Разовый зелёный смоук покрывает «отгрузить раз», но НЕ регрессию: если правка меняет user-флоу (роут-мап, дефолт-роут, добавление/удаление страниц, cross-bundle склейка) — промотируй смоук в **закоммиченный** e2e-спек, не полагайся на ручной прогон.
 - **API** → `curl` против реального endpoint → status + body.
 - **CLI** → re-run, paste output.
@@ -115,12 +117,9 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 ### Build-your-own-harness
 
-Если верификация требует окружения которого нет (docker-compose, headless browser, fake external API, peers плагина) — строй harness как часть задачи. «Сложный e2e» = триггер verify-changes.
+Если верификация требует окружения которого нет (docker-compose, headless browser, fake external API, peers плагина) — строй harness как часть задачи, не повод сдаться. «Сложный e2e» = триггер verify-changes. Per-channel рецепты — в `Reproduce-before-done` выше; уникальное здесь: External API → заглушка (`msw` / `nock` / локальный http-server); slash-команды в unattended-CI → `claude -p --permission-mode bypassPermissions --output-format stream-json` (требует `ANTHROPIC_API_KEY`).
 
-- Cross-machine / distributed → `docker-compose.e2e.yml`, `claude -p "/command"` в каждом контейнере, assertion по output.
-- Headless frontend → `playwright` + `npx playwright install chromium`.
-- External API → заглушка (`msw` / `nock` / локальный http-server).
-- Slash-команды плагина → `claude -p --permission-mode bypassPermissions --output-format stream-json` (штатный headless CI, требует `ANTHROPIC_API_KEY`).
+Незнакомая техника верификации (новый замер, перехват сети, измерение лейаута) — провалидируй её изолированно **одним** дешёвым проб-прогоном и выясни ограничения окружения (service worker глушит `page.route`, кеш/пересборка бандла, throttling headless) **до** полно-стекового прогона. Не открывай эти грабли серией дорогих e2e — на CPU-боксе каждый ≈ минута.
 
 Коммить harness в репо (`scripts/e2e.sh`, `docker-compose.e2e.yml`, `tests/e2e/`); следующая правка переиспользует.
 
