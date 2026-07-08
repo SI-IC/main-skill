@@ -194,6 +194,29 @@ function matchAnyGlob(filePath, globs) {
   return false;
 }
 
+// Широкий ignore-глоб = матчит целый подкаталог/язык без узкого якоря. Смотрим
+// последний path-сегмент и снимаем ведущий wildcard-ран (`*`/`**`/`?`):
+//   • остаток пуст (`**`, `dir/*`, `config/*`) → broad (вся папка);
+//   • остаток — ОДНО расширение (`*.ts`, `*.*`, `**/*.py`, `src/**/*.*`) → broad
+//     (весь язык/все файлы по дереву — по эффекту шире каталог-глоба);
+//   • иначе есть литеральный якорь: имя (`schema.ts`, `Button.tsx`,
+//     `build-*.sh`) или СОСТАВНОЕ расширение (`*.gen.ts`, `*.pb.go`, `*.d.ts`,
+//     `*.config.ts`) → narrow.
+// Такой глоб глушит триггер D. Используется ignore-glob-guard (PreToolUse) для
+// deny широких глобов в момент записи MAIN_SKILL_VERIFY_IGNORE_GLOBS.
+function isBroadIgnoreGlob(glob) {
+  const g = String(glob || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!g) return false;
+  const last = g.split("/").pop();
+  const rest = last.replace(/^[*?]+/, ""); // снять ведущий wildcard-ран
+  if (rest === "") return true; // **, *, dir/* — вся папка
+  // одно расширение после wildcard (один dot-токен, без второго `.`) → broad
+  if (/^\.[A-Za-z0-9_*?-]+$/.test(rest)) return true;
+  return false; // литеральное имя / составное расширение → narrow
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Skip-rules: файлы, для которых требование «парный unit-тест» не имеет смысла
 // ────────────────────────────────────────────────────────────────────────────
@@ -1743,6 +1766,7 @@ module.exports = {
   isPresentationalSFC,
   extractScriptSource,
   matchAnyGlob,
+  isBroadIgnoreGlob,
   findPackageRoots,
   findPairedTestFile,
   findE2eFile,

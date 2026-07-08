@@ -37,7 +37,7 @@ Opt out of the update check with `export MAIN_SKILL_AUTO_UPDATE=0`.
 
 ## Disabling for a single session
 
-Run **`/main-skill:off`** mid-session (e.g. right after `/clear`) to turn the plugin off for the rest of that session — no restart needed. It drops a sentinel (`~/.claude/plugins/.main-skill-off`) that all hooks (`verify-changes`, `claudemd-guard`, `auto-format`) read at runtime and no-op on, and tells Claude to stop applying the workflow rules. **`/main-skill:on`** re-enables it. The sentinel is cleared automatically on the next `startup`/`resume`/`clear`, so a fresh session always starts with the plugin on.
+Run **`/main-skill:off`** mid-session (e.g. right after `/clear`) to turn the plugin off for the rest of that session — no restart needed. It drops a sentinel (`~/.claude/plugins/.main-skill-off`) that all hooks (`verify-changes`, `claudemd-guard`, `ignore-glob-guard`, `auto-format`) read at runtime and no-op on, and tells Claude to stop applying the workflow rules. **`/main-skill:on`** re-enables it. The sentinel is cleared automatically on the next `startup`/`resume`/`clear`, so a fresh session always starts with the plugin on.
 
 Launch-time equivalent for a whole session: `MAIN_SKILL_OFF=1 claude`. Note the sentinel is user-level, not session-scoped — while active it also silences other open Claude Code windows.
 
@@ -61,11 +61,13 @@ No env opt-out — formatting is unconditional. Per-project formatter config (`.
 
 The `verify-changes.js` Stop hook blocks "done" claims until tests are paired, docs are updated, lint is green, edge-cases are declared, and self-review is performed. It auto-detects test pairs across stacks (pnpm/yarn/cargo/go monorepos; Jest/Vitest/RSpec/PHPUnit/JUnit/Swift conventions) and skips files that aren't unit-testable (migrations, seeders, fixtures, locales, `*.d.ts`, `*.generated.*`, framework configs, type-only TS, `@generated`-headed files).
 
-If the hook still flags files that legitimately don't need unit tests in your project, add a per-project ignore via env var (POSIX globs, `:`-separated):
+If the hook still flags files that legitimately don't need unit tests in your project, add a per-project ignore via env var (POSIX globs, `:`-separated). **Use the narrowest glob — a specific file or a name/extension pattern, never a whole folder.** A broad `dir/**` also silences must-test logic living in that folder, so the `ignore-glob-guard` PreToolUse hook rejects broad ignore-globs Claude tries to write (opt out with `MAIN_SKILL_IGNORE_GLOB_CHECK=0`):
 
 ```bash
-export MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/legacy/**:**/scripts/**:packages/proto-gen/**"
+export MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/*.gen.ts:src/generated/schema.ts"
 ```
+
+For a repo with centralized tests (all tests under `tests/`, no local test files next to source), don't ignore the whole source dir — set `MAIN_SKILL_VERIFY_CHANGES=0` instead.
 
 Hard opt-outs:
 
@@ -75,6 +77,7 @@ Hard opt-outs:
 - `MAIN_SKILL_VERIFY_REVIEW=code` — require only code-review section.
 - `MAIN_SKILL_VERIFY_REVIEW=security` — require only security-review section.
 - `MAIN_SKILL_VERIFY_DEPS=0` — disable L (dep version-lookup enforcement). Useful for projects with a frozen lockfile where dep upgrades are batched manually.
+- `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — disable the `ignore-glob-guard` PreToolUse hook (allow writing broad `dir/**` ignore-globs).
 
 ## Editing the rules
 
@@ -93,8 +96,10 @@ main-skill/
 │       └── references/
 │           └── stop-triggers.md  # full enumeration of verify-changes triggers
 ├── hooks/
-│   ├── hooks.json          # SessionStart + PostToolUse + Stop hook registration
+│   ├── hooks.json          # SessionStart + PreToolUse + PostToolUse + Stop hook registration
 │   ├── session-start.sh    # remote-SHA check + plugin update + skill-invocation prompt
+│   ├── ignore-glob-guard.js     # PreToolUse hook: deny writing broad MAIN_SKILL_VERIFY_IGNORE_GLOBS (dir/**)
+│   ├── ignore-glob-guard.test.js # unit tests for ignore-glob-guard.js
 │   ├── auto-format.js      # PostToolUse hook: formats edited file via prettier / ruff / gofmt / rustfmt / clang-format
 │   ├── auto-format.test.js # unit tests for auto-format.js
 │   ├── verify-changes.js   # Stop hook: blocks "done" until tests, docs, lint, edge-cases declaration are in place

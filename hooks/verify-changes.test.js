@@ -445,6 +445,9 @@ test("MAIN_SKILL_VERIFY_IGNORE_GLOBS пропускает указанный п�
   // Без override — D-триггер сработает на legacy/old_module.ts.
   const blocked = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
   expectBlock(blocked.stdout, "D");
+  // reasonD стероит к УЗКОМУ глобу, не каталогу целиком, и упоминает guard.
+  const reasonD = JSON.parse(blocked.stdout).reason;
+  assert.match(reasonD, /узкий глоб|ignore-glob-guard/);
   // С override — НЕ блокируется.
   const allowed = runHook(tp, {
     CLAUDE_PROJECT_DIR: dir,

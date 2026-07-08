@@ -990,6 +990,48 @@ test("matchAnyGlob: пустой/falsy глоб-список → false", () => {
   assert.ok(!checks.matchAnyGlob("src/foo.ts", null));
 });
 
+// ─── isBroadIgnoreGlob (breadth-классификатор для ignore-glob-guard) ────────
+
+test("isBroadIgnoreGlob: каталог-глоб (последний сегмент — голый wildcard) = broad", () => {
+  assert.ok(checks.isBroadIgnoreGlob("**"));
+  assert.ok(checks.isBroadIgnoreGlob("*"));
+  assert.ok(checks.isBroadIgnoreGlob("**/scripts/**"));
+  assert.ok(checks.isBroadIgnoreGlob("src/services/**"));
+  assert.ok(checks.isBroadIgnoreGlob("dir/*"));
+  assert.ok(checks.isBroadIgnoreGlob("packages/*/src/**"));
+  assert.ok(checks.isBroadIgnoreGlob("legacy/**/")); // trailing slash не мешает
+});
+
+test("isBroadIgnoreGlob: голое расширение по всему дереву = broad (не обойти *.ts)", () => {
+  // Освобождает от D весь язык целиком — по эффекту шире, чем dir/**.
+  assert.ok(checks.isBroadIgnoreGlob("**/*.ts"));
+  assert.ok(checks.isBroadIgnoreGlob("**/*.js"));
+  assert.ok(checks.isBroadIgnoreGlob("**/*.py"));
+  assert.ok(checks.isBroadIgnoreGlob("dir/*.*"));
+  assert.ok(checks.isBroadIgnoreGlob("**/*.*"));
+  assert.ok(checks.isBroadIgnoreGlob("src/**/*.*"));
+  assert.ok(checks.isBroadIgnoreGlob("*.ts"));
+});
+
+test("isBroadIgnoreGlob: якорь по имени/составному расширению = narrow", () => {
+  assert.ok(!checks.isBroadIgnoreGlob("**/*.gen.ts")); // .gen — анкер
+  assert.ok(!checks.isBroadIgnoreGlob("**/*.pb.go"));
+  assert.ok(!checks.isBroadIgnoreGlob("**/*.d.ts"));
+  assert.ok(!checks.isBroadIgnoreGlob("**/*.config.ts"));
+  assert.ok(!checks.isBroadIgnoreGlob("scripts/build-*.sh"));
+  assert.ok(!checks.isBroadIgnoreGlob("src/generated/schema.ts"));
+  assert.ok(!checks.isBroadIgnoreGlob("dir/**/*.pb.go"));
+  assert.ok(!checks.isBroadIgnoreGlob("Button.tsx"));
+  assert.ok(!checks.isBroadIgnoreGlob("src/*/index.ts"));
+});
+
+test("isBroadIgnoreGlob: пустой/мусорный вход → false (не broad)", () => {
+  assert.ok(!checks.isBroadIgnoreGlob(""));
+  assert.ok(!checks.isBroadIgnoreGlob(null));
+  assert.ok(!checks.isBroadIgnoreGlob(undefined));
+  assert.ok(!checks.isBroadIgnoreGlob("   "));
+});
+
 test("findE2eFile находит functional-парный", () => {
   const dir = tmp();
   writeFile(dir, "app/controllers/auth_controller.ts", "x");

@@ -22,6 +22,7 @@
 - `MAIN_SKILL_VERIFY_REVIEW=0` — выключить J/K.
 - `MAIN_SKILL_VERIFY_REVIEW=code` — требовать только code-review секцию.
 - `MAIN_SKILL_VERIFY_REVIEW=security` — требовать только security-review секцию.
-- `MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/legacy/**:**/scripts/**"` — POSIX-globs (`:`-разделитель) для путей, которые не требуют парного теста (для D/E).
+- `MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/*.gen.ts:src/generated/schema.ts"` — POSIX-globs (`:`-разделитель) для путей, которые не требуют парного теста (для D/E). **Только узкий глоб по имени/расширению конкретных файлов, не каталог целиком** — широкий `dir/**` прячет и тестируемую логику рядом и отклоняется PreToolUse-хуком `ignore-glob-guard`. Централизованные тесты (весь `src/` без локальных) → не глоб, а `MAIN_SKILL_VERIFY_CHANGES=0`.
+- `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — отключить `ignore-glob-guard` (разрешить запись широких ignore-глобов).
 
 Опт-ауты — только когда триггер ловит действительно нерелевантный кейс. Не используй для обхода легитимных требований.

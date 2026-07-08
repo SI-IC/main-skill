@@ -113,6 +113,22 @@ sh hooks/session-start.test.sh
 
 Правка форматов входа / порога / reason → синхронизируй `claudemd-guard.test.js` и эту секцию.
 
+## PreToolUse ignore-glob-guard
+
+`ignore-glob-guard.js` бьёт по широкому `MAIN_SKILL_VERIFY_IGNORE_GLOBS` в момент записи. На `Edit/Write/MultiEdit` в env-carrier-файл (`isEnvCarrierFile`: `.env*`, `settings.json`/`settings.local.json`, `.mcp.json`, shell-rc `.bashrc/.zshrc/.zshenv/.bash_profile/.zprofile/.profile/.envrc`, `*.sh`) и на `Bash` command парсит присваивания `VAR` (`extractIgnoreGlobs`: bare `.env`, shell `export`, JSON, одинарные кавычки; сплит по `:`). Любой НОВО введённый глоб, для которого `checks.isBroadIgnoreGlob`, → `permissionDecision:deny` с требованием сузить. Опт-аут `MAIN_SKILL_IGNORE_GLOB_CHECK=0`.
+
+- **Широкий глоб — по сути всегда не тот инструмент:** смешанная папка → сузить до имени/расширения; весь централизованный репо → `VERIFY_CHANGES=0`. Поэтому deny корректен во всех случаях, reason разводит их.
+- **`isBroadIgnoreGlob` (в `checks.js`, общий).** Broad = последний сегмент после снятия ведущего wildcard-рана либо пуст (`dir/**`, `config/*`), либо ОДНО расширение (`*.ts`, `*.*`, `**/*.py`, `src/**/*.*` — весь язык/дерево, по эффекту шире каталога). Narrow = литеральный якорь: имя (`schema.ts`, `build-*.sh`) или СОСТАВНОЕ расширение (`*.gen.ts`, `*.pb.go`, `*.d.ts`, `*.config.ts`). Голое `**/*.ts` — намеренно broad: иначе Claude обходил бы guard, дописав дефолт-расширение.
+- **Диф против «старого» обязателен (`addedBroadGlobs`):** флажим только ново-введённый широкий глоб — Edit/MultiEdit против `old_string`, Write против содержимого на диске (`safeReadFile`), Bash — вся команда (старого нет). Иначе правка, лишь эхо-ящая уже существующий широкий глоб (или полный Write файла с ним), отклонялась бы навсегда.
+- **env-carrier-гейт обязателен:** без него правка `README.md` / `stop-triggers.md` (примеры с `VAR`) и исходника `verify-changes.js` (пример-строка) ложно словила бы deny сама на себя. Доки/исходники — не carrier → пропускаются. Match по lower-case basename; блаженного `.claude/*` НЕТ (иначе `.claude/commands/*.md` с примером ложно бы гардился) — под `.claude/` ловятся только `settings*.json`/`.mcp.json`/`*.sh` по basename.
+- **`extractIgnoreGlobs` — защиты от ложного матча:** lookbehind `(?<![\w])` перед `VAR` (не ловим `LEGACY_…_IGNORE_GLOBS`); skip присваивания в закомментированной строке (в префиксе строки до матча есть `#`) — инструктивный пример в `.sh`/`.env` не deny-ит.
+- **Guard vs runtime-honoring раздельны:** Stop-хук `verify-changes` по-прежнему ЧЕСТИТ любой глоб как opt-out (широкий тоже) — юзер, поставивший его вручную или через `IGNORE_GLOB_CHECK=0`, не блокируется в рантайме. Guard лишь мешает Claude ЗАПИСАТЬ широкий.
+- **Sanitize обязателен:** глоб — недоверенный Claude-content, эхо-ится в reason → `sanitizeGlob` стрипует C0/C1-controls + BiDi-override строго как `sanitize` в verify-changes (источник истины; не давать дрейфовать).
+- **Fail-soft:** malformed payload / нет content → `null`/`[]`, PreToolUse не ломается; `safeReadFile` при аномалии → `""` (Write-диф считает всё новым — fail-safe в сторону deny).
+- **Known gaps:** carrier-список фиксирован — `VAR` в `docker-compose.yml` / `Makefile` / `.github/workflows/*.yml` не гардится (false-negative; редко). Bash `export` эфемерен (не персистит), но ловим и его.
+
+Правка `isEnvCarrierFile` / `extractIgnoreGlobs` / `addedBroadGlobs` / `isBroadIgnoreGlob` / reason → синхронизируй `ignore-glob-guard.test.js`, `checks.test.js` и эту секцию.
+
 ## Skip-rules для триггера D — что НЕ требует парного теста
 
 Источник истины — `SKIP_PATH_PATTERNS` / `SKIP_FILENAME_PATTERNS` в `hooks/lib/checks.js`. Если меняешь — синхронизируй и advertise-message в `verify-changes.js` (`reasonD`), и эту секцию.
