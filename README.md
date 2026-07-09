@@ -69,6 +69,8 @@ export MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/*.gen.ts:src/generated/schema.ts"
 
 For a repo with centralized tests (all tests under `tests/`, no local test files next to source), don't ignore the whole source dir — set `MAIN_SKILL_VERIFY_CHANGES=0` instead.
 
+To audit ignore-globs already configured in a project (e.g. broad ones set before the guard existed), run **`/main-skill:check-ignore-globs`**. It scans the project's carrier files (`.env*`, `.claude/settings*.json`, `.mcp.json`, `*.sh`), home-level configs (`~/.claude/settings.json`, shell rc) and the environment, flags any broad `dir/**` / `**/*.ext` glob via the same `isBroadIgnoreGlob` the guard uses, and helps you narrow each one. Standalone (no Claude): `node hooks/lib/audit-ignore-globs.js <dir>`.
+
 Hard opt-outs:
 
 - `MAIN_SKILL_VERIFY_CHANGES=0` — disable all hook triggers.
@@ -106,7 +108,9 @@ main-skill/
 │   ├── verify-changes.test.js  # integration tests for verify-changes.js
 │   └── lib/
 │       ├── checks.js       # helpers: src↔test mapping, e2e detection, edge-cases parsing, auto-lint
-│       └── checks.test.js  # unit tests for checks.js
+│       ├── checks.test.js  # unit tests for checks.js
+│       ├── audit-ignore-globs.js     # CLI behind /main-skill:check-ignore-globs — audit MAIN_SKILL_VERIFY_IGNORE_GLOBS
+│       └── audit-ignore-globs.test.js # unit tests for audit-ignore-globs.js
 ├── CLAUDE.md               # dev-facing notes for plugin maintainers (auto-loaded as project-memory inside this repo only)
 └── README.md
 ```

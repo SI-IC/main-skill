@@ -17,7 +17,9 @@ main-skill/
 │   └── marketplace.json    # делает репо installable как marketplace
 ├── commands/
 │   ├── off.md              # /main-skill:off — выключить плагин в текущей сессии
-│   └── on.md               # /main-skill:on — снова включить
+│   ├── on.md               # /main-skill:on — снова включить
+│   └── check-ignore-globs.md # /main-skill:check-ignore-globs — аудит широких
+│                           # MAIN_SKILL_VERIFY_IGNORE_GLOBS в проекте
 ├── skills/
 │   └── workflow-rules/
 │       ├── SKILL.md        # ядро: 3-фазный workflow + universal rules
@@ -38,6 +40,9 @@ main-skill/
 │       │                   # fallback `<base>.test.<ext>` для sh/lua/dart/...),
 │       │                   # edge-cases parser, auto-lint
 │       ├── checks.test.js
+│       ├── audit-ignore-globs.js  # CLI за /main-skill:check-ignore-globs —
+│       │                   # аудит MAIN_SKILL_VERIFY_IGNORE_GLOBS в проекте
+│       ├── audit-ignore-globs.test.js
 │       ├── plugin-check.js  # детект рекомендованных плагинов для SessionStart-баннера
 │       ├── plugin-check.test.js
 │       ├── session-disabled.js  # рантайм-проверка off-сентинела / MAIN_SKILL_OFF для всех хуков
@@ -75,12 +80,15 @@ node hooks/lib/plugin-check.test.js
 # unit для per-session disable
 node hooks/lib/session-disabled.test.js
 
+# unit для audit-ignore-globs (за /main-skill:check-ignore-globs)
+node hooks/lib/audit-ignore-globs.test.js
+
 # integration для SessionStart-хука (+ sh-синтаксис)
 sh -n hooks/session-start.sh
 sh hooks/session-start.test.sh
 ```
 
-Любая правка `verify-changes.js` / `checks.js` / `auto-format.js` / `plugin-check.js` / `claudemd-guard.js` / `session-disabled.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
+Любая правка `verify-changes.js` / `checks.js` / `auto-format.js` / `plugin-check.js` / `claudemd-guard.js` / `session-disabled.js` / `audit-ignore-globs.js` без обновления соответствующих `*.test.js` — нарушение Stop-триггера D.
 
 ## Per-session disable (`/main-skill:off`)
 
@@ -128,6 +136,18 @@ sh hooks/session-start.test.sh
 - **Known gaps:** carrier-список фиксирован — `VAR` в `docker-compose.yml` / `Makefile` / `.github/workflows/*.yml` не гардится (false-negative; редко). Bash `export` эфемерен (не персистит), но ловим и его.
 
 Правка `isEnvCarrierFile` / `extractIgnoreGlobs` / `addedBroadGlobs` / `isBroadIgnoreGlob` / reason → синхронизируй `ignore-glob-guard.test.js`, `checks.test.js` и эту секцию.
+
+## audit-ignore-globs (за `/main-skill:check-ignore-globs`)
+
+`lib/audit-ignore-globs.js` — ретроспективный аудит уже заданных `MAIN_SKILL_VERIFY_IGNORE_GLOBS`. Гард бьёт только по НОВОЙ записи широкого глоба; глобы, поставленные до его появления, остаются — эта команда их находит. `collectSources` собирает источники (env → carrier-файлы проекта через `walkCarrierFiles` → home-carriers `~/.claude/settings*.json` + shell-rc), `classifySources` разносит через `isBroadIgnoreGlob`, `formatReport` печатает отчёт. Standalone: `node hooks/lib/audit-ignore-globs.js <dir>`.
+
+- **Zero-дубль классификации:** broad/narrow-решение — только `isBroadIgnoreGlob` (`checks.js`); поиск присваиваний — `extractIgnoreGlobs`, carrier-детект — `isEnvCarrierFile`, эхо-очистка — `sanitizeGlob` (всё из `ignore-glob-guard.js`). Локален лишь `describeBroad` — cosmetic-формулировка «почему широкий», не гейт.
+- **Команда — интерактивная обёртка:** скрипт только детектит; сужение (осмотр папки, замена на имя/расширение или `VERIFY_CHANGES=0`, правка источника) делает Claude по телу `check-ignore-globs.md` с подтверждением юзера.
+- **Локатор скрипта в команде:** `${CLAUDE_PLUGIN_ROOT}` → fallback `find ~/.claude/plugins ... | sort -V | tail -1` (в Bash-инструменте Claude env-var обычно пуст → работает fallback).
+- **Fail-soft:** нечитаемый файл → `""`, walk пропускает `node_modules/.git/dist/...` и уходит не глубже 8; size-cap 2MB на файл.
+- **Известный компромисс:** тест-фикстуры с широким глобом нельзя создавать через Bash — их поймает сам ignore-glob-guard (`printf ... VAR=src/**`); в тестах пиши файлы через `fs.writeFileSync`, для ручной проверки CLI — node-скриптом с разбитым именем VAR.
+
+Правка источников/формата отчёта → синхронизируй `audit-ignore-globs.test.js` и эту секцию.
 
 ## Skip-rules для триггера D — что НЕ требует парного теста
 
