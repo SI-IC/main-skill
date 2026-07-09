@@ -143,6 +143,7 @@ sh hooks/session-start.test.sh
 
 - **Zero-дубль классификации:** broad/narrow-решение — только `isBroadIgnoreGlob` (`checks.js`); поиск присваиваний — `extractIgnoreGlobs`, carrier-детект — `isEnvCarrierFile`, эхо-очистка — `sanitizeGlob` (всё из `ignore-glob-guard.js`). Локален лишь `describeBroad` — cosmetic-формулировка «почему широкий», не гейт.
 - **Команда — интерактивная обёртка:** скрипт только детектит; сужение (осмотр папки, замена на имя/расширение или `VERIFY_CHANGES=0`, правка источника) делает Claude по телу `check-ignore-globs.md` с подтверждением юзера.
+- **Только по явному вызову:** `description` команды и guard-абзац в теле запрещают авто-вызов по инициативе Claude (единственный вектор авто-запуска plugin-команды — матч `description` в списке skill'ов; сам скрипт хуками нигде не дёргается). Запускается лишь когда юзер набрал `/main-skill:check-ignore-globs` или прямо попросил.
 - **Локатор скрипта в команде:** `${CLAUDE_PLUGIN_ROOT}` → fallback `find ~/.claude/plugins ... | sort -V | tail -1` (в Bash-инструменте Claude env-var обычно пуст → работает fallback).
 - **Fail-soft:** нечитаемый файл → `""`, walk пропускает `node_modules/.git/dist/...` и уходит не глубже 8; size-cap 2MB на файл.
 - **Известный компромисс:** тест-фикстуры с широким глобом нельзя создавать через Bash — их поймает сам ignore-glob-guard (`printf ... VAR=src/**`); в тестах пиши файлы через `fs.writeFileSync`, для ручной проверки CLI — node-скриптом с разбитым именем VAR.
