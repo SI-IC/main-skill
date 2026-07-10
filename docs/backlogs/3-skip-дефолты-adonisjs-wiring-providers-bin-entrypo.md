@@ -2,9 +2,9 @@
 id: 3
 title: Skip-дефолты: AdonisJS-wiring (providers/, bin/-entrypoints, adonisrc.ts) + ops-скрипты с суффиксом
 priority: medium
-status: open
+status: done
 created: 2026-07-10T06:54:53Z
-updated: 2026-07-10T06:54:53Z
+updated: 2026-07-10T09:17:35Z
 ---
 ## Проблема (кейс ERP_NEW)
 Рекомендованный стек юзера — AdonisJS (глобальный CLAUDE.md), но SKIP_PATH_PATTERNS/SKIP_FILENAME_PATTERNS (hooks/lib/checks.js, ~240-277) его структуру не знают: providers/ (регистрация биндингов), bin/server|console|test.ts (entry-points), adonisrc.ts (framework-config) — чистый wiring, D требовал парные тесты → Claude в ERP_NEW выписал каталожные глобы apps/api/providers/**, apps/api/bin/**, apps/api/adonisrc.ts.
