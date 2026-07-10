@@ -2,9 +2,9 @@
 id: 4
 title: Content-skip для декларативных ORM-моделей (Lucid/TypeORM: только колонки/relations)
 priority: medium
-status: open
+status: done
 created: 2026-07-10T06:55:05Z
-updated: 2026-07-10T06:55:05Z
+updated: 2026-07-10T08:37:55Z
 ---
 ## Проблема (кейс ERP_NEW)
 106 Lucid-моделей в apps/api/app/models/ — чистые декларации (@column/@hasMany + declare-поля, ноль методов; пример: ai_conversation.ts). Тест на такое бессмысленен (стоп-лист testing-strategy.md: «DTO/декларации не тестировать»), но D требует парный → Claude исключил models/** каталогом, спрятав и модели С логикой.
