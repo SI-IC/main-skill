@@ -418,11 +418,13 @@ function extractScriptSource(content) {
 // Подобраны так, чтобы типовые аннотации (`onClick: () => void`) НЕ считались
 // логикой — arrow ловим только в позиции значения/коллбэка (`= (..) =>`, `(() =>`).
 //
-// ВСЕ квантификаторы внутри скобочных групп ОГРАНИЧЕНЫ ({0,N}, [^)\n]) — иначе на
+// ВСЕ квантификаторы внутри скобочных групп ОГРАНИЧЕНЫ ({0,N}) — иначе на
 // adversarial SFC (`=((`×N, `f((`×N в пределах 200KB-капа) `[^)]*` + `[\w$]*\s*\(`
 // давали catastrophic backtracking O(N²): 60KB → 1.8s, 200KB → ~60s, вешая Stop-хук
-// на каждом turn. Bounded-версии линейны (~261 симв./позиция максимум).
-const _ARG = "[^)\\n]{0,200}"; // тело списка аргументов: без `)` и переноса, с капом
+// на каждом turn. Bounded-версии линейны (~301 симв./позиция максимум).
+// `\n` в _ARG разрешён: Prettier переносит длинные списки параметров, а
+// однострочная версия пропускала такие arrow-значения/коллбэки (ревью v1.9.4).
+const _ARG = "[^)]{0,240}"; // тело списка аргументов: без `)`, с капом
 const _SFC_LOGIC_SIGNALS = [
   // Vue Composition: реактивность / состояние / DI.
   /\b(?:ref|shallowRef|customRef|toRef|toRefs|reactive|shallowReactive|readonly|computed|watch|watchEffect|watchPostEffect|watchSyncEffect|effect|inject|provide)\s*\(/,
@@ -439,9 +441,14 @@ const _SFC_LOGIC_SIGNALS = [
   /\b(?:await|async|throw|yield)\b/,
   // data-transforms (итерация/трансформация коллекций).
   /\.(?:map|filter|reduce|reduceRight|forEach|find|findIndex|findLast|some|every|flatMap|sort)\s*\(/,
-  // object-method shorthand / вызов с телом: `name(args) {` — ловит и методы
-  // (`data() {`, `defineExpose({ focus() {} })`), и control-flow с телом.
-  new RegExp(`[A-Za-z_$][\\w$]{0,60}\\s*\\(${_ARG}\\)\\s*\\{`),
+  // Тело метода / control-flow с телом: `)` + `{` через любой whitespace.
+  // Имя-агностично (как в _MODEL_LOGIC_SIGNALS): ловит `data() {`,
+  // `defineExpose({ focus() {} })`, многострочные сигнатуры и
+  // computed/unicode-имена. В презентационном script `){` не встречается:
+  // `defineProps({...})` даёт `({`/`})`, `withDefaults(x(), {...})` — `), {`,
+  // а `) => {` объектного return-type режется стрелкой между `)` и `{`.
+  /\)\s*\{/,
+  /\bstatic\s*\{/, // static initialization block — исполняется при eval класса
   // arrow-функция как значение: `= (args) =>` / `= async (..) =>`.
   new RegExp(`=\\s*(?:async\\s+)?\\(${_ARG}\\)\\s*=>`),
   // arrow-функция как значение с одним параметром без скобок: `= x =>`.

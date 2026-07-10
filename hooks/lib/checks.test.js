@@ -1280,6 +1280,49 @@ test("isPresentationalSFC: Svelte 5 руна $state → логика", () => {
   );
 });
 
+test("isPresentationalSFC: многострочная сигнатура (arrow-значение / method shorthand) → логика", () => {
+  // Prettier-перенос параметров arrow-значения — раньше [^)\n] в _ARG пропускал.
+  assert.ok(
+    !checks.isPresentationalSFC(`<script setup>
+const fmt = (
+  value,
+) => value.toLocaleString()
+</script>`),
+  );
+  // Многострочный object-method shorthand (defineExpose).
+  assert.ok(
+    !checks.isPresentationalSFC(`<script setup>
+defineExpose({
+  focus(
+    opts,
+  ) { el.focus(opts) },
+})
+</script>`),
+  );
+  // static initialization block внутри class в script — исполняемая логика.
+  assert.ok(
+    !checks.isPresentationalSFC(
+      `<script>\nclass Registry { static { register() } }\n</script>`,
+    ),
+  );
+});
+
+test("isPresentationalSFC: withDefaults / object-return-type аннотация НЕ ложно-логика", () => {
+  // `withDefaults(defineProps<Props>(), {...})` — `),` и `} )` без `){`.
+  assert.ok(
+    checks.isPresentationalSFC(`<script setup lang="ts">
+import type { Props } from './types'
+withDefaults(defineProps<Props>(), { size: 'md' })
+</script>`),
+  );
+  // Тип-аннотация с объектным return-type: `) => {` режется стрелкой, не `){`.
+  assert.ok(
+    checks.isPresentationalSFC(`<script setup lang="ts">
+defineProps<{ handler: (e: Event) => { ok: boolean } }>()
+</script>`),
+  );
+});
+
 test("isPresentationalSFC: ReDoS-guard — adversarial 200KB ввод линеен", () => {
   const big = "<script>" + "f((".repeat(66000) + "</script>"; // ~200KB
   const t = Date.now();
