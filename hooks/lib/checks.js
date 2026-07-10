@@ -137,6 +137,12 @@ function existsSafe(p) {
   }
 }
 
+// Общий escape для вставки недоверенных строк в new RegExp (import-scan,
+// edge-cases matcher) — единственная копия, чтобы набор метасимволов не дрейфовал.
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // Возвращает массив абсолютных путей base-roots для поиска тестов:
 // repoRoot + любая директория с маркером пакета между srcPath и repoRoot.
 // Дедуплицирован, repoRoot всегда включён.
@@ -858,6 +864,208 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Триггер D, fallback: централизованные спеки, именованные по фиче.
+// Кейс ERP_NEW: код покрыт tests/unit/auth_cookies.spec.ts (имя по фиче, не по
+// источнику) → findPairedTestFile его не видит → Claude выписывает каталожные
+// ignore-глобы. Второй шанс: grep импортов источника по спекам центральных
+// тест-дир пакета. False positive (спек импортирует, но не ассертит) —
+// осознанно приемлем: лучше, чем толкать к широким глобам / VERIFY_CHANGES=0.
+// ────────────────────────────────────────────────────────────────────────────
+
+const CENTRAL_TEST_DIR_NAMES = ["tests", "test", "spec", "specs", "__tests__"];
+// Капы I/O-DoS: filesRead — на чтение СОДЕРЖИМОГО спеков (общий на прогон),
+// MAX_LIST — на длину списка кандидатов, MAX_VISITED — на просмотренные
+// readdir-entries (иначе дерево из тысяч не-спековых файлов walk-ается целиком).
+const IMPORT_SCAN_MAX_FILES = 200;
+const IMPORT_SCAN_MAX_LIST = 400;
+const IMPORT_SCAN_MAX_VISITED = 20_000;
+
+// Дир-ы, куда walk не спускается — деривативы/vendored. Общий для import-scan
+// и walkCarrierFiles в audit-ignore-globs.js (раздельные копии дрейфуют).
+const WALK_SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "coverage",
+  "vendor",
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".next",
+  "target",
+  ".cache",
+  ".uploads",
+]);
+
+// Строки, где упоминание модуля доказывает статический линк спек→источник:
+// import/require/from (JS/TS/Python/Java/Ruby) + jest.mock/vi.mock/vi.doMock.
+// `require_relative` отдельно: `\brequire\b` не матчит из-за `_` (word char).
+const IMPORT_LINE_RE = /\b(?:import|require(?:_relative)?|from)\b|mock\s*\(/i;
+
+// Имена, бессмысленные как матч-таргет сами по себе: почти любой спек
+// импортирует какой-нибудь `../index` → массовый false positive, D замолчал бы
+// на непокрытых barrel-файлах. Матчим по имени родительской диры (`cart` /
+// `cart/index`); родитель тоже generic (src/index.ts) → скан не применяем.
+const GENERIC_BASENAME_RE = /^(index|route|handler|main|mod)$/i;
+const GENERIC_PARENT_RE = /^(\.?|src|lib|app|sources?|dist|build)$/i;
+
+// Набор bounded-регексов для матча импорта источника в тексте import-строк.
+// Basename/parent эскейпятся (недоверенный ввод из транскрипта → литерал) и
+// капятся по длине: без капа фейковый file_path на десятки KB из транскрипта
+// ронял бы new RegExp («too large») → exception → весь Stop-хук fail-open.
+// Все квантификаторы ограничены по конвенции репо.
+//
+// У файла с содержательным родителем (app/billing/db.ts) ПУТЁВЫЙ импорт обязан
+// нести родительский сегмент (`billing/db`, `billing.db`) — иначе одноимённый
+// файл чужого модуля (app/auth/db.ts) ложно засчитывался бы спеком про billing.
+// Голый импорт имени ('db', '#step_up') принимается: алиас может прятать путь.
+function buildImportMatchRes(srcPath) {
+  const ext = path.extname(srcPath);
+  const base = path.basename(srcPath, ext);
+  if (!base || base.length > 200) return null;
+  const parentRaw = path.basename(path.dirname(srcPath));
+  const parent = parentRaw && parentRaw.length <= 200 ? parentRaw : "";
+  const extPat = "(?:\\.[A-Za-z]{1,7})?"; // опц. расширение перед кавычкой
+  if (GENERIC_BASENAME_RE.test(base)) {
+    // index/route/... сами по себе не идентифицируют модуль — матчим родителя
+    // (`cart` / `cart/index`); родитель тоже generic (src/index.ts) → скана нет.
+    if (!parent || GENERIC_PARENT_RE.test(parent)) return null;
+    const namePat = `${escapeRegExp(parent)}(?:/${escapeRegExp(base)})?`;
+    return [
+      new RegExp(`['"\`#/]${namePat}${extPat}['"\`]`, "i"),
+      new RegExp(
+        `^\\s{0,40}(?:from|import)\\s[\\w.,\\s]{0,300}\\b${escapeRegExp(parent)}\\b`,
+        "im",
+      ),
+    ];
+  }
+  const basePat = escapeRegExp(base);
+  if (parent && !GENERIC_PARENT_RE.test(parent)) {
+    const parentPat = escapeRegExp(parent);
+    return [
+      // путёвый кавычечный: '../../app/billing/db' | '#controllers/auth_controller'
+      new RegExp(`['"\`#/]${parentPat}/${basePat}${extPat}['"\`]`, "i"),
+      // голый кавычечный (без '/'): 'auth_controller' | `#step_up` | "db"
+      new RegExp(`['"\`#]${basePat}${extPat}['"\`]`, "i"),
+      // dotted-путь: Python `from app.billing.db import x`, Java `import com.app.billing.Db;`
+      new RegExp(`\\b${parentPat}\\.${basePat}\\b`, "i"),
+      // Python `from app.billing import db` (имя ПОСЛЕ import, списком в т.ч.)
+      new RegExp(
+        `\\b${parentPat}\\s{1,40}import\\s{1,40}[\\w.,\\s]{0,200}\\b${basePat}\\b`,
+        "i",
+      ),
+    ];
+  }
+  return [
+    // generic/корневой родитель: путь не проверить — кавычечный матч имени…
+    new RegExp(`['"\`#/]${basePat}${extPat}['"\`]`, "i"),
+    // …и бескавычечный import-стейтмент (Python/Java), включая `from src import utils`
+    new RegExp(
+      `^\\s{0,40}(?:from|import)\\s[\\w.,\\s]{0,300}\\b${basePat}\\b`,
+      "im",
+    ),
+  ];
+}
+
+// Walk центральных тест-дир от root: <root>/tests|test|spec|specs|__tests__.
+// Берём только файлы, чьё ИМЯ само по себе спековое (isTestFile по basename:
+// *.spec.* / *.test.* / test_*.py / *_test.go / XxxTest.java) — хелперы,
+// фикстуры и setup.ts внутри tests/ линк не доказывают. Симлинки не следуем
+// (Dirent.isFile()=false), сортировка — детерминизм порядка матча.
+function collectCentralSpecFiles(rootAbs) {
+  const out = [];
+  let visited = 0;
+  const walkDir = (dir, depth) => {
+    if (depth > 8 || out.length >= IMPORT_SCAN_MAX_LIST) return;
+    if (visited >= IMPORT_SCAN_MAX_VISITED) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      if (out.length >= IMPORT_SCAN_MAX_LIST) return;
+      if (++visited >= IMPORT_SCAN_MAX_VISITED) return;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (WALK_SKIP_DIRS.has(e.name)) continue;
+        walkDir(full, depth + 1);
+      } else if (e.isFile() && isTestFile(e.name)) {
+        out.push(full);
+      }
+    }
+  };
+  for (const dname of CENTRAL_TEST_DIR_NAMES) {
+    walkDir(path.join(rootAbs, dname), 0);
+  }
+  return out;
+}
+
+// Контент спека → только import-строки (предфильтр IMPORT_LINE_RE): срезает
+// объём матчинга и отсекает упоминания в assert-литералах / test-описаниях.
+// Чтение через readRepoFileSafe (realpath + confinement + 200KB-кап).
+function specImportLines(absSpec, repoRoot) {
+  const body = readRepoFileSafe(absSpec, repoRoot);
+  if (body == null) return "";
+  return body
+    .split("\n")
+    .filter((l) => l.length <= 1000 && IMPORT_LINE_RE.test(l))
+    .join("\n");
+}
+
+// Fallback триггера D: прямой парный тест не найден → ищем спек центральных
+// тест-дир, импортирующий источник. `cache` шарится между вызовами одного
+// прогона хука (один скан на Stop, не пер-файл): rootFiles — списки спеков по
+// package-root, importLines — import-строки по спеку, filesRead — общий бюджет
+// чтений (≤ IMPORT_SCAN_MAX_FILES; исчерпан → null, D сработает как раньше —
+// fail toward требования теста). Любой exception → null по той же причине:
+// улети он выше — уронил бы весь Stop-хук в fail-open. Roots сортируются
+// ближайший-пакет-первым (по глубине пути; insertion-order Set-а из
+// findPackageRoots этого НЕ гарантирует): пакетный tests/ релевантнее
+// монорепного root-tests/ и дешевле по бюджету.
+function findTestByImportScan(srcPath, repoRoot, cache = {}) {
+  try {
+    return findTestByImportScanInner(srcPath, repoRoot, cache);
+  } catch {
+    return null;
+  }
+}
+
+function findTestByImportScanInner(srcPath, repoRoot, cache) {
+  const res = buildImportMatchRes(srcPath);
+  if (!res) return null;
+  if (!cache.rootFiles) cache.rootFiles = new Map();
+  if (!cache.importLines) cache.importLines = new Map();
+  if (cache.filesRead == null) cache.filesRead = 0;
+
+  const roots = findPackageRoots(srcPath, repoRoot).sort(
+    (a, b) => b.length - a.length,
+  );
+  for (const root of roots) {
+    if (!cache.rootFiles.has(root)) {
+      cache.rootFiles.set(root, collectCentralSpecFiles(root));
+    }
+    for (const absSpec of cache.rootFiles.get(root)) {
+      if (!cache.importLines.has(absSpec)) {
+        if (cache.filesRead >= IMPORT_SCAN_MAX_FILES) break;
+        cache.filesRead++;
+        cache.importLines.set(absSpec, specImportLines(absSpec, repoRoot));
+      }
+      const lines = cache.importLines.get(absSpec);
+      if (!lines) continue;
+      if (res.some((re) => re.test(lines))) {
+        const rel = path.relative(repoRoot, absSpec);
+        return rel || absSpec;
+      }
+    }
+  }
+  return null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Триггер E: e2e/functional парный
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1007,7 +1215,7 @@ function validateEdgeCases(parsed, repoRoot) {
     }
     // Ищем it('...test_name...') / test('...test_name...') / describe('...') — гибко по подстроке.
     // test_name может быть как точная строка, так и snake/camel-вариант.
-    const escaped = entry.test_name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escaped = escapeRegExp(entry.test_name);
     const re = new RegExp(
       `(?:^|\\W)(?:it|test|describe|context|specify|t\\.run|test\\.it)\\s*\\(\\s*['"\`][^'"\`]*${escaped}[^'"\`]*['"\`]`,
       "i",
@@ -1991,7 +2199,9 @@ module.exports = {
   isBroadIgnoreGlob,
   findPackageRoots,
   findPairedTestFile,
+  findTestByImportScan,
   findE2eFile,
+  WALK_SKIP_DIRS,
   parseEdgeCasesBlock,
   validateEdgeCases,
   runLint,

@@ -67,7 +67,7 @@ If the hook still flags files that legitimately don't need unit tests in your pr
 export MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/*.gen.ts:src/generated/schema.ts"
 ```
 
-For a repo with centralized tests (all tests under `tests/`, no local test files next to source), don't ignore the whole source dir — set `MAIN_SKILL_VERIFY_CHANGES=0` instead.
+A repo with centralized tests (all tests under `tests/`, spec names by feature rather than by source file) usually needs no ignore at all: trigger D falls back to an import scan — a spec in the package's `tests/` / `test/` / `spec/` / `specs/` / `__tests__/` that imports the edited file (incl. `#aliases` and relative paths) counts as its paired test. Only if specs don't import sources at all (pure HTTP-flow tests) set `MAIN_SKILL_VERIFY_CHANGES=0` — never ignore the whole source dir.
 
 To audit ignore-globs already configured in a project (e.g. broad ones set before the guard existed), run **`/main-skill:check-ignore-globs`**. It scans the project's carrier files (`.env*`, `.claude/settings*.json`, `.mcp.json`, `*.sh`), home-level configs (`~/.claude/settings.json`, shell rc) and the environment, flags any broad `dir/**` / `**/*.ext` glob via the same `isBroadIgnoreGlob` the guard uses, and helps you narrow each one. Standalone (no Claude): `node hooks/lib/audit-ignore-globs.js <dir>`.
 

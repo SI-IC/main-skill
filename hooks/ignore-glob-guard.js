@@ -27,7 +27,9 @@ function isEnvCarrierFile(fp) {
   const base = path.basename(fp.replace(/\\/g, "/")).toLowerCase();
   if (/^\.env(\.[\w.-]+)?$/.test(base)) return true; // .env, .env.local, .env.production
   // shell rc / profile (bash + zsh, включая .zshenv / .zprofile) + direnv.
-  if (/^\.(bashrc|zshrc|zshenv|bash_profile|zprofile|profile|envrc)$/.test(base))
+  if (
+    /^\.(bashrc|zshrc|zshenv|bash_profile|zprofile|profile|envrc)$/.test(base)
+  )
     return true;
   if (base === "settings.json" || base === "settings.local.json") return true;
   if (base === ".mcp.json") return true;
@@ -45,7 +47,9 @@ function isEnvCarrierFile(fp) {
 function extractIgnoreGlobs(content) {
   if (typeof content !== "string" || !content) return [];
   const re = new RegExp(
-    "(?<![\\w])" + VAR + "[\"']?\\s*[:=]\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\n#]*))",
+    "(?<![\\w])" +
+      VAR +
+      "[\"']?\\s*[:=]\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\n#]*))",
     "g",
   );
   const globs = [];
@@ -116,8 +120,10 @@ function buildReason(broadGlobs) {
     "    `dir/**/*.gen.ts`, `src/generated/schema.ts`, `dir/*.pb.go`;",
     "  • папка целиком генерируемая/конфиг? — миграции, *.d.ts, *.gen.*, *.pb.go,",
     "    framework-configs и т.п. и так авто-скипаются; проверь, нужен ли глоб вообще;",
-    "  • весь репо на централизованных тестах (tests/ отдельно, src/ без локальных",
-    "    тестов) — это НЕ про глоб: ставь MAIN_SKILL_VERIFY_CHANGES=0 на проект.",
+    "  • репо на централизованных тестах (tests/ отдельно, имена по фиче)? — глоб не",
+    "    нужен: триггер D сам засчитывает центральный спек, импортирующий файл;",
+    "    спеки вовсе не импортируют исходники (чистый HTTP-flow) — тогда",
+    "    MAIN_SKILL_VERIFY_CHANGES=0 на проект, не глоб.",
     "Осознанно нужен именно широкий глоб → MAIN_SKILL_IGNORE_GLOB_CHECK=0.",
   ].join("\n");
 }

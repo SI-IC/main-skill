@@ -16,7 +16,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { isBroadIgnoreGlob } = require("./checks");
+const { isBroadIgnoreGlob, WALK_SKIP_DIRS } = require("./checks");
 const {
   isEnvCarrierFile,
   extractIgnoreGlobs,
@@ -31,21 +31,8 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
 // Дир-ы, куда не спускаемся при walk — деривативы/vendored, там carrier-файлы
 // либо не наши (node_modules/.env пакета), либо не про этот проект.
-const SKIP_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  ".next",
-  "target",
-  "vendor",
-  "coverage",
-  ".cache",
-  ".uploads",
-  ".venv",
-  "venv",
-  "__pycache__",
-]);
+// Набор общий с import-scan триггера D (checks.js) — раздельные копии дрейфуют.
+const SKIP_DIRS = WALK_SKIP_DIRS;
 
 // Home-level carrier-файлы: глоб, заданный тут, действует на ВСЕ проекты.
 // Намеренно ПОДмножество isEnvCarrierFile: без `~/.mcp.json` (MCP-конфиг не ставит
@@ -236,10 +223,13 @@ function formatReport(sources, rootDir, sanitize = (s) => s) {
   L.push(`итого: ${broad.length} широких, ${narrow.length} узких.`);
   if (broad.length) {
     L.push(
-      "сузь широкие до имени/расширения нетестируемых файлов; если весь репо на",
+      "сузь широкие до имени/расширения нетестируемых файлов. Репо на централизованных",
     );
     L.push(
-      "централизованных тестах — вместо глоба на всю папку ставь MAIN_SKILL_VERIFY_CHANGES=0.",
+      "тестах — глоб не нужен: триггер D засчитывает центральный спек, импортирующий файл;",
+    );
+    L.push(
+      "спеки вовсе не импортируют исходники → MAIN_SKILL_VERIFY_CHANGES=0 вместо глоба.",
     );
   }
   return L.join("\n");

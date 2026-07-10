@@ -186,6 +186,52 @@ test("triggerD: src без парного теста блокируется", ()
   expectBlock(r.stdout, "D");
 });
 
+test("triggerD: централизованный спек по фиче с импортом источника засчитывается", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export const calc = () => 1;");
+  // Имя спека НЕ зеркалит источник (checkout_flow ≠ billing) — прямой
+  // findPairedTestFile его не видит; засчитаться должен через import-scan.
+  writeFile(
+    dir,
+    "tests/unit/checkout_flow.spec.ts",
+    "import { calc } from '../../app/services/billing'\nit('empty', () => {});",
+  );
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/services/billing.ts")),
+    asstBash("curl -s http://localhost:3000/api/checkout"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("tests/unit/checkout_flow.spec.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerD: централизованный спек БЕЗ импорта источника не засчитывается", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export const calc = () => 1;");
+  writeFile(
+    dir,
+    "tests/unit/checkout_flow.spec.ts",
+    "import { x } from '../../app/services/other'\nit('empty', () => {});",
+  );
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/services/billing.ts")),
+    asstBash("curl -s http://localhost:3000/api/checkout"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("tests/unit/checkout_flow.spec.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "D");
+});
+
 test("triggerE: критичный endpoint (auth) без endpoint-теста блокируется", () => {
   const dir = tmp();
   writeFile(dir, "app/controllers/auth_controller.ts", "x");

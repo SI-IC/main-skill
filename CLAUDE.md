@@ -37,7 +37,8 @@ main-skill/
 │   ├── verify-changes.test.js
 │   └── lib/
 │       ├── checks.js       # src↔test mapping (включая generic same-dir
-│       │                   # fallback `<base>.test.<ext>` для sh/lua/dart/...),
+│       │                   # fallback `<base>.test.<ext>` для sh/lua/dart/...
+│       │                   # и import-scan fallback центральных спеков),
 │       │                   # edge-cases parser, auto-lint
 │       ├── checks.test.js
 │       ├── audit-ignore-globs.js  # CLI за /main-skill:check-ignore-globs —
@@ -125,7 +126,7 @@ sh hooks/session-start.test.sh
 
 `ignore-glob-guard.js` бьёт по широкому `MAIN_SKILL_VERIFY_IGNORE_GLOBS` в момент записи. На `Edit/Write/MultiEdit` в env-carrier-файл (`isEnvCarrierFile`: `.env*`, `settings.json`/`settings.local.json`, `.mcp.json`, shell-rc `.bashrc/.zshrc/.zshenv/.bash_profile/.zprofile/.profile/.envrc`, `*.sh`) и на `Bash` command парсит присваивания `VAR` (`extractIgnoreGlobs`: bare `.env`, shell `export`, JSON, одинарные кавычки; сплит по `:`). Любой НОВО введённый глоб, для которого `checks.isBroadIgnoreGlob`, → `permissionDecision:deny` с требованием сузить. Опт-аут `MAIN_SKILL_IGNORE_GLOB_CHECK=0`.
 
-- **Широкий глоб — по сути всегда не тот инструмент:** смешанная папка → сузить до имени/расширения; весь централизованный репо → `VERIFY_CHANGES=0`. Поэтому deny корректен во всех случаях, reason разводит их.
+- **Широкий глоб — по сути всегда не тот инструмент:** смешанная папка → сузить до имени/расширения; централизованные тесты D засчитывает сам (import-scan fallback, см. ниже); спеки вовсе без импортов исходников → `VERIFY_CHANGES=0`. Поэтому deny корректен во всех случаях, reason разводит их.
 - **`isBroadIgnoreGlob` (в `checks.js`, общий).** Broad = последний сегмент после снятия ведущего wildcard-рана либо пуст (`dir/**`, `config/*`), либо ОДНО расширение (`*.ts`, `*.*`, `**/*.py`, `src/**/*.*` — весь язык/дерево, по эффекту шире каталога). Narrow = литеральный якорь: имя (`schema.ts`, `build-*.sh`) или СОСТАВНОЕ расширение (`*.gen.ts`, `*.pb.go`, `*.d.ts`, `*.config.ts`). Голое `**/*.ts` — намеренно broad: иначе Claude обходил бы guard, дописав дефолт-расширение.
 - **Диф против «старого» обязателен (`addedBroadGlobs`):** флажим только ново-введённый широкий глоб — Edit/MultiEdit против `old_string`, Write против содержимого на диске (`safeReadFile`), Bash — вся команда (старого нет). Иначе правка, лишь эхо-ящая уже существующий широкий глоб (или полный Write файла с ним), отклонялась бы навсегда.
 - **env-carrier-гейт обязателен:** без него правка `README.md` / `stop-triggers.md` (примеры с `VAR`) и исходника `verify-changes.js` (пример-строка) ложно словила бы deny сама на себя. Доки/исходники — не carrier → пропускаются. Match по lower-case basename; блаженного `.claude/*` НЕТ (иначе `.claude/commands/*.md` с примером ложно бы гардился) — под `.claude/` ловятся только `settings*.json`/`.mcp.json`/`*.sh` по basename.
@@ -162,6 +163,18 @@ sh hooks/session-start.test.sh
 - **Намеренно НЕ skip-ятся** (бывает реальная логика → должен быть тест либо явный per-project ignore): `config/`, `deploy/`, `scripts/`, generic ops-имена `run.sh`/`entrypoint.sh`/`healthcheck.sh`. Юзер в своём проекте отключает их через `MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/config/**:**/deploy/**"`.
 
 Принцип: skip-default-ы консервативные (low false-negatives). Project-specific tradeoff делается на уровне проекта env-переменной, не глобальным паттерном.
+
+## Триггер D — import-scan fallback для централизованных спеков
+
+`findTestByImportScan` (`checks.js`): прямой парный не найден → второй шанс — спек центральных тест-дир (`tests|test|spec|specs|__tests__` от package-roots, ближайший пакет первым — сортировка по глубине пути; insertion-order `findPackageRoots` этого НЕ гарантирует), импортирующий источник. Матч по import-строкам (предфильтр `IMPORT_LINE_RE`: import/require/require_relative/from/`mock(`), `buildImportMatchRes`: у файла с содержательным родителем ПУТЁВЫЙ импорт обязан нести родительский сегмент (`billing/db`, `billing.db`, `from app.billing import db`) — одноимённый файл чужого модуля не засчитывается; голый импорт имени (`'db'`, `'#step_up'`) принимается — алиас прячет путь. Закрывает кейс ERP_NEW (`auth_cookies.spec.ts` импортирует `#controllers/auth_controller`) — главный источник каталожных ignore-глобов.
+
+- **Только спек-именованные файлы** (`isTestFile` по basename): хелперы/фикстуры/setup в `tests/` линк не доказывают.
+- **Generic-имена** (`index|route|handler|main|mod`) матчатся по родителю (`cart`, `cart/index`); родитель тоже generic (`src/index.ts`) → скан не применяется, иначе массовый FP на любом `../index`.
+- **Капы/hardening**: ≤200 прочитанных спеков на прогон + кеш между файлами одного Stop (один скан), ≤400 кандидатов и ≤20k readdir-entries walk-а, depth ≤8, `readRepoFileSafe` (confinement+200KB), симлинки не следуются, basename/parent эскейпятся И капятся по длине (фейковый file_path на десятки KB из транскрипта ронял бы `new RegExp` «too large» → fail-open всего Stop-хука), любой exception → `null` (fail toward требования), все квантификаторы bounded (ReDoS/I-O-DoS-грабли из секций M/Hardening).
+- **FP осознанно приемлем** (спек импортирует, но не ассертит) — лучше, чем толкать к широким глобам; FN (functional-спек чистого HTTP-flow без импортов) деградирует в честный D → `VERIFY_CHANGES=0` остаётся последним средством и упоминается в reasonD только для этого случая.
+- **Known gaps**: файл в `__tests__/` БЕЗ спек-суффикса (`__tests__/checkout.ts`, Jest-дефолтный testMatch) не читается — спека задачи фиксирует «только `*.spec.*`/`*.test.*`», расширение впустило бы helpers в доказательство линка; алиас с ДРУГИМ родительским сегментом (`'#models/db'` → `app/auth/db.ts`) — FN, деградирует в честный D; импорт одноимённого npm-пакета (`require('billing')`) — FP класса «импортирует, но не ассертит».
+
+Правка `findTestByImportScan` / `buildImportMatchRes` / walk-а → синхронизируй `checks.test.js`, `verify-changes.test.js`, `reasonD`, reason-тексты `ignore-glob-guard.js` / `audit-ignore-globs.js` / `check-ignore-globs.md`, `stop-triggers.md` и эту секцию.
 
 ## Триггер L — dep version-lookup enforcement
 

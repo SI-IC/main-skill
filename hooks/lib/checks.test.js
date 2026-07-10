@@ -1950,3 +1950,300 @@ test("isRenderExemptFrontendFile: type-only/token-only/@generated exempt, ост
   // директория → не exempt
   assert.ok(!checks.isRenderExemptFrontendFile(dir, dir));
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// findTestByImportScan: fallback триггера D — централизованные спеки,
+// именованные по фиче, засчитываются через grep импортов (кейс ERP_NEW)
+// ────────────────────────────────────────────────────────────────────────────
+
+test("findTestByImportScan: находит спек по Adonis-алиасу #controllers/...", () => {
+  const dir = tmp();
+  writeFile(dir, "apps/api/package.json", "{}");
+  writeFile(dir, "apps/api/app/controllers/auth_controller.ts", "export {}");
+  writeFile(
+    dir,
+    "apps/api/tests/unit/auth_cookies.spec.ts",
+    "import AuthController from '#controllers/auth_controller'\ntest('x', () => {})",
+  );
+  const found = checks.findTestByImportScan(
+    "apps/api/app/controllers/auth_controller.ts",
+    dir,
+  );
+  assert.strictEqual(
+    found,
+    path.join("apps", "api", "tests", "unit", "auth_cookies.spec.ts"),
+  );
+});
+
+test("findTestByImportScan: находит по относительному пути с расширением", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export {}");
+  writeFile(
+    dir,
+    "tests/unit/step_up.spec.ts",
+    "import { calc } from '../../app/services/billing.js'\n",
+  );
+  const found = checks.findTestByImportScan("app/services/billing.ts", dir);
+  assert.strictEqual(found, path.join("tests", "unit", "step_up.spec.ts"));
+});
+
+test("findTestByImportScan: находит по CJS require без расширения", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "src/services/billing.js", "module.exports = {}");
+  writeFile(
+    dir,
+    "tests/checkout_flow.test.js",
+    "const billing = require('../src/services/billing')\n",
+  );
+  const found = checks.findTestByImportScan("src/services/billing.js", dir);
+  assert.ok(found);
+});
+
+test("findTestByImportScan: находит по vi.mock-строке", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/middleware/step_up.ts", "export {}");
+  writeFile(
+    dir,
+    "tests/unit/session_flow.spec.ts",
+    "vi.mock('#middleware/step_up')\n",
+  );
+  const found = checks.findTestByImportScan("app/middleware/step_up.ts", dir);
+  assert.ok(found);
+});
+
+test("findTestByImportScan: Python from-import в централизованном тесте", () => {
+  const dir = tmp();
+  writeFile(dir, "pyproject.toml", "[project]");
+  writeFile(dir, "app/services/billing.py", "x = 1");
+  writeFile(
+    dir,
+    "tests/test_checkout_flow.py",
+    "from app.services.billing import calc\n",
+  );
+  const found = checks.findTestByImportScan("app/services/billing.py", dir);
+  assert.ok(found);
+});
+
+test("findTestByImportScan: null без упоминания источника", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export {}");
+  writeFile(
+    dir,
+    "tests/unit/other.spec.ts",
+    "import { x } from '../../app/services/other'\n",
+  );
+  assert.strictEqual(
+    checks.findTestByImportScan("app/services/billing.ts", dir),
+    null,
+  );
+});
+
+test("findTestByImportScan: упоминание вне import-строки не считается", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/controllers/auth_controller.ts", "export {}");
+  writeFile(
+    dir,
+    "tests/unit/misc.spec.ts",
+    "test('kind', () => { expect(kind).toBe('auth_controller') })\n",
+  );
+  assert.strictEqual(
+    checks.findTestByImportScan("app/controllers/auth_controller.ts", dir),
+    null,
+  );
+});
+
+test("findTestByImportScan: подстрочный матч чужого имени не считается", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/controllers/auth_controller.ts", "export {}");
+  writeFile(
+    dir,
+    "tests/unit/reauth.spec.ts",
+    "import Re from '#controllers/reauth_controller'\n",
+  );
+  assert.strictEqual(
+    checks.findTestByImportScan("app/controllers/auth_controller.ts", dir),
+    null,
+  );
+});
+
+test("findTestByImportScan: не-спековые файлы в tests/ не считаются", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export {}");
+  writeFile(
+    dir,
+    "tests/helpers.ts",
+    "import { calc } from '../app/services/billing'\n",
+  );
+  assert.strictEqual(
+    checks.findTestByImportScan("app/services/billing.ts", dir),
+    null,
+  );
+});
+
+test("findTestByImportScan: index.ts матчится по имени родительской диры", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "src/cart/index.ts", "export {}");
+  writeFile(
+    dir,
+    "tests/unit/shopping.spec.ts",
+    "import cart from '../../src/cart'\n",
+  );
+  const found = checks.findTestByImportScan("src/cart/index.ts", dir);
+  assert.ok(found);
+});
+
+test("findTestByImportScan: index.ts с generic-родителем (src) не сканируется", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "src/index.ts", "export {}");
+  writeFile(dir, "tests/unit/app.spec.ts", "import app from '../../src'\n");
+  assert.strictEqual(checks.findTestByImportScan("src/index.ts", dir), null);
+});
+
+test("findTestByImportScan: кеш — повторный вызов не перечитывает спеки", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/a.ts", "export {}");
+  writeFile(dir, "app/b.ts", "export {}");
+  writeFile(dir, "tests/unit/feature.spec.ts", "import a from '../../app/a'\n");
+  const cache = {};
+  const first = checks.findTestByImportScan("app/a.ts", dir, cache);
+  assert.ok(first);
+  const readsAfterFirst = cache.filesRead;
+  assert.ok(readsAfterFirst >= 1);
+  const second = checks.findTestByImportScan("app/b.ts", dir, cache);
+  assert.strictEqual(second, null);
+  assert.strictEqual(cache.filesRead, readsAfterFirst);
+});
+
+test("findTestByImportScan: кап на число прочитанных файлов за прогон", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export {}");
+  for (let i = 0; i < 210; i++) {
+    writeFile(
+      dir,
+      `tests/unit/f${String(i).padStart(3, "0")}.spec.ts`,
+      "// no imports\n",
+    );
+  }
+  const cache = {};
+  assert.strictEqual(
+    checks.findTestByImportScan("app/services/billing.ts", dir, cache),
+    null,
+  );
+  assert.ok(cache.filesRead <= 200, `filesRead=${cache.filesRead}`);
+});
+
+test("findTestByImportScan: спек-симлинк наружу репо не читается", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export {}");
+  const outside = path.join(tmp(), "outside.spec.ts");
+  fs.writeFileSync(outside, "import b from '../../app/services/billing'\n");
+  fs.mkdirSync(path.join(dir, "tests"), { recursive: true });
+  try {
+    fs.symlinkSync(outside, path.join(dir, "tests", "evil.spec.ts"));
+  } catch {
+    return; // среда без прав на symlink — тест неприменим
+  }
+  assert.strictEqual(
+    checks.findTestByImportScan("app/services/billing.ts", dir),
+    null,
+  );
+});
+
+test("findTestByImportScan: одноимённый файл чужого модуля НЕ засчитывается", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/billing/db.ts", "export {}");
+  writeFile(dir, "app/auth/db.ts", "export {}");
+  // Спек покрывает billing/db — auth/db не должен засчитаться по коллизии basename.
+  writeFile(
+    dir,
+    "tests/unit/billing.spec.ts",
+    "import db from '../../app/billing/db'\n",
+  );
+  const foundBilling = checks.findTestByImportScan("app/billing/db.ts", dir);
+  assert.ok(foundBilling, "billing/db должен найтись");
+  assert.strictEqual(
+    checks.findTestByImportScan("app/auth/db.ts", dir),
+    null,
+    "auth/db не покрыт — коллизия basename не считается",
+  );
+});
+
+test("findTestByImportScan: голый импорт имени (без пути) засчитывается", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/middleware/step_up.ts", "export {}");
+  writeFile(dir, "tests/unit/mfa.spec.ts", "vi.mock('step_up')\n");
+  assert.ok(checks.findTestByImportScan("app/middleware/step_up.ts", dir));
+});
+
+test("findTestByImportScan: ближайший package-root сканируется первым", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "packages/foo/package.json", "{}");
+  writeFile(dir, "packages/foo/sub/package.json", "{}");
+  writeFile(dir, "packages/foo/sub/src/orders/utils.ts", "export {}");
+  // Оба спека импортируют orders/utils — вернуться должен спек ближайшего пакета.
+  writeFile(
+    dir,
+    "packages/foo/tests/far.spec.ts",
+    "import u from './sub/src/orders/utils'\n",
+  );
+  writeFile(
+    dir,
+    "packages/foo/sub/tests/near.spec.ts",
+    "import u from '../src/orders/utils'\n",
+  );
+  const found = checks.findTestByImportScan(
+    "packages/foo/sub/src/orders/utils.ts",
+    dir,
+  );
+  assert.strictEqual(
+    found,
+    path.join("packages", "foo", "sub", "tests", "near.spec.ts"),
+  );
+});
+
+test("findTestByImportScan: Python `from pkg import module` засчитывается", () => {
+  const dir = tmp();
+  writeFile(dir, "pyproject.toml", "[project]");
+  writeFile(dir, "app/services/billing.py", "x = 1");
+  writeFile(
+    dir,
+    "tests/test_payments_flow.py",
+    "from app.services import billing\n",
+  );
+  assert.ok(checks.findTestByImportScan("app/services/billing.py", dir));
+});
+
+test("findTestByImportScan: Python import из generic-родителя (from src import utils)", () => {
+  const dir = tmp();
+  writeFile(dir, "pyproject.toml", "[project]");
+  writeFile(dir, "src/utils.py", "x = 1");
+  writeFile(dir, "tests/test_tooling.py", "from src import helpers, utils\n");
+  assert.ok(checks.findTestByImportScan("src/utils.py", dir));
+});
+
+test("findTestByImportScan: гигантский basename из транскрипта → null без throw", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "tests/unit/a.spec.ts", "import a from '../../app/a'\n");
+  const huge = "app/" + "a".repeat(60001) + ".ts";
+  let result;
+  assert.doesNotThrow(() => {
+    result = checks.findTestByImportScan(huge, dir);
+  });
+  assert.strictEqual(result, null);
+});

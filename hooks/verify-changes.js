@@ -389,12 +389,18 @@ function main(p) {
           .map((s) => s.trim())
           .filter(Boolean);
         const missingTests = [];
+        const importScanCache = {}; // один скан центральных спеков на прогон
         for (const fp of observableSrcFiles) {
           const rel = path.isAbsolute(fp) ? path.relative(repoRoot, fp) : fp;
           if (checks.shouldSkipForTestPairing(fp, repoRoot)) continue;
           if (checks.matchAnyGlob(rel, userIgnoreGlobs)) continue;
           const paired = checks.findPairedTestFile(fp, repoRoot, sessionFiles);
-          if (!paired) missingTests.push(fp);
+          if (paired) continue;
+          // Fallback: централизованный спек, именованный по фиче (ERP-кейс),
+          // засчитывается если импортирует источник (findTestByImportScan).
+          if (checks.findTestByImportScan(fp, repoRoot, importScanCache))
+            continue;
+          missingTests.push(fp);
         }
         if (missingTests.length > 0) {
           trigger = "D";
@@ -748,6 +754,9 @@ function main(p) {
     "  • tests/unit/<name>.<ext> / tests/<name>.test.<ext> относительно package-root",
     "    (package-root = директория с package.json/pyproject.toml/Cargo.toml/go.mod/...)",
     "  • mirror src/<rel>/X ↔ tests/<rel>/X.spec, __tests__/<rel>/X.test",
+    "  • централизованный спек с ЛЮБЫМ именем (по фиче), ИМПОРТИРУЮЩИЙ правленый файл",
+    "    (tests/ | test/ | spec/ | specs/ | __tests__/ от package-root; import/require/",
+    "    from/vi.mock, включая #алиасы и относительные пути)",
     "  • для .vue / .svelte / .astro <ext> теста = .ts/.tsx/.js/.jsx/.mjs/.cjs",
     "    (App.vue ↔ App.spec.ts, Card.svelte ↔ Card.svelte.test.ts)",
     "  • Python: test_<name>.py / <name>_test.py / tests/test_<name>.py",
@@ -773,19 +782,20 @@ function main(p) {
     "",
     "Сделай: напиши тесты → прогони → отчитайся.",
     "",
-    "Тесты в репо по конвенции лежат ОТДЕЛЬНЫМ каталогом (tests/), а не рядом с кодом,",
-    "  и покрытие реально есть (один тест-файл на пакет, имя не зеркалит исходник)?",
-    "  Это легитимная раскладка — mirror-эвристика её не ловит. Не плоди дубль-тесты",
-    "  рядом с кодом против конвенции проекта. Подтверди, что покрытие зелёное, и сними",
-    "  D на проект через VERIFY_CHANGES=0 (для централизованной раскладки; глоб на",
-    "  каталог исходников — широкий и будет отклонён ignore-glob-guard).",
+    "Тесты в репо лежат ОТДЕЛЬНЫМ каталогом (tests/), имена спеков — по фиче, не по",
+    "  источнику? Такая раскладка засчитывается АВТОМАТИЧЕСКИ: спек, импортирующий",
+    "  правленый файл, снимает D (см. конвенцию выше). Раз ты видишь этот блок —",
+    "  спека с импортом файла я не нашёл (скан ограничен бюджетом ~200 спеков):",
+    "  допиши покрытие в существующий спек (импорт + ассерты) или создай парный по",
+    "  конвенциям. Не плоди дубль-тесты рядом с кодом против конвенции проекта и",
+    "  НЕ выписывай каталожный ignore-глоб.",
     "Опт-аут целиком: MAIN_SKILL_VERIFY_CHANGES=0",
     "Per-project ignore — ТОЛЬКО узкий глоб по имени/расширению конкретных нетестируемых",
     "  файлов, НЕ каталог целиком (широкий `dir/**` спрячет и тестируемую логику рядом и",
     "  отклоняется ignore-glob-guard при записи):",
     '  MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/*.gen.ts:src/generated/schema.ts" (через `:`).',
-    "  Весь репо на централизованных тестах (src/ без локальных) — это не про глоб:",
-    "  ставь MAIN_SKILL_VERIFY_CHANGES=0.",
+    "  Центральные спеки принципиально не импортируют исходники (чистый HTTP-flow",
+    "  через клиент)? Только тогда снимай D на проект: MAIN_SKILL_VERIFY_CHANGES=0.",
   ].join("\n");
 
   const reasonE = [
