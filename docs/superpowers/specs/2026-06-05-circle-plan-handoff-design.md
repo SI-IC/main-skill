@@ -61,7 +61,7 @@
 
 1. **`skills/workflow-rules/SKILL.md`** — короткая секция-триггер (~6 строк): в конце планирующего флоу
    при многодоменном / >1-сессионном плане предложить circle-формат; дальше — по reference; выдать
-   команду `/circle-skill <path>`.
+   команду `/circle-skill:circle-skill <path>`.
 
 2. **`skills/workflow-rules/references/circle-plan-authoring.md`** — контракт авторинга:
    - Формат: маркеры, заголовки, преамбула «Контекст / Стратегия / Риски», пустой `## Журнал`.
@@ -73,7 +73,7 @@
    - deps/order: из доменного графа; order шагами по 10; deps = id предшественников.
    - Контракты между фазами: фаза, производящая инфру/контракт для следующих, описывает контракт +
      заметку «следующий шаг» для журнала.
-   - Handoff: план в `docs/superpowers/plans/YYYY-MM-DD-<topic>.md`; выдать команду `/circle-skill <path>`.
+   - Handoff: план в `docs/superpowers/plans/YYYY-MM-DD-<topic>.md`; выдать команду `/circle-skill:circle-skill <path>`.
 
 3. **`.claude-plugin/plugin.json`** — bump version (обязателен на каждую правку репо).
 
