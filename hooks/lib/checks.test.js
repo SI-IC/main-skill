@@ -680,13 +680,70 @@ test("shouldSkipForTestPairing: операционные shell-скрипты п
   assert.ok(checks.shouldSkipForTestPairing("sync_config.sh"));
   assert.ok(checks.shouldSkipForTestPairing("scripts/install.sh"));
   assert.ok(checks.shouldSkipForTestPairing("/workspace/deploy.sh"));
-  // boundary: не путать с произвольным префиксом/суффиксом
+  // ops-имя + [-_]суффикс — тоже операционный скрипт (кейс ERP_NEW).
+  assert.ok(checks.shouldSkipForTestPairing("deploy-server.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("setup-test-db.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("install-deps.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("provision_node.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("sync-config-prod.sh"));
+  assert.ok(checks.shouldSkipForTestPairing("scripts/deploy_staging.sh"));
+  // boundary: суффикс bounded ({1,40}) — сверхдлинный хвост не матчится
+  assert.ok(!checks.shouldSkipForTestPairing(`deploy-${"x".repeat(41)}.sh`));
+  // boundary: не путать с произвольным префиксом / приросшим словом
   assert.ok(!checks.shouldSkipForTestPairing("my-deploy.sh"));
-  assert.ok(!checks.shouldSkipForTestPairing("install-deps.sh"));
+  assert.ok(!checks.shouldSkipForTestPairing("installer.sh"));
+  assert.ok(!checks.shouldSkipForTestPairing("reinstall.sh"));
+  assert.ok(!checks.shouldSkipForTestPairing("deployment.sh"));
   // generic ops-имена намеренно НЕ skip-ятся — могут содержать логику.
   assert.ok(!checks.shouldSkipForTestPairing("entrypoint.sh"));
   assert.ok(!checks.shouldSkipForTestPairing("healthcheck.sh"));
   assert.ok(!checks.shouldSkipForTestPairing("run.sh"));
+});
+
+test("shouldSkipForTestPairing: AdonisJS wiring — providers/, bin/-entrypoints, adonisrc", () => {
+  // providers/*_provider.(ts|js) — Adonis-конвенция имени, не каталог целиком.
+  assert.ok(checks.shouldSkipForTestPairing("providers/app_provider.ts"));
+  assert.ok(
+    checks.shouldSkipForTestPairing(
+      "apps/api/providers/http_server_provider.ts",
+    ),
+  );
+  assert.ok(checks.shouldSkipForTestPairing("providers/queue_provider.js"));
+  // cross-stack providers/ с реальной логикой — НЕ skip:
+  // NestJS-сервисы (dot-case), React-контексты (PascalCase), Flutter (.dart).
+  assert.ok(
+    !checks.shouldSkipForTestPairing("src/providers/payment.service.ts"),
+  );
+  assert.ok(!checks.shouldSkipForTestPairing("src/providers/user.provider.ts"));
+  assert.ok(!checks.shouldSkipForTestPairing("src/providers/AuthProvider.tsx"));
+  assert.ok(!checks.shouldSkipForTestPairing("src/providers/AuthProvider.ts"));
+  assert.ok(
+    !checks.shouldSkipForTestPairing("lib/providers/cart_provider.dart"),
+  );
+  // не прямой потомок providers/ — НЕ skip
+  assert.ok(
+    !checks.shouldSkipForTestPairing("providers/http/server_provider.ts"),
+  );
+  // bin/-entrypoints — ТОЧЕЧНО три Adonis-имени, не bin/**.
+  assert.ok(checks.shouldSkipForTestPairing("bin/server.ts"));
+  assert.ok(checks.shouldSkipForTestPairing("bin/console.ts"));
+  assert.ok(checks.shouldSkipForTestPairing("bin/test.ts"));
+  assert.ok(checks.shouldSkipForTestPairing("bin/server.js"));
+  assert.ok(checks.shouldSkipForTestPairing("apps/api/bin/server.ts"));
+  // только прямой потомок bin/ (контракт паттерна)
+  assert.ok(!checks.shouldSkipForTestPairing("bin/nested/server.ts"));
+  // adonisrc — framework-config (Adonis 6), оба расширения.
+  assert.ok(checks.shouldSkipForTestPairing("adonisrc.ts"));
+  assert.ok(checks.shouldSkipForTestPairing("adonisrc.js"));
+  assert.ok(checks.shouldSkipForTestPairing("apps/api/adonisrc.ts"));
+  // boundary: произвольный префикс не считается
+  assert.ok(!checks.shouldSkipForTestPairing("src/myproviders/x_provider.ts"));
+  assert.ok(!checks.shouldSkipForTestPairing("myadonisrc.ts"));
+  // bin/ с CLI-логикой — НЕ skip (точечность паттерна).
+  assert.ok(!checks.shouldSkipForTestPairing("bin/report_logic.ts"));
+  assert.ok(!checks.shouldSkipForTestPairing("bin/cleanup.sh"));
+  // ace-команды (commands/) — бывает реальная логика, НЕ skip каталогом.
+  assert.ok(!checks.shouldSkipForTestPairing("commands/korp_migrate.ts"));
 });
 
 test("shouldSkipForTestPairing: type-only файл по содержимому (только interface/type/const enum)", () => {

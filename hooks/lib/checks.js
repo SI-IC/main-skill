@@ -253,6 +253,15 @@ const SKIP_PATH_PATTERNS = [
   /(^|\/)(locales?|i18n|translations?)\//i,
   /(^|\/)(__generated__|\.generated)\//i,
   /(^|\/)(start|bootstrap)\//i,
+  // AdonisJS providers/ — регистрация биндингов в IoC, чистый wiring (аналог
+  // start/). НЕ каталогом: голый providers/ скипал бы NestJS-сервисы
+  // (src/providers/user.service.ts — бизнес-логика), React-контексты
+  // (AuthProvider.tsx) и Flutter state (cart_provider.dart). Матчим только
+  // Adonis-конвенцию имени: snake_case *_provider.(ts|js) прямым потомком.
+  // commands/ (ace) намеренно НЕ включён — там бывает реальная логика.
+  // Остаточный FN: провайдер с логикой в boot()/ready() — сузить нечем без
+  // content-гейта, который убил бы skip (bind-коллбэки есть в любом провайдере).
+  /(^|\/)providers\/[\w-]{1,64}_provider\.(ts|js)$/i,
   // Infra-as-code / operational scripts directory (almost универсально не
   // покрывается unit-тестами). config/ и deploy/ намеренно НЕ включены —
   // там бывает реальная логика; для них юзер ставит MAIN_SKILL_VERIFY_IGNORE_GLOBS.
@@ -275,10 +284,17 @@ const SKIP_FILENAME_PATTERNS = [
   /\.sql\.go$/i,
   // Framework configs (без логики, для них тестов не пишут).
   /(^|\/)(vite|next|nuxt|svelte|astro|tailwind|postcss|babel|jest|vitest|rollup|tsup|webpack|esbuild|drizzle|playwright)\.config\.(ts|tsx|js|jsx|mjs|cjs)$/i,
+  // AdonisJS 6 framework-config (не следует схеме <name>.config.<ext>;
+  // .adonisrc.json из v5 — JSON, до триггера D не доходит через isCodeFile).
+  /(^|\/)adonisrc\.(ts|js)$/i,
+  // AdonisJS bin/-entrypoints — тонкие Ignitor-обёртки. ТОЧЕЧНО три имени,
+  // не bin/**: в generic-проектах bin/ может нести CLI-логику.
+  /(^|\/)bin\/(server|console|test)\.(ts|js)$/i,
   // Operational shell-scripts по любому пути. Имена выбраны однозначные:
   // run.sh / entrypoint.sh / healthcheck.sh намеренно НЕ включены — слишком
-  // generic, может содержать реальную логику.
-  /(^|\/)(install|deploy|bootstrap|setup|provision|teardown|sync[-_]config)\.sh$/i,
+  // generic, может содержать реальную логику. Опциональный [-_]суффикс
+  // (deploy-server.sh, setup-test-db.sh) bounded — {1,40}, не .*.
+  /(^|\/)(install|deploy|bootstrap|setup|provision|teardown|sync[-_]config)([-_][\w-]{1,40})?\.sh$/i,
   // Storybook stories — визуальные fixtures, не unit-тестируются как код.
   // .mdx-stories здесь намеренно отсутствуют — они отфильтровываются раньше
   // через DOC_FILE_RE / classify()='docs' до достижения triggera D.
