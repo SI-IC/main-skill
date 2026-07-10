@@ -253,14 +253,10 @@ const SKIP_PATH_PATTERNS = [
   /(^|\/)(locales?|i18n|translations?)\//i,
   /(^|\/)(__generated__|\.generated)\//i,
   /(^|\/)(start|bootstrap)\//i,
-  // AdonisJS providers/ — регистрация биндингов в IoC, чистый wiring (аналог
-  // start/). НЕ каталогом: голый providers/ скипал бы NestJS-сервисы
-  // (src/providers/user.service.ts — бизнес-логика), React-контексты
-  // (AuthProvider.tsx) и Flutter state (cart_provider.dart). Матчим только
-  // Adonis-конвенцию имени: snake_case *_provider.(ts|js) прямым потомком.
-  // commands/ (ace) намеренно НЕ включён — там бывает реальная логика.
-  // Остаточный FN: провайдер с логикой в boot()/ready() — сузить нечем без
-  // content-гейта, который убил бы skip (bind-коллбэки есть в любом провайдере).
+  // AdonisJS providers/ — IoC-wiring (аналог start/), но НЕ каталогом: голый
+  // providers/ скипал бы логику NestJS/React/Flutter. Только Adonis-конвенция
+  // snake_case *_provider.(ts|js) прямым потомком; commands/ (ace) намеренно
+  // не включён — там бывает логика. Остаточный FN: логика в boot()/ready().
   /(^|\/)providers\/[\w-]{1,64}_provider\.(ts|js)$/i,
   // Infra-as-code / operational scripts directory (almost универсально не
   // покрывается unit-тестами). config/ и deploy/ намеренно НЕ включены —
@@ -290,13 +286,12 @@ const SKIP_FILENAME_PATTERNS = [
   // AdonisJS bin/-entrypoints — тонкие Ignitor-обёртки. ТОЧЕЧНО три имени,
   // не bin/**: в generic-проектах bin/ может нести CLI-логику.
   /(^|\/)bin\/(server|console|test)\.(ts|js)$/i,
-  // AdonisJS ace.js — корневая JIT-обёртка (импортирует bin/console.ts).
-  // Только .js: v6-шаблоны генерят именно ace.js, .ts-варианта нет.
+  // AdonisJS ace.js — корневая JIT-обёртка; v6-шаблоны генерят только .js.
   /(^|\/)ace\.js$/i,
   // Operational shell-scripts по любому пути. Имена выбраны однозначные:
   // run.sh / entrypoint.sh / healthcheck.sh намеренно НЕ включены — слишком
-  // generic, может содержать реальную логику. Опциональный [-_]суффикс
-  // (deploy-server.sh, setup-test-db.sh) bounded — {1,40}, не .*.
+  // generic, может содержать реальную логику. Опц. [-_]суффикс bounded
+  // {1,40} (deploy-server.sh).
   /(^|\/)(install|deploy|bootstrap|setup|provision|teardown|sync[-_]config)([-_][\w-]{1,40})?\.sh$/i,
   // Storybook stories — визуальные fixtures, не unit-тестируются как код.
   // .mdx-stories здесь намеренно отсутствуют — они отфильтровываются раньше
