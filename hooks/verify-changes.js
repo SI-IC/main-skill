@@ -389,6 +389,7 @@ function main(p) {
           .map((s) => s.trim())
           .filter(Boolean);
         const missingTests = [];
+        const truncatedScans = []; // скан оборван бюджетом → покрытие не опровергнуто
         const importScanCache = {}; // один скан центральных спеков на прогон
         for (const fp of observableSrcFiles) {
           const rel = path.isAbsolute(fp) ? path.relative(repoRoot, fp) : fp;
@@ -400,11 +401,12 @@ function main(p) {
           // засчитывается если импортирует источник (findTestByImportScan).
           if (checks.findTestByImportScan(fp, repoRoot, importScanCache))
             continue;
+          if (importScanCache.lastTruncated) truncatedScans.push(fp);
           missingTests.push(fp);
         }
         if (missingTests.length > 0) {
           trigger = "D";
-          triggerData = { missingTests };
+          triggerData = { missingTests, truncatedScans };
         }
       }
 
@@ -739,6 +741,34 @@ function main(p) {
     "Опт-аут (редко): export MAIN_SKILL_VERIFY_CHANGES=0",
   ].join("\n");
 
+  // Скан оборван бюджетом → «теста нет» не доказано: даём Клоду дешёвый
+  // детерминированный рецепт (grep без лимита) вместо расследования вслепую,
+  // дубль-тестов и широких глобов. grep-имя из НЕДОВЕРЕННОГО basename
+  // (транскрипт) — reason подталкивает Клода ВЫПОЛНИТЬ команду, поэтому
+  // sanitize мало: злое имя `bil$(id)ling.ts` пронесло бы $(id) в шелл.
+  // Allowlist [A-Za-z0-9._-] + grep -F (fixed string, не ERE) закрывают и
+  // shell-, и regex-инъекцию; экзотика вычищается в literal-подстроку.
+  const grepPat = (() => {
+    if (!triggerData?.truncatedScans?.length) return "";
+    const f0 = String(triggerData.truncatedScans[0]);
+    const bare = path
+      .basename(f0, path.extname(f0))
+      .replace(/[^A-Za-z0-9._-]/g, "")
+      .slice(0, 100);
+    return bare || "<имя-файла>";
+  })();
+  const truncD = triggerData?.truncatedScans?.length
+    ? [
+        "",
+        `⚠ Для файлов ниже import-scan ОБОРВАН бюджетом (лимит ${checks.importScanMaxFiles()} спеков / кап списка) —`,
+        "  покрытие центральным спеком НЕ подтверждено, но и НЕ опровергнуто:",
+        ...triggerData.truncatedScans.map((f) => `  • ${sanitize(f)}`),
+        "  Прежде чем писать тест — проверь grep-ом (он без лимита), например:",
+        `  grep -rlF "${grepPat}" <tests-диры пакета> --include="*.spec.*" --include="*.test.*"`,
+        "  Спек с импортом есть → подними лимит: MAIN_SKILL_IMPORT_SCAN_MAX_FILES=1000",
+        "  (или добавь УЗКИЙ ignore-глоб на файл). Спека нет → пиши тест.",
+      ]
+    : [];
   const reasonD = [
     "[main-skill:verify-changes] Stop заблокирован (триггер D: src-файл без парного test-файла).",
     "",
@@ -747,6 +777,7 @@ function main(p) {
     "",
     "Файлы без тестов:",
     ...(triggerData?.missingTests || []).map((f) => `  • ${sanitize(f)}`),
+    ...truncD,
     "",
     "Конвенции, по которым ищу парный тест (mirror-discovery в monorepo):",
     "  • <name>.test.<ext> / <name>.spec.<ext> рядом с src",
@@ -791,7 +822,9 @@ function main(p) {
     "Тесты в репо лежат ОТДЕЛЬНЫМ каталогом (tests/), имена спеков — по фиче, не по",
     "  источнику? Такая раскладка засчитывается АВТОМАТИЧЕСКИ: спек, импортирующий",
     "  правленый файл, снимает D (см. конвенцию выше). Раз ты видишь этот блок —",
-    "  спека с импортом файла я не нашёл (скан ограничен бюджетом ~200 спеков):",
+    "  спека с импортом файла я не нашёл (спеки читаются в порядке релевантности",
+    "  файлу, бюджет чтений — MAIN_SKILL_IMPORT_SCAN_MAX_FILES, дефолт 200; обрыв",
+    "  бюджета до исчерпания списка помечается ⚠-блоком выше):",
     "  допиши покрытие в существующий спек (импорт + ассерты) или создай парный по",
     "  конвенциям. Не плоди дубль-тесты рядом с кодом против конвенции проекта и",
     "  НЕ выписывай каталожный ignore-глоб.",

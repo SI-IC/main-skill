@@ -67,7 +67,7 @@ If the hook still flags files that legitimately don't need unit tests in your pr
 export MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/*.gen.ts:src/generated/schema.ts"
 ```
 
-A repo with centralized tests (all tests under `tests/`, spec names by feature rather than by source file) usually needs no ignore at all: trigger D falls back to an import scan — a spec in the package's `tests/` / `test/` / `spec/` / `specs/` / `__tests__/` that imports the edited file (incl. `#aliases` and relative paths) counts as its paired test. Only if specs don't import sources at all (pure HTTP-flow tests) set `MAIN_SKILL_VERIFY_CHANGES=0` — never ignore the whole source dir.
+A repo with centralized tests (all tests under `tests/`, spec names by feature rather than by source file) usually needs no ignore at all: trigger D falls back to an import scan — a spec in the package's `tests/` / `test/` / `spec/` / `specs/` / `__tests__/` that imports the edited file (incl. `#aliases` and relative paths) counts as its paired test. Specs are read most-relevant-first (source name/dir in the spec path), with a read budget of `MAIN_SKILL_IMPORT_SCAN_MAX_FILES` (default 200, cap 10000); if the budget runs out before the list is exhausted, the block reason says so explicitly and suggests a `grep` check instead of claiming "no test". Only if specs don't import sources at all (pure HTTP-flow tests) set `MAIN_SKILL_VERIFY_CHANGES=0` — never ignore the whole source dir.
 
 To audit ignore-globs already configured in a project (e.g. broad ones set before the guard existed), run **`/main-skill:check-ignore-globs`**. It scans the project's carrier files (`.env*`, `.claude/settings*.json`, `.mcp.json`, `*.sh`), home-level configs (`~/.claude/settings.json`, shell rc) and the environment, flags any broad `dir/**` / `**/*.ext` glob via the same `isBroadIgnoreGlob` the guard uses, and helps you narrow each one. Standalone (no Claude): `node hooks/lib/audit-ignore-globs.js <dir>`.
 
@@ -79,6 +79,7 @@ Hard opt-outs:
 - `MAIN_SKILL_VERIFY_REVIEW=code` — require only code-review section.
 - `MAIN_SKILL_VERIFY_REVIEW=security` — require only security-review section.
 - `MAIN_SKILL_VERIFY_DEPS=0` — disable L (dep version-lookup enforcement). Useful for projects with a frozen lockfile where dep upgrades are batched manually.
+- `MAIN_SKILL_IMPORT_SCAN_MAX_FILES=<n>` — raise trigger D's import-scan read budget (default 200, cap 10000) for monorepos with hundreds of centralized specs per package.
 - `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — disable the `ignore-glob-guard` PreToolUse hook (allow writing broad `dir/**` ignore-globs).
 
 ## Editing the rules

@@ -232,6 +232,109 @@ test("triggerD: централизованный спек БЕЗ импорта 
   expectBlock(r.stdout, "D");
 });
 
+test("triggerD: хвостовой релевантный спек за кэпом засчитывается (ранжирование, регресс)", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(
+    dir,
+    "app/validators/auth_validator.ts",
+    "export const v = () => 1;",
+  );
+  // 205 алфавитно-ранних наполнителей → покрывающий спек в validators/ был бы
+  // за бюджетом при алфавитном порядке (баг-репорт)
+  for (let i = 0; i < 205; i++) {
+    const n = String(i).padStart(3, "0");
+    writeFile(
+      dir,
+      `tests/unit/controllers/spec_${n}.spec.ts`,
+      `import { t } from '#controllers/thing${n}'\nit('t', () => {});`,
+    );
+  }
+  writeFile(
+    dir,
+    "tests/unit/validators/auth_flow.spec.ts",
+    "import { v } from '#validators/auth_validator'\nit('empty', () => {});",
+  );
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/validators/auth_validator.ts")),
+    asstBash("curl -s http://localhost:3000/api/auth"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("tests/unit/validators/auth_flow.spec.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerD: обрыв скана бюджетом → reason содержит ⚠-блок с grep-рецептом", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export const calc = () => 1;");
+  // 210 нерелевантных спеков: бюджет исчерпается без матча
+  for (let i = 0; i < 210; i++) {
+    writeFile(
+      dir,
+      `tests/unit/f${String(i).padStart(3, "0")}.spec.ts`,
+      "import { x } from '#other/thing'\nit('t', () => {});",
+    );
+  }
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/services/billing.ts")),
+    asstBash("curl -s http://localhost:3000/api/billing"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("tests/unit/f000.spec.ts", "t")),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "D");
+  const reason = JSON.parse(r.stdout).reason;
+  assert.match(reason, /ОБОРВАН бюджетом/);
+  assert.match(reason, /grep -rlF "billing"/);
+  assert.match(reason, /MAIN_SKILL_IMPORT_SCAN_MAX_FILES/);
+});
+
+test("triggerD: злой basename не инжектится в grep-рецепт ⚠-блока", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  // имя с shell-метасимволами — легально в ext4, приходит из недоверенного транскрипта
+  writeFile(dir, "app/services/bil$(id)ling.ts", "export const c = () => 1;");
+  for (let i = 0; i < 210; i++) {
+    writeFile(
+      dir,
+      `tests/unit/f${String(i).padStart(3, "0")}.spec.ts`,
+      "import { x } from '#other/thing'\nit('t', () => {});",
+    );
+  }
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/services/bil$(id)ling.ts")),
+    asstBash("curl -s http://localhost:3000/api/billing"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("tests/unit/f000.spec.ts", "t")),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "D");
+  const reason = JSON.parse(r.stdout).reason;
+  // сам рецепт есть, но метасимволы вычищены allowlist-ом: bil$(id)ling → bilidling
+  assert.match(reason, /grep -rlF "bilidling"/);
+  const grepLine = reason.split("\n").find((l) => l.includes("grep -rlF"));
+  assert.ok(!/[$`();|]/.test(grepLine), `метасимвол в рецепте: ${grepLine}`);
+});
+
+test("triggerD: без обрыва скана ⚠-блока в reason нет", () => {
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/foo.ts")),
+    asstBash("curl -s http://localhost:3000/api/foo"),
+    asstText(
+      SUCCESS + " " + EDGE_CASES_BLOCK("tests/unit/foo.test.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "D");
+  const reason = JSON.parse(r.stdout).reason;
+  assert.doesNotMatch(reason, /ОБОРВАН бюджетом/);
+});
+
 test("triggerE: критичный endpoint (auth) без endpoint-теста блокируется", () => {
   const dir = tmp();
   writeFile(dir, "app/controllers/auth_controller.ts", "x");

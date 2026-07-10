@@ -997,6 +997,15 @@ const IMPORT_SCAN_MAX_FILES = 200;
 const IMPORT_SCAN_MAX_LIST = 400;
 const IMPORT_SCAN_MAX_VISITED = 20_000;
 
+// Лимит чтений конфигурируем per-project (монорепы с сотнями центральных
+// спеков): MAIN_SKILL_IMPORT_SCAN_MAX_FILES. Мусор/≤0 → дефолт; кап 10000 —
+// защита от опечатки (200KB-кап на файл остаётся вторым эшелоном).
+function importScanMaxFiles() {
+  const raw = parseInt(process.env.MAIN_SKILL_IMPORT_SCAN_MAX_FILES, 10);
+  if (!Number.isFinite(raw) || raw <= 0) return IMPORT_SCAN_MAX_FILES;
+  return Math.min(raw, 10_000);
+}
+
 // Дир-ы, куда walk не спускается — деривативы/vendored. Общий для import-scan
 // и walkCarrierFiles в audit-ignore-globs.js (раздельные копии дрейфуют).
 const WALK_SKIP_DIRS = new Set([
@@ -1090,12 +1099,18 @@ function buildImportMatchRes(srcPath) {
 // *.spec.* / *.test.* / test_*.py / *_test.go / XxxTest.java) — хелперы,
 // фикстуры и setup.ts внутри tests/ линк не доказывают. Симлинки не следуем
 // (Dirent.isFile()=false), сортировка — детерминизм порядка матча.
-function collectCentralSpecFiles(rootAbs) {
+// Возвращает {files, truncated}. truncated=true — обход прерван капом (maxList
+// или MAX_VISITED) при непройденных entries, т.е. список кандидатов может быть
+// неполон; без флага «дочитали список целиком» неотличимо от «обрезали ровно
+// по бюджету» (ревью-регресс: при env-cap ≥ 400 maxList == бюджету чтений, и
+// цикл чтения в Inner завершается штатно, не увидев обрыва). FP «капы выбраны
+// последним entry» безвреден: лишняя ⚠-приписка «не подтверждено» — честна.
+function collectCentralSpecFiles(rootAbs, maxList = IMPORT_SCAN_MAX_LIST) {
   const out = [];
   let visited = 0;
+  let truncated = false;
   const walkDir = (dir, depth) => {
-    if (depth > 8 || out.length >= IMPORT_SCAN_MAX_LIST) return;
-    if (visited >= IMPORT_SCAN_MAX_VISITED) return;
+    if (depth > 8) return;
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -1104,8 +1119,11 @@ function collectCentralSpecFiles(rootAbs) {
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const e of entries) {
-      if (out.length >= IMPORT_SCAN_MAX_LIST) return;
-      if (++visited >= IMPORT_SCAN_MAX_VISITED) return;
+      if (out.length >= maxList || visited >= IMPORT_SCAN_MAX_VISITED) {
+        truncated = true;
+        return;
+      }
+      visited++;
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
         if (WALK_SKIP_DIRS.has(e.name)) continue;
@@ -1118,7 +1136,50 @@ function collectCentralSpecFiles(rootAbs) {
   for (const dname of CENTRAL_TEST_DIR_NAMES) {
     walkDir(path.join(rootAbs, dname), 0);
   }
-  return out;
+  return { files: out, truncated };
+}
+
+// Порядок чтения спеков — по релевантности к источнику, не по алфавиту:
+// early-exit на первом матче есть, значит покрытый файл находится за единицы
+// чтений вместо сотен, и кэп чтений перестаёт отрезать алфавитно-хвостовые
+// покрывающие спеки (баг-репорт: пакет >200 спеков → ложный D). Сигналы
+// грубые намеренно — ошибка скоринга меняет лишь порядок чтения, не результат:
+// имя источника в basename спека (+4; для generic index/route/... — имя
+// родителя, как в buildImportMatchRes), родительский сегмент в пути спека
+// (+2), токен basename в имени спека (+1). Гейт длины ≥3 — короткие имена
+// (db) дают шумные подстрочные матчи; кап длины ≤200 на base/parent зеркалит
+// buildImportMatchRes (srcPath из транскрипта недоверен — мегабайтный сегмент
+// не должен гоняться по скорингу). Tie → исходный (алфавитный) порядок, вход
+// не мутируется; стоимость — includes по списку кандидатов (≤ бюджета, до 10k).
+function rankSpecCandidates(files, srcPath) {
+  const ext = path.extname(srcPath);
+  const baseRaw = path.basename(srcPath, ext);
+  if (!baseRaw || baseRaw.length > 200) return [...files];
+  const base = baseRaw.toLowerCase();
+  const parentRaw0 = path.basename(path.dirname(srcPath));
+  const parentRaw =
+    parentRaw0 && parentRaw0.length <= 200 ? parentRaw0.toLowerCase() : "";
+  const isGenericBase = GENERIC_BASENAME_RE.test(base);
+  const parent =
+    parentRaw && !GENERIC_PARENT_RE.test(parentRaw) ? parentRaw : "";
+  const nameSig = isGenericBase ? parent : base;
+  const tokens =
+    !isGenericBase && base.length >= 3
+      ? base.split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && t !== base)
+      : [];
+  const scored = files.map((f, i) => {
+    const lower = f.toLowerCase();
+    const specBase = path.basename(lower);
+    let score = 0;
+    if (nameSig.length >= 3 && specBase.includes(nameSig)) score += 4;
+    // сплит по обоим сепараторам: юнит-тесты передают POSIX-литералы, прод —
+    // нативные пути из path.join; path.basename выше понимает оба сам
+    if (parent.length >= 3 && lower.split(/[\\/]/).includes(parent)) score += 2;
+    for (const t of tokens) if (specBase.includes(t)) score += 1;
+    return { f, i, score };
+  });
+  scored.sort((a, b) => b.score - a.score || a.i - b.i);
+  return scored.map((s) => s.f);
 }
 
 // Контент спека → только import-строки (предфильтр IMPORT_LINE_RE): срезает
@@ -1143,7 +1204,13 @@ function specImportLines(absSpec, repoRoot) {
 // ближайший-пакет-первым (по глубине пути; insertion-order Set-а из
 // findPackageRoots этого НЕ гарантирует): пакетный tests/ релевантнее
 // монорепного root-tests/ и дешевле по бюджету.
+//
+// cache.lastTruncated — сигнал ПОСЛЕДНЕГО вызова (сбрасывается на входе):
+// true = хотя бы раз упёрлись в бюджет чтений. Осмыслен при null-результате —
+// различает «дочитал список, матча нет» (честный D) от «обрезан, покрытие не
+// подтверждено» (reasonD дополняется grep-рецептом и ручкой лимита).
 function findTestByImportScan(srcPath, repoRoot, cache = {}) {
+  cache.lastTruncated = false;
   try {
     return findTestByImportScanInner(srcPath, repoRoot, cache);
   } catch {
@@ -1158,16 +1225,27 @@ function findTestByImportScanInner(srcPath, repoRoot, cache) {
   if (!cache.importLines) cache.importLines = new Map();
   if (cache.filesRead == null) cache.filesRead = 0;
 
+  // Кандидатов в списки собираем не меньше лимита чтений: поднятая env-ручка
+  // без масштабирования maxList упёрлась бы в кап списка, а не бюджета.
+  const cap = importScanMaxFiles();
+  const maxList = Math.max(IMPORT_SCAN_MAX_LIST, cap);
   const roots = findPackageRoots(srcPath, repoRoot).sort(
     (a, b) => b.length - a.length,
   );
   for (const root of roots) {
     if (!cache.rootFiles.has(root)) {
-      cache.rootFiles.set(root, collectCentralSpecFiles(root));
+      cache.rootFiles.set(root, collectCentralSpecFiles(root, maxList));
     }
-    for (const absSpec of cache.rootFiles.get(root)) {
+    const entry = cache.rootFiles.get(root);
+    // обрезание СПИСКА кандидатов — тоже обрыв: непопавший в список спек
+    // непроверяем, «теста нет» не доказано (даже если бюджет чтений не выбран)
+    if (entry.truncated) cache.lastTruncated = true;
+    for (const absSpec of rankSpecCandidates(entry.files, srcPath)) {
       if (!cache.importLines.has(absSpec)) {
-        if (cache.filesRead >= IMPORT_SCAN_MAX_FILES) break;
+        if (cache.filesRead >= cap) {
+          cache.lastTruncated = true;
+          break;
+        }
         cache.filesRead++;
         cache.importLines.set(absSpec, specImportLines(absSpec, repoRoot));
       }
@@ -2318,6 +2396,8 @@ module.exports = {
   findPackageRoots,
   findPairedTestFile,
   findTestByImportScan,
+  rankSpecCandidates,
+  importScanMaxFiles,
   findE2eFile,
   WALK_SKIP_DIRS,
   parseEdgeCasesBlock,

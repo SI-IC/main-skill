@@ -2676,6 +2676,232 @@ test("findTestByImportScan: кап на число прочитанных фай
   assert.ok(cache.filesRead <= 200, `filesRead=${cache.filesRead}`);
 });
 
+// ── rankSpecCandidates: релевантностный порядок чтения (баг-репорт: кэп 200
+// отрезал алфавитно-хвостовой покрывающий спек → ложный D) ──────────────────
+
+test("rankSpecCandidates: спек с basename источника в имени — первым", () => {
+  const ranked = checks.rankSpecCandidates(
+    ["/r/tests/unit/other.spec.ts", "/r/tests/unit/billing.spec.ts"],
+    "app/services/billing.ts",
+  );
+  assert.strictEqual(ranked[0], "/r/tests/unit/billing.spec.ts");
+});
+
+test("rankSpecCandidates: parent-сегмент пути поднимает выше нейтральных", () => {
+  const ranked = checks.rankSpecCandidates(
+    [
+      "/r/tests/unit/controllers/x.spec.ts",
+      "/r/tests/unit/validators/y.spec.ts",
+    ],
+    "app/validators/auth_validator.ts",
+  );
+  assert.strictEqual(ranked[0], "/r/tests/unit/validators/y.spec.ts");
+});
+
+test("rankSpecCandidates: токен basename (auth_validator → auth) даёт сигнал", () => {
+  const ranked = checks.rankSpecCandidates(
+    ["/r/tests/unit/zzz.spec.ts", "/r/tests/unit/auth_flow.spec.ts"],
+    "app/validators/auth_validator.ts",
+  );
+  assert.strictEqual(ranked[0], "/r/tests/unit/auth_flow.spec.ts");
+});
+
+test("rankSpecCandidates: tie → исходный порядок, вход не мутируется", () => {
+  const input = ["/r/tests/b.spec.ts", "/r/tests/a.spec.ts"];
+  const ranked = checks.rankSpecCandidates(input, "app/services/billing.ts");
+  assert.deepStrictEqual(ranked, input);
+  assert.deepStrictEqual(input, ["/r/tests/b.spec.ts", "/r/tests/a.spec.ts"]);
+});
+
+test("rankSpecCandidates: generic basename (index) ранжирует по родителю", () => {
+  const ranked = checks.rankSpecCandidates(
+    ["/r/tests/unit/checkout.spec.ts", "/r/tests/unit/cart.spec.ts"],
+    "src/cart/index.ts",
+  );
+  assert.strictEqual(ranked[0], "/r/tests/unit/cart.spec.ts");
+});
+
+test("rankSpecCandidates: короткий base (db) не даёт шумного подстрочного сигнала", () => {
+  // 'db' ⊂ 'redblue' — без гейта длины redblue.spec.ts ложно поднялся бы
+  const input = ["/r/tests/redblue.spec.ts", "/r/tests/aaa.spec.ts"];
+  const ranked = checks.rankSpecCandidates(input, "app/billing/db.ts");
+  assert.deepStrictEqual(ranked, input);
+});
+
+// ── регресс баг-репорта: покрывающий спек в алфавитном хвосте за кэпом ───────
+
+test("findTestByImportScan: хвостовой спек за кэпом находится благодаря ранжированию", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/validators/auth_validator.ts", "export {}");
+  // 205 алфавитно-ранних наполнителей (controllers < validators)
+  for (let i = 0; i < 205; i++) {
+    const n = String(i).padStart(3, "0");
+    writeFile(
+      dir,
+      `tests/unit/controllers/spec_${n}.spec.ts`,
+      `import { t } from '#controllers/thing${n}'\n`,
+    );
+  }
+  // покрывающий спек — имя по фиче (репро репорта), позиция в списке > 200
+  writeFile(
+    dir,
+    "tests/unit/validators/auth_flow.spec.ts",
+    "import { authValidator } from '#validators/auth_validator'\n",
+  );
+  const cache = {};
+  const found = checks.findTestByImportScan(
+    "app/validators/auth_validator.ts",
+    dir,
+    cache,
+  );
+  assert.strictEqual(
+    found,
+    path.join("tests", "unit", "validators", "auth_flow.spec.ts"),
+  );
+  // ранжирование обязано найти его задолго до кэпа
+  assert.ok(cache.filesRead < 200, `filesRead=${cache.filesRead}`);
+});
+
+// ── cache.lastTruncated: обрыв по бюджету различим от «дочитал, матча нет» ───
+
+test("findTestByImportScan: lastTruncated=true при обрыве без матча", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export {}");
+  for (let i = 0; i < 210; i++) {
+    writeFile(
+      dir,
+      `tests/unit/f${String(i).padStart(3, "0")}.spec.ts`,
+      "import { x } from '#other/thing'\n",
+    );
+  }
+  const cache = {};
+  assert.strictEqual(
+    checks.findTestByImportScan("app/services/billing.ts", dir, cache),
+    null,
+  );
+  assert.strictEqual(cache.lastTruncated, true);
+});
+
+test("findTestByImportScan: lastTruncated=false когда список дочитан", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export {}");
+  writeFile(dir, "tests/unit/other.spec.ts", "import { x } from '#other/y'\n");
+  const cache = {};
+  assert.strictEqual(
+    checks.findTestByImportScan("app/services/billing.ts", dir, cache),
+    null,
+  );
+  assert.strictEqual(cache.lastTruncated, false);
+});
+
+// ── env-ручка MAIN_SKILL_IMPORT_SCAN_MAX_FILES ───────────────────────────────
+
+test("importScanMaxFiles: дефолт 200, валидное значение, гейты мусора и капа", () => {
+  const KEY = "MAIN_SKILL_IMPORT_SCAN_MAX_FILES";
+  const prev = process.env[KEY];
+  try {
+    delete process.env[KEY];
+    assert.strictEqual(checks.importScanMaxFiles(), 200);
+    process.env[KEY] = "300";
+    assert.strictEqual(checks.importScanMaxFiles(), 300);
+    process.env[KEY] = "abc";
+    assert.strictEqual(checks.importScanMaxFiles(), 200);
+    process.env[KEY] = "-5";
+    assert.strictEqual(checks.importScanMaxFiles(), 200);
+    process.env[KEY] = "0";
+    assert.strictEqual(checks.importScanMaxFiles(), 200);
+    process.env[KEY] = "999999999";
+    assert.strictEqual(checks.importScanMaxFiles(), 10000);
+  } finally {
+    if (prev === undefined) delete process.env[KEY];
+    else process.env[KEY] = prev;
+  }
+});
+
+test("findTestByImportScan: env-ручка поднимает лимит чтений", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export {}");
+  for (let i = 0; i < 210; i++) {
+    writeFile(
+      dir,
+      `tests/unit/f${String(i).padStart(3, "0")}.spec.ts`,
+      "import { x } from '#other/thing'\n",
+    );
+  }
+  // имя и папка намеренно нерелевантны — ранжирование не спасает,
+  // спек алфавитно последний (z > f) → позиция 211
+  writeFile(
+    dir,
+    "tests/unit/zzz_flow.spec.ts",
+    "import { calc } from '#services/billing'\n",
+  );
+  assert.strictEqual(
+    checks.findTestByImportScan("app/services/billing.ts", dir, {}),
+    null,
+  );
+  const KEY = "MAIN_SKILL_IMPORT_SCAN_MAX_FILES";
+  const prev = process.env[KEY];
+  try {
+    process.env[KEY] = "300";
+    const cache = {};
+    assert.strictEqual(
+      checks.findTestByImportScan("app/services/billing.ts", dir, cache),
+      path.join("tests", "unit", "zzz_flow.spec.ts"),
+    );
+    assert.strictEqual(cache.lastTruncated, false);
+  } finally {
+    if (prev === undefined) delete process.env[KEY];
+    else process.env[KEY] = prev;
+  }
+});
+
+test("findTestByImportScan: lastTruncated=true когда кап СПИСКА обрезал кандидатов (cap≥400)", () => {
+  // Регресс ревью: при env-cap ≥ 400 maxList === cap → список кандидатов
+  // обрезан ровно до бюджета, цикл чтения дочитывает его целиком без break —
+  // обрыв должен репортиться флагом обрезания СПИСКА, не только бюджета чтений.
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(dir, "app/services/billing.ts", "export {}");
+  for (let i = 0; i < 450; i++) {
+    writeFile(
+      dir,
+      `tests/unit/f${String(i).padStart(3, "0")}.spec.ts`,
+      "import { x } from '#other/thing'\n",
+    );
+  }
+  const KEY = "MAIN_SKILL_IMPORT_SCAN_MAX_FILES";
+  const prev = process.env[KEY];
+  try {
+    process.env[KEY] = "400";
+    const cache = {};
+    assert.strictEqual(
+      checks.findTestByImportScan("app/services/billing.ts", dir, cache),
+      null,
+    );
+    assert.strictEqual(cache.lastTruncated, true);
+  } finally {
+    if (prev === undefined) delete process.env[KEY];
+    else process.env[KEY] = prev;
+  }
+});
+
+test("rankSpecCandidates: гигантский base/parent не скорится (кап длины), вход цел", () => {
+  const files = ["/r/tests/a.spec.ts", "/r/tests/b.spec.ts"];
+  const hugeParent = "p".repeat(1_000_000);
+  const ranked = checks.rankSpecCandidates(
+    files,
+    `app/${hugeParent}/billing.ts`,
+  );
+  assert.deepStrictEqual(ranked, files);
+  const hugeBase = "b".repeat(1_000_000);
+  const ranked2 = checks.rankSpecCandidates(files, `app/x/${hugeBase}.ts`);
+  assert.deepStrictEqual(ranked2, files);
+});
+
 test("findTestByImportScan: спек-симлинк наружу репо не читается", () => {
   const dir = tmp();
   writeFile(dir, "package.json", "{}");
