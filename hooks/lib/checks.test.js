@@ -736,6 +736,11 @@ test("shouldSkipForTestPairing: AdonisJS wiring — providers/, bin/-entrypoints
   assert.ok(checks.shouldSkipForTestPairing("adonisrc.ts"));
   assert.ok(checks.shouldSkipForTestPairing("adonisrc.js"));
   assert.ok(checks.shouldSkipForTestPairing("apps/api/adonisrc.ts"));
+  // ace.js — корневая JIT-обёртка Adonis 6 (импортирует bin/console.ts).
+  assert.ok(checks.shouldSkipForTestPairing("ace.js"));
+  assert.ok(checks.shouldSkipForTestPairing("apps/api/ace.js"));
+  assert.ok(!checks.shouldSkipForTestPairing("myace.js"));
+  assert.ok(!checks.shouldSkipForTestPairing("src/ace.ts")); // .ts-варианта в шаблонах v6 нет
   // boundary: произвольный префикс не считается
   assert.ok(!checks.shouldSkipForTestPairing("src/myproviders/x_provider.ts"));
   assert.ok(!checks.shouldSkipForTestPairing("myadonisrc.ts"));

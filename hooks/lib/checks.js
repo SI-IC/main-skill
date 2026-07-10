@@ -290,6 +290,9 @@ const SKIP_FILENAME_PATTERNS = [
   // AdonisJS bin/-entrypoints — тонкие Ignitor-обёртки. ТОЧЕЧНО три имени,
   // не bin/**: в generic-проектах bin/ может нести CLI-логику.
   /(^|\/)bin\/(server|console|test)\.(ts|js)$/i,
+  // AdonisJS ace.js — корневая JIT-обёртка (импортирует bin/console.ts).
+  // Только .js: v6-шаблоны генерят именно ace.js, .ts-варианта нет.
+  /(^|\/)ace\.js$/i,
   // Operational shell-scripts по любому пути. Имена выбраны однозначные:
   // run.sh / entrypoint.sh / healthcheck.sh намеренно НЕ включены — слишком
   // generic, может содержать реальную логику. Опциональный [-_]суффикс

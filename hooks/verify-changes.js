@@ -768,7 +768,7 @@ function main(p) {
     "",
     "Авто-skip: миграции, seeders, fixtures, locales, *.d.ts, *.generated.*, *.gen.*,",
     "  framework-configs (vite/next/nuxt/playwright/adonisrc/...), start/, bootstrap/,",
-    "  providers/*_provider.(ts|js), bin/(server|console|test).(ts|js) — AdonisJS wiring,",
+    "  providers/*_provider.(ts|js), bin/(server|console|test).(ts|js), ace.js — AdonisJS wiring,",
     "  infra/ infrastructure/, __mocks__/, *.stories.{tsx,jsx,ts,js},",
     "  операционные shell-скрипты (install/deploy/bootstrap/setup/provision/teardown/",
     "  sync-config + опц. [-_]суффикс: deploy-server.sh, setup-test-db.sh),",
