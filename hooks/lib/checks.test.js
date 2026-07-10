@@ -2676,6 +2676,20 @@ test("findTestByImportScan: кап на число прочитанных фай
   assert.ok(cache.filesRead <= 200, `filesRead=${cache.filesRead}`);
 });
 
+test("existsInsideRepo: внутри+существует / удалён / вне repoRoot / относительный / мусор", () => {
+  const dir = tmp();
+  const inside = writeFile(dir, "src/a.ts", "x");
+  assert.strictEqual(checks.existsInsideRepo(inside, dir), true);
+  assert.strictEqual(checks.existsInsideRepo("src/a.ts", dir), true); // относительный
+  fs.rmSync(inside);
+  assert.strictEqual(checks.existsInsideRepo(inside, dir), false); // удалён
+  const outside = writeFile(tmp(), "b.js", "x");
+  assert.strictEqual(checks.existsInsideRepo(outside, dir), false); // вне repoRoot
+  assert.strictEqual(checks.existsInsideRepo(dir, dir), false); // сам корень
+  assert.strictEqual(checks.existsInsideRepo(null, dir), false);
+  assert.strictEqual(checks.existsInsideRepo("src/a.ts", null), false);
+});
+
 // ── rankSpecCandidates: релевантностный порядок чтения (баг-репорт: кэп 200
 // отрезал алфавитно-хвостовой покрывающий спек → ложный D) ──────────────────
 

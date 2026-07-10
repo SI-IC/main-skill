@@ -363,7 +363,9 @@ function main(p) {
         .filter((e) => observable.has(classify(e.file_path)))
         .filter((e) => !checks.isTestFile(e.file_path))
         .filter((e) => !checks.isDocFile(e.file_path))
-        .filter((e) => checks.isCodeFile(e.file_path));
+        .filter((e) => checks.isCodeFile(e.file_path))
+        // вне repoRoot (/tmp-скрипты) или уже удалён → тест не требуется
+        .filter((e) => checks.existsInsideRepo(e.file_path, repoRoot));
       const observableSrcFiles = [
         ...new Set(observableSrcEdits.map((e) => e.file_path)),
       ];
@@ -807,7 +809,8 @@ function main(p) {
     "  файлы с @generated заголовком, type-only TS-файлы (только interface/type/enum),",
     "  декларативные ORM-модели (Lucid `extends BaseModel` / TypeORM `@Entity`: только",
     "  @column/relations/declare-поля и static-константы; @computed/get-set/hook/метод/",
-    "  serialize-стрелка — уже логика, тест ОБЯЗАТЕЛЕН; не игнорь models/ каталогом).",
+    "  serialize-стрелка — уже логика, тест ОБЯЗАТЕЛЕН; не игнорь models/ каталогом),",
+    "  файлы вне repoRoot (throwaway-скрипты в /tmp) и удалённые к моменту Stop.",
     "Стили и разметка (.css/.scss/.sass/.less/.html) исключены из code-файлов —",
     "  на них trigger D не срабатывает (визуальная верификация, не unit-тест).",
     "",

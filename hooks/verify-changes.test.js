@@ -319,6 +319,40 @@ test("triggerD: злой basename не инжектится в grep-рецепт
   assert.ok(!/[$`();|]/.test(grepLine), `метасимвол в рецепте: ${grepLine}`);
 });
 
+test("triggerD: файл вне repoRoot (throwaway-скрипт в /tmp) не требует теста", () => {
+  // dogfooding-кейс v1.9.11: репро-скрипты в os.tmpdir() вне проекта ложно
+  // требовали парный тест — им нечего покрывать в этом репо
+  const dir = tmp();
+  const outside = tmp(); // другой корень, вне repoRoot
+  writeFile(dir, "src/covered.ts", "export const a = 1;");
+  writeFile(dir, "src/covered.test.ts", "it('a', () => {});");
+  writeFile(outside, "scratch.js", "console.log(1);");
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/covered.ts")),
+    asstEdit(path.join(outside, "scratch.js")),
+    asstBash("curl -s http://localhost:3000/api/x"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/covered.test.ts", "a")),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerD: удалённый в ходе сессии файл не требует теста", () => {
+  const dir = tmp();
+  writeFile(dir, "src/covered.ts", "export const a = 1;");
+  writeFile(dir, "src/covered.test.ts", "it('a', () => {});");
+  const gone = writeFile(dir, "src/tmp_probe.js", "console.log(1);");
+  fs.rmSync(gone); // к моменту Stop файла уже нет — тест ему не нужен
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/covered.ts")),
+    asstEdit(gone),
+    asstBash("curl -s http://localhost:3000/api/x"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/covered.test.ts", "a")),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
 test("triggerD: без обрыва скана ⚠-блока в reason нет", () => {
   const dir = tmp();
   writeFile(dir, "src/foo.ts", "x");
@@ -1466,9 +1500,15 @@ test("hardening: transcript > MAX_TRANSCRIPT_BYTES → silent exit", () => {
 test("hardening: ANSI escapes в file_path strip-аются из reason", () => {
   const dir = tmp();
   // Контрольные символы в имени файла: ESC[2K (clear line), ESC[1A (cursor up).
-  // Без strip эти байты дошли бы до терминала юзера.
+  // Без strip эти байты дошли бы до терминала юзера. Файл создаётся реально
+  // (ext4 разрешает ESC в имени): несуществующий путь existsInsideRepo теперь
+  // отсекает до reason — сам вектор ANSI-эха жив только для файлов на диске.
   const malicious = "src/\x1b[2K\x1b[1Aevil.ts";
-  const tp = writeTranscript(dir, [asstEdit(malicious), asstText("готово")]);
+  writeFile(dir, malicious, "x");
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, malicious)),
+    asstText("готово"),
+  ]);
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
   expectBlock(r.stdout, "D");
   const parsed = JSON.parse(r.stdout);

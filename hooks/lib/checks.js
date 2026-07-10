@@ -488,6 +488,26 @@ function isPresentationalSFC(content) {
   return true;
 }
 
+// Правка релевантна мехчекам Stop-хука (D/E/F/A), только если файл (а) внутри
+// repoRoot и (б) существует к моменту Stop. Throwaway-скрипты в /tmp и файлы,
+// удалённые в ходе сессии, не требуют тестов — их больше нет в проекте
+// (dogfooding-кейс v1.9.11: репро-скрипты сессии ложно триггерили D).
+// Компромисс: «удалить перед Stop, вернуть после» формально обходит D — тот же
+// документированный потолок teeth, что текстовый матч render-команд в M.
+function existsInsideRepo(fp, repoRoot) {
+  try {
+    if (typeof fp !== "string" || !fp || typeof repoRoot !== "string")
+      return false;
+    const abs = path.isAbsolute(fp) ? fp : path.join(repoRoot, fp);
+    const rel = path.relative(repoRoot, abs);
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel))
+      return false;
+    return fs.existsSync(abs);
+  } catch {
+    return false;
+  }
+}
+
 // Возвращает true если для srcPath не нужен парный unit-тест.
 // Универсально по стекам. repoRoot опционален для content-чтения.
 function shouldSkipForTestPairing(srcPath, repoRoot = null) {
@@ -2393,6 +2413,7 @@ module.exports = {
   extractScriptSource,
   matchAnyGlob,
   isBroadIgnoreGlob,
+  existsInsideRepo,
   findPackageRoots,
   findPairedTestFile,
   findTestByImportScan,
