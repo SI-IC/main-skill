@@ -309,6 +309,92 @@ function isTypeOnlyTsFile(content) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Декларативная ORM-модель (Lucid / TypeORM): только колонки / relations /
+// declare-поля / static-константы — content-skip для триггера D (стоп-лист
+// testing-strategy: DTO/декларации не тестировать). Консервативен как
+// isPresentationalSFC: skip только при НУЛЕ сигналов логики; relation-thunk-и
+// (`() => Model`, `(x) => x.prop`) — единственные легальные стрелки, и только
+// в аргументной позиции (после `(`/`,`/`[`); всё остальное → логика → тест.
+// `extends compose(BaseModel, Mixin)` гейт НЕ проходит: миксин несёт поведение.
+// ────────────────────────────────────────────────────────────────────────────
+
+// Суффикс-конвенция `*BaseModel` пропускает кастомную базу (AppBaseModel);
+// сигналы всё равно сторожат логику. `@Entity` заякорен на начало строки —
+// иначе упоминание в строковом литерале («Use @Entity() to…») проходило гейт.
+const _LUCID_GATE_RE =
+  /\bclass(?:\s+[A-Za-z_$][\w$]{0,80})?\s+extends\s+(?:[A-Za-z_$][\w$]{0,80})?BaseModel\b/;
+const _TYPEORM_GATE_RE = /(?:^|\n)\s{0,20}@Entity\s*\(/;
+
+// Позитивное свидетельство модели: хотя бы одно column/relation/declare-поле.
+const _MODEL_FIELD_RE =
+  /@(?:column|hasOne|hasMany|belongsTo|manyToMany|hasManyThrough|Column|PrimaryColumn|PrimaryGeneratedColumn|ObjectIdColumn|CreateDateColumn|UpdateDateColumn|DeleteDateColumn|VersionColumn|OneToOne|OneToMany|ManyToOne|ManyToMany)\b|\bdeclare\s+[A-Za-z_$]/;
+
+// Декларативные thunk-формы в АРГУМЕНТНОЙ позиции (lookbehind `(`/`,`/`[`):
+// стрелка после `=` или `:` (значение/опция) остаётся и даёт сигнал логики.
+// Хвостовой lookahead ПОЗИТИВНЫЙ — после цепочки обязан идти разделитель
+// аргументной позиции (`)`, `,`, `]`, перенос): `() => User.query()` не
+// нейтрализуется (после цепочки `(`), и частичный ретрит идентификатора
+// (`query.whereNul` + остаток `l`) тоже не проходит — negative-blacklist
+// здесь пропускал бы word-остаток. Все квантификаторы bounded — ReDoS-грабли
+// репо (см. _SFC_LOGIC_SIGNALS).
+const _THUNK_TAIL = "(?=\\s{0,10}[),\\]\\r\\n])";
+// `() => Model` / `() => Model.Sub` — lazy type-reference (Lucid + TypeORM).
+const _THUNK_TYPE_RE = new RegExp(
+  "(?<=[(,\\[]\\s{0,20})\\(\\s{0,10}\\)\\s{0,10}=>\\s{0,10}[A-Za-z_$][\\w$]{0,80}(?:\\.[A-Za-z_$][\\w$]{0,80}){0,5}" +
+    _THUNK_TAIL,
+  "g",
+);
+// `(photo) => photo.user` / `photo => photo.user` / `(p: Photo) => p.user` —
+// inverse-side accessor (TypeORM): тело — чистая property-цепочка без вызова.
+const _THUNK_ACCESSOR_RE = new RegExp(
+  "(?<=[(,\\[]\\s{0,20})\\(?\\s{0,10}[A-Za-z_$][\\w$]{0,60}(?:\\s{0,10}:\\s{0,10}[A-Za-z_$][\\w$.]{0,80}(?:<[\\w$,.\\s[\\]]{0,80}>)?)?\\s{0,10}\\)?\\s{0,10}=>\\s{0,10}[A-Za-z_$][\\w$]{0,60}(?:\\.[A-Za-z_$][\\w$]{0,60}){1,6}" +
+    _THUNK_TAIL,
+  "g",
+);
+
+const _MODEL_LOGIC_SIGNALS = [
+  /=>/, // любая не-нейтрализованная стрелка (значения, serialize/prepare/onQuery)
+  /\bfunction\b/,
+  /\b(?:get|set)\s+[A-Za-z_$][\w$]{0,60}\s*\(/, // get fullName() / set locale()
+  /@computed\b/,
+  // Lucid hooks (@beforeSave/@afterFetch/…) + TypeORM listeners (@BeforeInsert/@AfterLoad/…).
+  /@(?:[bB]efore|[aA]fter)[A-Z][A-Za-z]{0,40}\b/,
+  /\bserializeExtras\b/,
+  /\bscope\s*\(/, // Lucid query scope
+  /\b(?:if|for|while|switch)\s*\(/,
+  /\btry\s*\{/,
+  /\b(?:await|async|throw|yield|return)\b/,
+  /\bthis\b/,
+  /\bnew\s+[A-Za-z_$]/,
+  /\b(?:let|var)\s+[A-Za-z_$]/,
+  /=\s{0,10}[A-Za-z_$][\w$.]{0,80}\s*\(/, // присваивание вызова: static x = f(…)
+  // Тело метода: `)` + `{` через любой whitespace (переносы включительно).
+  // Имя-агностично НАМЕРЕННО: ловит многострочные сигнатуры (Prettier-перенос
+  // параметров), computed/unicode/#private-имена — в отличие от
+  // `ident(args){`-формы (_SFC_LOGIC_SIGNALS), которую ревью обходило.
+  // В чисто декларативной модели `){` не встречается: после `)` декоратора
+  // идёт поле/декоратор, а у `class … {` перед скобкой нет `)`.
+  /\)\s*\{/,
+  /\bstatic\s*\{/, // static initialization block — исполняется при eval класса
+  /\.(?:map|filter|reduce|reduceRight|forEach|find|findIndex|some|every|flatMap|sort)\s*\(/,
+  /\$\{/, // template-интерполяция
+];
+
+function isDeclarativeModelFile(content) {
+  const stripped = stripBlockComments(String(content || ""));
+  const isLucid = _LUCID_GATE_RE.test(stripped);
+  const isTypeOrm =
+    _TYPEORM_GATE_RE.test(stripped) && /\bclass\b/.test(stripped);
+  if (!isLucid && !isTypeOrm) return false;
+  if (!_MODEL_FIELD_RE.test(stripped)) return false;
+  const neutral = stripped
+    .replace(_THUNK_TYPE_RE, "__thunk__")
+    .replace(_THUNK_ACCESSOR_RE, "__thunk__");
+  for (const re of _MODEL_LOGIC_SIGNALS) if (re.test(neutral)) return false;
+  return true;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Презентационный SFC (Vue/Svelte/Astro): компонент без логики в <script>.
 // Аналог isTypeOnlyTsFile — content-based skip. Консервативен: «презентационный»
 // (skip) только при НУЛЕ сигналов логики; любое сомнение → логика → тест нужен.
@@ -415,6 +501,9 @@ function shouldSkipForTestPairing(srcPath, repoRoot = null) {
   // lazy-regex стрипа `/* */` внутри isTypeOnlyTsFile на adversarial-входе.
   if (/\.(ts|tsx)$/i.test(fp) && isTypeOnlyTsFile(stripBlockComments(body)))
     return true;
+  // Декларативная ORM-модель (Lucid/TypeORM): только колонки/relations —
+  // тестировать нечего; любой сигнал логики внутри → НЕ skip, тест обязателен.
+  if (/\.(ts|js)$/i.test(fp) && isDeclarativeModelFile(body)) return true;
   // Презентационный SFC (Vue/Svelte/Astro): template/markup без логики в script.
   if (/\.(vue|svelte|astro)$/i.test(fp) && isPresentationalSFC(body))
     return true;
@@ -2193,6 +2282,7 @@ module.exports = {
   stripBlockComments,
   isTokenOnlyCss,
   shouldSkipForTestPairing,
+  isDeclarativeModelFile,
   isPresentationalSFC,
   extractScriptSource,
   matchAnyGlob,

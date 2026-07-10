@@ -653,6 +653,66 @@ test("triggerD НЕ срабатывает на type-only TS", () => {
   expectNoBlock(r.stdout);
 });
 
+test("triggerD НЕ срабатывает на декларативную Lucid-модель (content-skip)", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(
+    dir,
+    "app/models/ai_conversation.ts",
+    `import { BaseModel, column, hasMany } from '@adonisjs/lucid/orm'
+export default class AiConversation extends BaseModel {
+  @column({ isPrimary: true })
+  declare id: number
+
+  @hasMany(() => AiConversation)
+  declare replies: HasMany<typeof AiConversation>
+}`,
+  );
+  writeFile(dir, "src/services/foo.ts", "export class Foo {}");
+  writeFile(dir, "src/services/foo.spec.ts", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/models/ai_conversation.ts")),
+    asstEdit(path.join(dir, "src/services/foo.ts")),
+    asstBash("npm test"),
+    asstText(
+      SUCCESS + " " + EDGE_CASES_BLOCK("src/services/foo.spec.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerD срабатывает на Lucid-модель С логикой (@computed)", () => {
+  const dir = tmp();
+  writeFile(dir, "package.json", "{}");
+  writeFile(
+    dir,
+    "app/models/user.ts",
+    `import { BaseModel, column } from '@adonisjs/lucid/orm'
+export default class User extends BaseModel {
+  @column({ isPrimary: true })
+  declare id: number
+
+  @computed()
+  get displayName() {
+    return this.id
+  }
+}`,
+  );
+  writeFile(dir, "src/services/foo.ts", "export class Foo {}");
+  writeFile(dir, "src/services/foo.spec.ts", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/models/user.ts")),
+    asstEdit(path.join(dir, "src/services/foo.ts")),
+    asstBash("npm test"),
+    asstText(
+      SUCCESS + " " + EDGE_CASES_BLOCK("src/services/foo.spec.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "D");
+});
+
 test("triggerD НЕ срабатывает на framework-config (vite.config.ts)", () => {
   const dir = tmp();
   writeFile(dir, "package.json", "{}");

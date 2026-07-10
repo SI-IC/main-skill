@@ -737,6 +737,391 @@ test("shouldSkipForTestPairing: обычный сервисный файл — f
   assert.ok(!checks.shouldSkipForTestPairing("src/components/Button.tsx"));
 });
 
+// ─── isDeclarativeModelFile (Lucid/TypeORM content heuristic) ──────────────
+
+// Реалистичная голая Lucid-модель (кейс ERP_NEW: ai_conversation.ts).
+const LUCID_BARE = `import { DateTime } from 'luxon'
+import { BaseModel, column, hasMany, belongsTo } from '@adonisjs/lucid/orm'
+import type { HasMany, BelongsTo } from '@adonisjs/lucid/types/relations'
+import AiMessage from '#models/ai_message'
+import User from '#models/user'
+
+export default class AiConversation extends BaseModel {
+  static table = 'ai_conversations'
+
+  @column({ isPrimary: true })
+  declare id: number
+
+  @column()
+  declare userId: number
+
+  @column({ columnName: 'return_url' })
+  declare returnUrl: string | null
+
+  @column.dateTime({ autoCreate: true })
+  declare createdAt: DateTime
+
+  @column.dateTime({ autoCreate: true, autoUpdate: true })
+  declare updatedAt: DateTime
+
+  @hasMany(() => AiMessage)
+  declare messages: HasMany<typeof AiMessage>
+
+  @belongsTo(() => User)
+  declare user: BelongsTo<typeof User>
+}`;
+
+test("isDeclarativeModelFile: голая Lucid-модель (колонки+relations+static table) → skip", () => {
+  assert.ok(checks.isDeclarativeModelFile(LUCID_BARE));
+});
+
+test("isDeclarativeModelFile: TypeORM entity (колонки + inverse-side thunks) → skip", () => {
+  const src = `import { Entity, PrimaryGeneratedColumn, Column, OneToMany, ManyToOne } from 'typeorm'
+import { Photo } from './photo'
+
+@Entity()
+export class User {
+  @PrimaryGeneratedColumn()
+  id: number
+
+  @Column({ length: 100 })
+  firstName: string
+
+  @Column({ default: true })
+  isActive: boolean
+
+  @OneToMany(() => Photo, (photo) => photo.user)
+  photos: Photo[]
+
+  @ManyToOne(() => Photo, (photo: Photo) => photo.owner)
+  avatar: Photo
+}`;
+  assert.ok(checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: multiline relation + manyToMany с options + hasManyThrough → skip", () => {
+  const src = `import { BaseModel, column, manyToMany, hasManyThrough, hasMany } from '@adonisjs/lucid/orm'
+import Tag from '#models/tag'
+import Project from '#models/project'
+import Team from '#models/team'
+
+export default class Post extends BaseModel {
+  @column({ isPrimary: true })
+  declare id: number
+
+  @manyToMany(() => Tag, { pivotTable: 'post_tags', localKey: 'id' })
+  declare tags: ManyToMany<typeof Tag>
+
+  @hasManyThrough([() => Project, () => Team])
+  declare projects: HasManyThrough<typeof Project>
+
+  @hasMany(
+    () => Tag,
+    { foreignKey: 'postId' },
+  )
+  declare drafts: HasMany<typeof Tag>
+}`;
+  assert.ok(checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: enum/type/interface рядом с моделью → skip", () => {
+  const src = `import { BaseModel, column } from '@adonisjs/lucid/orm'
+
+export enum UserRole {
+  ADMIN = 'admin',
+  USER = 'user',
+}
+
+export type ConversationStatus = 'active' | 'archived'
+
+export default class Conversation extends BaseModel {
+  @column({ isPrimary: true })
+  declare id: number
+
+  @column()
+  declare role: UserRole
+}`;
+  assert.ok(checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: закомментированная логика не считается логикой", () => {
+  const src = `import { BaseModel, column } from '@adonisjs/lucid/orm'
+
+export default class Note extends BaseModel {
+  /* get fullName() { return this.a + this.b } */
+  @column({ isPrimary: true })
+  declare id: number
+  // markAsRead() { this.readAt = DateTime.now() }
+}`;
+  assert.ok(checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: @computed getter → НЕ skip", () => {
+  const src = `${LUCID_BARE.slice(0, -1)}
+  @computed()
+  get title() {
+    return this.id
+  }
+}`;
+  assert.ok(!checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: метод в теле класса → НЕ skip", () => {
+  const src = `${LUCID_BARE.slice(0, -1)}
+  markAsRead() {
+    this.readAt = DateTime.now()
+  }
+}`;
+  assert.ok(!checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: lifecycle-hook (@beforeSave / @BeforeInsert) → НЕ skip", () => {
+  const lucid = `${LUCID_BARE.slice(0, -1)}
+  @beforeSave()
+  static async hashPassword(user: AiConversation) {
+    user.userId = 1
+  }
+}`;
+  assert.ok(!checks.isDeclarativeModelFile(lucid));
+  const typeorm = `import { Entity, Column, BeforeInsert } from 'typeorm'
+@Entity()
+export class User {
+  @Column()
+  name: string
+
+  @BeforeInsert()
+  normalize() {
+    this.name = this.name.trim()
+  }
+}`;
+  assert.ok(!checks.isDeclarativeModelFile(typeorm));
+});
+
+test("isDeclarativeModelFile: get/set accessor без @computed → НЕ skip", () => {
+  const src = `${LUCID_BARE.slice(0, -1)}
+  get isRecent() {
+    return true
+  }
+}`;
+  assert.ok(!checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: стрелка как значение (static / serialize / onQuery) → НЕ skip", () => {
+  // static-инициализатор со стрелкой — логика, аргументная позиция не при чём.
+  assert.ok(
+    !checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
+  static active = () => AiConversation.query()
+}`),
+  );
+  // serialize/prepare-трансформы в опциях колонки — логика.
+  assert.ok(
+    !checks.isDeclarativeModelFile(`import { BaseModel, column } from '@adonisjs/lucid/orm'
+export default class Doc extends BaseModel {
+  @column({ serialize: (value) => value?.toISO() })
+  declare publishedAt: DateTime | null
+}`),
+  );
+  // onQuery-скоуп в опциях relation — логика (стрелка после двоеточия).
+  assert.ok(
+    !checks.isDeclarativeModelFile(`import { BaseModel, hasMany } from '@adonisjs/lucid/orm'
+export default class Doc extends BaseModel {
+  @column({ isPrimary: true })
+  declare id: number
+
+  @hasMany(() => Doc, { onQuery: (query) => query.whereNull('deletedAt') })
+  declare drafts: HasMany<typeof Doc>
+}`),
+  );
+});
+
+test("isDeclarativeModelFile: Lucid scope / serializeExtras / static-вызов → НЕ skip", () => {
+  assert.ok(
+    !checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
+  static published = scope((query) => query.where('published', true))
+}`),
+  );
+  assert.ok(
+    !checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
+  serializeExtras = true
+}`),
+  );
+  // Присваивание результата вызова (компутед-статик через хелпер).
+  assert.ok(
+    !checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
+  static sorted = orderBy((m) => m.rank)
+}`),
+  );
+});
+
+test("isDeclarativeModelFile: гейт — не-модель / compose-mixin / пустота → НЕ skip", () => {
+  // Обычный сервис — нет extends BaseModel / @Entity.
+  assert.ok(
+    !checks.isDeclarativeModelFile(
+      `export class AuthService {\n  login(u: string) { return u.length > 0 }\n}`,
+    ),
+  );
+  // Mixin через compose() — поведение из миксина, консервативно НЕ skip.
+  assert.ok(
+    !checks.isDeclarativeModelFile(`import { compose } from '@adonisjs/core/helpers'
+import { BaseModel, column } from '@adonisjs/lucid/orm'
+const AuthFinder = withAuthFinder(() => hash.use('scrypt'), { uids: ['email'] })
+export default class User extends compose(BaseModel, AuthFinder) {
+  @column({ isPrimary: true })
+  declare id: number
+}`),
+  );
+  // Класс extends BaseModel, но БЕЗ единого column/relation/declare-поля.
+  assert.ok(
+    !checks.isDeclarativeModelFile(
+      `import { BaseModel } from '@adonisjs/lucid/orm'\nexport default class Stub extends BaseModel {}`,
+    ),
+  );
+  assert.ok(!checks.isDeclarativeModelFile(""));
+  assert.ok(!checks.isDeclarativeModelFile(null));
+});
+
+test("isDeclarativeModelFile: многострочная сигнатура метода → НЕ skip (ревью-HIGH)", () => {
+  // Prettier-перенос параметров; тело без this/return-маркеров — ловится по `){`.
+  const src = `${LUCID_BARE.slice(0, -1)}
+  static seedDefaults(
+    trx: TransactionClientContract,
+    opts: SeedOptions,
+  ) { trx.insert(opts) }
+}`;
+  assert.ok(!checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: static initialization block → НЕ skip", () => {
+  const src = `${LUCID_BARE.slice(0, -1)}
+  static {
+    registry.add('conversations')
+  }
+}`;
+  assert.ok(!checks.isDeclarativeModelFile(src));
+  // static-КОНСТАНТА с объектным литералом — по-прежнему skip (не block).
+  assert.ok(
+    checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
+  static metaDefaults = { pinned: false }
+}`),
+  );
+});
+
+test("isDeclarativeModelFile: computed/unicode/private имена методов → НЕ skip", () => {
+  assert.ok(
+    !checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
+  ['refresh']() { registry.tick() }
+}`),
+  );
+  assert.ok(
+    !checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
+  обновить() { registry.tick() }
+}`),
+  );
+  assert.ok(
+    !checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
+  #sync() { registry.tick() }
+}`),
+  );
+});
+
+test("isDeclarativeModelFile: кастомная база `extends AppBaseModel` (суффикс-конвенция) → skip", () => {
+  const src = `import AppBaseModel from '#models/app_base_model'
+import { column } from '@adonisjs/lucid/orm'
+
+export default class Invoice extends AppBaseModel {
+  @column({ isPrimary: true })
+  declare id: number
+
+  @column()
+  declare total: number
+}`;
+  assert.ok(checks.isDeclarativeModelFile(src));
+  // Не-суффиксная база (BaseModelWithSoftDeletes) — гейт НЕ проходит.
+  assert.ok(
+    !checks.isDeclarativeModelFile(
+      src.replace("AppBaseModel {", "BaseModelWithSoftDeletes {"),
+    ),
+  );
+});
+
+test("isDeclarativeModelFile: @Entity внутри строки — гейт НЕ проходит (ревью-MED)", () => {
+  const src = `const doc = "Use @Entity() to mark a class as a table."
+declare global { interface Window { flag: boolean } }
+export class NotAnEntity {}`;
+  assert.ok(!checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: логика после relations (function / хвостовой хелпер) → НЕ skip", () => {
+  const src = `${LUCID_BARE}
+
+export function normalizeTitle(t: string) {
+  return t.trim()
+}`;
+  assert.ok(!checks.isDeclarativeModelFile(src));
+});
+
+test("isDeclarativeModelFile: ReDoS-guard — adversarial ~200KB линеен", () => {
+  const gate =
+    "export default class X extends BaseModel {\n@column()\ndeclare id: number\n";
+  // Незакрытые relation-вызовы: гоняют thunk-нейтрализацию и method-body regex.
+  const advA = gate + "@hasMany(() => M, ".repeat(8000) + "\n}";
+  // Скобочно-знаковый мусор без сигналов + реальная логика в хвосте:
+  // независимо от мусора детектор обязан дойти и вернуть false.
+  const advB = gate + "=((".repeat(60000) + "\nmarkAsRead() { return 1 }\n}";
+  const t = Date.now();
+  const rA = checks.isDeclarativeModelFile(advA);
+  const rB = checks.isDeclarativeModelFile(advB);
+  const ms = Date.now() - t;
+  assert.strictEqual(rA, true); // мусор без валидной логики — сигналов нет
+  assert.strictEqual(rB, false); // логика в хвосте найдена за мусором
+  assert.ok(
+    ms < 1000,
+    `ожидал < 1000ms, получил ${ms}ms (catastrophic backtracking?)`,
+  );
+});
+
+test("shouldSkipForTestPairing: декларативная Lucid-модель по содержимому → skip", () => {
+  const dir = tmp();
+  writeFile(dir, "apps/api/app/models/ai_conversation.ts", LUCID_BARE);
+  assert.ok(
+    checks.shouldSkipForTestPairing(
+      "apps/api/app/models/ai_conversation.ts",
+      dir,
+    ),
+  );
+});
+
+test("shouldSkipForTestPairing: декларативная модель в .js — тоже skip", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "app/models/tag.js",
+    `import { BaseModel, column } from '@adonisjs/lucid/orm'
+export default class Tag extends BaseModel {
+  @column({ isPrimary: true })
+  declare id
+}`,
+  );
+  assert.ok(checks.shouldSkipForTestPairing("app/models/tag.js", dir));
+});
+
+test("shouldSkipForTestPairing: модель С логикой (@computed/метод) → НЕ skip", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "apps/api/app/models/user.ts",
+    `${LUCID_BARE.slice(0, -1)}
+  @computed()
+  get displayName() {
+    return this.userId
+  }
+}`,
+  );
+  assert.ok(
+    !checks.shouldSkipForTestPairing("apps/api/app/models/user.ts", dir),
+  );
+});
+
 // ─── isPresentationalSFC (Vue/Svelte/Astro content heuristic) ─────────────
 
 test("isPresentationalSFC: template-only (нет <script>) → презентационный", () => {
