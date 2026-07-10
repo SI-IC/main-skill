@@ -814,6 +814,13 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
         path.join(dir, "__tests__", `${base}${tExt}`),
         path.join(dir, "__tests__", `${base}.test${tExt}`),
         path.join(dir, "__tests__", `${base}.spec${tExt}`),
+        // same-dir tests|test подкаталог (node:test-конвенция src/tests/x.test.ts).
+        // Суффикс обязателен: файл без .test/.spec в tests/ — хелпер, не доказательство
+        // (в __tests__/ выше суффикс не нужен — там Jest testMatch считает тестом всё).
+        path.join(dir, "tests", `${base}.test${tExt}`),
+        path.join(dir, "tests", `${base}.spec${tExt}`),
+        path.join(dir, "test", `${base}.test${tExt}`),
+        path.join(dir, "test", `${base}.spec${tExt}`),
       );
     }
     // vitest-plugin-svelte / Vue паттерн: Card.svelte.test.ts / App.vue.spec.ts —

@@ -751,6 +751,7 @@ function main(p) {
     "Конвенции, по которым ищу парный тест (mirror-discovery в monorepo):",
     "  • <name>.test.<ext> / <name>.spec.<ext> рядом с src",
     "  • __tests__/<name>.<ext> / __tests__/<name>.test.<ext> (включая src/__tests__/)",
+    "  • tests/<name>.test.<ext> / test/<name>.spec.<ext> рядом с src (src/tests/x.test.ts)",
     "  • tests/unit/<name>.<ext> / tests/<name>.test.<ext> относительно package-root",
     "    (package-root = директория с package.json/pyproject.toml/Cargo.toml/go.mod/...)",
     "  • mirror src/<rel>/X ↔ tests/<rel>/X.spec, __tests__/<rel>/X.test",

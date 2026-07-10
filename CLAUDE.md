@@ -37,7 +37,8 @@ main-skill/
 │   ├── verify-changes.test.js
 │   └── lib/
 │       ├── checks.js       # src↔test mapping (включая generic same-dir
-│       │                   # fallback `<base>.test.<ext>` для sh/lua/dart/...
+│       │                   # fallback `<base>.test.<ext>` для sh/lua/dart/...,
+│       │                   # same-dir `tests|test/<base>.(test|spec).<ext>`
 │       │                   # и import-scan fallback центральных спеков),
 │       │                   # edge-cases parser, auto-lint
 │       ├── checks.test.js

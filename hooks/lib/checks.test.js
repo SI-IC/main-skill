@@ -318,6 +318,49 @@ test("findPairedTestFile: mirror src/.../foo.ts ↔ __tests__/.../foo.test.ts", 
   assert.match(found, /__tests__[\\/]api[\\/]client\.test\.ts/);
 });
 
+test("findPairedTestFile: same-dir tests/ подкаталог — src/decrypt.ts ↔ src/tests/decrypt.test.ts (node:test-конвенция, кейс conveyor)", () => {
+  const dir = tmp();
+  writeFile(dir, "packages/proxy/package.json", "{}");
+  writeFile(dir, "packages/proxy/src/decrypt.ts", "export const x = 1;");
+  writeFile(
+    dir,
+    "packages/proxy/src/tests/decrypt.test.ts",
+    "import '../decrypt.js'",
+  );
+  const found = checks.findPairedTestFile("packages/proxy/src/decrypt.ts", dir);
+  assert.ok(found, `same-dir tests/ should match, got ${found}`);
+  assert.match(found, /src[\\/]tests[\\/]decrypt\.test\.ts/);
+});
+
+test("findPairedTestFile: same-dir test/ (singular) — lib/parse.ts ↔ lib/test/parse.spec.ts", () => {
+  const dir = tmp();
+  writeFile(dir, "lib/parse.ts", "x");
+  writeFile(dir, "lib/test/parse.spec.ts", "x");
+  const found = checks.findPairedTestFile("lib/parse.ts", dir);
+  assert.ok(found, `same-dir test/ should match, got ${found}`);
+  assert.match(found, /lib[\\/]test[\\/]parse\.spec\.ts/);
+});
+
+test("findPairedTestFile: same-dir tests/ — файл БЕЗ test/spec-суффикса (хелпер) линк не доказывает", () => {
+  const dir = tmp();
+  writeFile(dir, "src/decrypt.ts", "x");
+  writeFile(dir, "src/tests/decrypt.ts", "helper copy, not a test");
+  const found = checks.findPairedTestFile("src/decrypt.ts", dir);
+  assert.equal(
+    found,
+    null,
+    `suffix-less file in tests/ must NOT count, got ${found}`,
+  );
+});
+
+test("findPairedTestFile: same-dir tests/ — чужое имя не матчится", () => {
+  const dir = tmp();
+  writeFile(dir, "src/decrypt.ts", "x");
+  writeFile(dir, "src/tests/other.test.ts", "x");
+  const found = checks.findPairedTestFile("src/decrypt.ts", dir);
+  assert.equal(found, null, `foreign spec name must NOT count, got ${found}`);
+});
+
 test("findPairedTestFile: mirror app/models/user.rb ↔ spec/models/user_spec.rb (RSpec)", () => {
   const dir = tmp();
   writeFile(dir, "Gemfile", "");
