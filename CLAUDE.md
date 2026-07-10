@@ -23,8 +23,8 @@ main-skill/
 ├── skills/
 │   └── workflow-rules/
 │       ├── SKILL.md        # ядро: 3-фазный workflow + universal rules
-│       └── references/     # справочные файлы (stop-triggers,
-│                           # circle-plan-authoring — формат плана под circle-skill)
+│       └── references/     # справочные файлы (stop-triggers, testing-strategy,
+│                           # circle/worktree-plan-authoring — форматы планов)
 ├── hooks/
 │   ├── hooks.json          # регистрация SessionStart + PreToolUse + PostToolUse + Stop
 │   ├── session-start.sh    # update-check + plugin-check + skill-инструкция + сброс off-сентинела
@@ -33,7 +33,7 @@ main-skill/
 │   ├── claudemd-guard.test.js
 │   ├── auto-format.js      # PostToolUse-хук: форматирует файл prettier/ruff/gofmt/rustfmt/clang-format
 │   ├── auto-format.test.js
-│   ├── verify-changes.js   # Stop-хук с триггерами A–K
+│   ├── verify-changes.js   # Stop-хук с триггерами A–M
 │   ├── verify-changes.test.js
 │   └── lib/
 │       ├── checks.js       # src↔test mapping (включая generic same-dir
@@ -194,6 +194,26 @@ Loose-версии не требуют lookup-а: `latest`, `*`, `x`, `>=0`, г�
 
 Любая правка форматов → синхронизируй парсер, тесты в `checks.test.js`, integration-тесты в `verify-changes.test.js`, advertise-message `reasonL` в `verify-changes.js`, и эту секцию.
 
+## Триггер E — endpoint-тест только для критичных роутов
+
+E требует endpoint-level тест (`findE2eFile`: functional/integration/e2e-диры; ищет по обоим именам — ресурсному `auth` и полному `auth_controller`) только для endpoint'ов, критичных по ЛЮБОМУ из двух сигналов (`checks.js`):
+
+- **путь** — `isCriticalEndpoint`: substring-матч доступ/деньги (`auth|login|session|payment|checkout|admin|transfer|…`; короткие токены `acl|sso|otp|2fa|mfa` — с границами, иначе `oracle` ловился бы на `acl`). Generic-маркеры security-кода (`api|sql|crypto|hash`) намеренно исключены — иначе каждый `app/api/**`-роут считался бы критичным;
+- **контент** — `hasMutatingHandler`: мутирующие сигнатуры в теле файла (Next.js `export function POST/PUT/PATCH/DELETE`, `router.post('/x')`, NestJS `@Post(`, Rails `def destroy`, Laravel/Adonis `store/update/destroy`) — закрывает CAVEAT бэклога «неназванные мутации минуют E» (`users_controller.destroy`); комментарии предварительно стрипнуты.
+
+Рядовой read-only controller/route покрывается триггером D (парный тест любого слоя): e2e-форс на каждый роут = e2e-пролиферация → получасовые прогоны. False positive (лишний endpoint-тест на `authors_controller`) безвреден; false negative (мутация в непокрытой сигнатурами конвенции) деградирует до D-парного теста — который может быть unit-ом; это осознанный остаток дыры, сужаемый добавлением сигнатур. reasonE толкает к integration (api-client/supertest) как дефолту, e2e — только для сквозных user-journeys.
+
+## Триггер M — render-verify для фронт-правок
+
+Блокирует «готово», если после последней фронт-правки (classify `frontend`, минус тест/док-файлы — иначе правка `Card.test.tsx` после рендера ложно ре-триггерила бы M) нет render-класса прогона. Render-детект — `checks.isRenderVerifyCmd` (headless browser / curl|wget по localhost; НАМЕРЕННО без unit-раннеров — jsdom не рендерит, и без внешнего `https://` — прод-URL не проверяет локальную правку); активный браузер-MCP засчитывается по имени tool_use в `verify-changes.js`. Опт-аут `MAIN_SKILL_VERIFY_RENDER=0`.
+
+- **Exempt** (`isRenderExemptFrontendFile`, fail toward требования — нечитаемый/не-файл/вне repoRoot/>200KB → НЕ exempt): `@generated`-заголовок, type-only `.tsx/.jsx`, token-only stylesheet (`isTokenOnlyCss`: custom-props/SCSS-vars/@import + `@media/@supports`-обёртка и attr-селекторы токен-скоупа). Презентационные SFC и `.html` НЕ exempt — визуал именно там. Чтение файлов — через `readRepoFileSafe` (realpath + confinement под repoRoot, как hardening transcript_path); кандидатов ≤ 50 за проход (I/O-DoS-кап).
+- **Стрип комментариев — посимвольный state-machine `stripBlockComments` (O(n))**, не regex: lazy/unrolled `/* */`-regex квадратичен на adversarial-входе из незакрытых `/*` (документированные ReDoS-грабли). Сканер различает `//`-comment и строки `' " \``— иначе `/_`внутри`// paths like /api/_`съедал бы файл до EOF вместе с кодом-дисквалификатором (обход type-only exempt); предварительный стрип также гасит lazy-regex внутри`isTypeOnlyTsFile` для M-пути.
+- **Render-детект bounded**: все квантификаторы `isRenderVerifyCmd` ограничены (`{0,300}`), в `isTokenOnlyCss` — гейт длины строки (>500 → не exempt): unbounded-версии квадратичны на adversarial-команде/строке (тот же ReDoS-класс). Vitest Browser Mode (`--browser`) и cypress засчитываются рендером; голый `vitest`/`jest` — нет.
+- **Хук видит ФАКТ рендера, не вердикт** «выглядит правильно» — осознанный потолок teeth (как и текстовый матч команд: `echo "curl localhost"` его формально обходит); к layout-oracle (клиппинг/наложение геометрией) толкает reasonM, рецепт в `references/testing-strategy.md`.
+
+Правка `isRenderVerifyCmd` / exempt-логики / reasonM → синхронизируй `checks.test.js`, `verify-changes.test.js`, `stop-triggers.md` и эту секцию.
+
 ## Hardening hook input
 
 `verify-changes.js` принимает `transcript_path` через stdin и читает файл с диска. Защиты:
@@ -211,6 +231,6 @@ Loose-версии не требуют lookup-а: `latest`, `*`, `x`, `>=0`, г�
 
 ## Размер SKILL.md
 
-Целевой кап — **под 5000 токенов** (≈ 20KB ASCII / ~12KB Cyrillic-heavy), потому что после компакции Claude Code перезагружает только первые 5000 токенов каждого вызванного skill. Контент за капом — в `references/*.md` со ссылкой из SKILL.md, либо в этот CLAUDE.md (если только dev-facing).
+Плотность — постоянная цель (каждая сессия платит полный размер SKILL.md токенами), но **функционал — инвариант**: жми редактурой/дедупом; в `references/*.md` выноси только условный/по-триггеру контент, оставляя в SKILL.md 1–3-строчную выжимку правила + обязательную ссылку «при X прочитай Y». Не жертвуй правилом ради размера.
 
-500 строк — мягкая рекомендация Claude Code; 5000 токенов — реальное узкое место.
+Кап **5000 токенов** (≈ 20KB ASCII / ~12KB Cyrillic-heavy) жёсткий только при компакции — после неё Claude Code перезагружает лишь первые 5000 токенов вызванного skill. Основной пользователь до компакции не доходит (пик ~45% окна) → кап — ориентир, не самоцель. 500 строк — мягкая рекомендация Claude Code.

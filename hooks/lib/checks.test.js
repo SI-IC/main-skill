@@ -60,6 +60,36 @@ test("isControllerOrRoute распознаёт endpoints", () => {
   );
 });
 
+test("isCriticalEndpoint: доступ/деньги критичны, рядовые CRUD — нет", () => {
+  // критичные: auth / доступ
+  assert.ok(checks.isCriticalEndpoint("app/controllers/auth_controller.ts"));
+  assert.ok(checks.isCriticalEndpoint("pages/api/login.ts"));
+  assert.ok(checks.isCriticalEndpoint("src/routes/admin.ts"));
+  assert.ok(checks.isCriticalEndpoint("app/api/session/route.ts"));
+  // критичные: деньги
+  assert.ok(checks.isCriticalEndpoint("app/api/checkout/route.ts"));
+  assert.ok(
+    checks.isCriticalEndpoint("app/controllers/payments_controller.rb"),
+  );
+  assert.ok(checks.isCriticalEndpoint("src/routes/transfer.ts"));
+  // рядовые — не критичны (покрываются триггером D)
+  assert.ok(!checks.isCriticalEndpoint("app/controllers/posts_controller.ts"));
+  assert.ok(!checks.isCriticalEndpoint("app/api/articles/route.ts"));
+  assert.ok(!checks.isCriticalEndpoint("src/routes/health.ts"));
+  // generic `api` в пути сам по себе критичности не даёт
+  assert.ok(!checks.isCriticalEndpoint("app/api/comments/route.ts"));
+  // короткие токены (acl/sso/...) — с границами: substring внутри слова не матчит
+  assert.ok(!checks.isCriticalEndpoint("app/controllers/oracle_controller.ts"));
+  assert.ok(
+    !checks.isCriticalEndpoint("app/controllers/associate_controller.ts"),
+  );
+  assert.ok(checks.isCriticalEndpoint("src/routes/sso.ts"));
+  assert.ok(checks.isCriticalEndpoint("app/controllers/acl_controller.ts"));
+  // пустое / null — не критичны (fail-soft)
+  assert.ok(!checks.isCriticalEndpoint(""));
+  assert.ok(!checks.isCriticalEndpoint(null));
+});
+
 test("isPublicSurface — manifest, SKILL.md, CLI", () => {
   assert.ok(checks.isPublicSurface(".claude-plugin/plugin.json"));
   assert.ok(checks.isPublicSurface("skills/foo/SKILL.md"));
@@ -1066,6 +1096,33 @@ test("findE2eFile: pnpm workspace — backend/tests/functional/auth.spec.ts", ()
   assert.match(found, /backend[\\/]tests[\\/]functional[\\/]auth\.spec\.ts/);
 });
 
+test("findE2eFile: dual bases — тест по полному имени файла контроллера", () => {
+  const dir = tmp();
+  writeFile(dir, "app/controllers/auth_controller.ts", "x");
+  writeFile(
+    dir,
+    "tests/integration/auth_controller.test.ts",
+    'test("login", () => {})',
+  );
+  const found = checks.findE2eFile("app/controllers/auth_controller.ts", dir);
+  assert.ok(found, `полное имя auth_controller.test.ts должно матчиться`);
+});
+
+test("findE2eFile: directory-based роутинг (Next.js App Router route.ts)", () => {
+  const dir = tmp();
+  writeFile(dir, "app/api/auth/login/route.ts", "x");
+  writeFile(dir, "tests/e2e/login.test.ts", 'test("login", () => {})');
+  const found = checks.findE2eFile("app/api/auth/login/route.ts", dir);
+  assert.ok(found, `route.ts должен искаться по имени родительской директории`);
+  assert.match(found, /login\.test\.ts/);
+  // без теста — null (basename `route` сам по себе бесполезен)
+  writeFile(dir, "app/api/posts/comments/route.ts", "x");
+  assert.strictEqual(
+    checks.findE2eFile("app/api/posts/comments/route.ts", dir),
+    null,
+  );
+});
+
 test("parseEdgeCasesBlock парсит однострочный формат", () => {
   const t =
     "<edge-cases>empty:tests/auth.test.ts:test_empty; race:tests/auth.test.ts:test_race</edge-cases>";
@@ -1648,4 +1705,248 @@ test("collectManifestDepsFromEdits: extracts deps только из Edit/Write/M
   assert.ok(names.includes("react"));
   assert.ok(names.includes("next"));
   assert.ok(names.includes("node"));
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Триггер M: render-verify
+// ────────────────────────────────────────────────────────────────────────────
+
+test("isRenderVerifyCmd: render-класс — браузер и curl localhost", () => {
+  assert.ok(checks.isRenderVerifyCmd("curl -s http://localhost:3000/app"));
+  assert.ok(checks.isRenderVerifyCmd("curl http://127.0.0.1:8080/"));
+  assert.ok(checks.isRenderVerifyCmd("wget -qO- http://0.0.0.0:3000"));
+  assert.ok(checks.isRenderVerifyCmd("npx playwright test e2e/smoke.spec.ts"));
+  assert.ok(
+    checks.isRenderVerifyCmd(
+      "npx playwright screenshot http://localhost:3000 out.png",
+    ),
+  );
+  assert.ok(checks.isRenderVerifyCmd("node render.js # puppeteer goto"));
+  assert.ok(
+    checks.isRenderVerifyCmd(
+      "chromium --headless --dump-dom http://localhost:3000",
+    ),
+  );
+  // cypress — реальный браузерный рендер (консистентность с триггером E)
+  assert.ok(checks.isRenderVerifyCmd("npx cypress run --spec e2e/a.cy.ts"));
+  assert.ok(checks.isRenderVerifyCmd("cypress open"));
+  // НЕ render: unit-раннеры и внешний https
+  assert.ok(!checks.isRenderVerifyCmd("npx vitest run"));
+  assert.ok(!checks.isRenderVerifyCmd("jest --findRelatedTests src/Card.tsx"));
+  assert.ok(!checks.isRenderVerifyCmd("curl -s https://example.com/health"));
+  assert.ok(!checks.isRenderVerifyCmd("npm test"));
+  // многострочная команда: «localhost» в ДРУГОЙ строке не засчитывается
+  assert.ok(
+    !checks.isRenderVerifyCmd(
+      "curl -s https://staging.example.com/health\nnpm run build\n# works on localhost too",
+    ),
+  );
+  assert.ok(!checks.isRenderVerifyCmd(""));
+  assert.ok(!checks.isRenderVerifyCmd(null));
+});
+
+test("stripBlockComments: посимвольный O(n), безопасен на adversarial", () => {
+  assert.strictEqual(checks.stripBlockComments("a /* b */ c"), "a  c");
+  assert.strictEqual(checks.stripBlockComments("/* x */y/* z */"), "y");
+  // незакрытый блок-комментарий съедает до конца ФАЙЛА, без зависания
+  assert.strictEqual(checks.stripBlockComments("a /* никогда не закрыт"), "a ");
+  assert.strictEqual(checks.stripBlockComments("a /* x\nb"), "a ");
+  // adversarial: тысячи незакрытых `/*` — должен отработать мгновенно (O(n))
+  const adversarial = "/*".repeat(50_000) + "x";
+  const t0 = Date.now();
+  checks.stripBlockComments(adversarial);
+  assert.ok(Date.now() - t0 < 1000, "stripBlockComments квадратичен?");
+  assert.strictEqual(checks.stripBlockComments(""), "");
+});
+
+test("stripBlockComments: state-machine — `/*` в line-comment/строке НЕ открывает блок", () => {
+  // `//`-комментарий с wildcard-путём не съедает код после него (обход type-only exempt)
+  const src =
+    "// note: paths like /api/* are wildcards\nexport function Card() { return 1; }\n";
+  const out = checks.stripBlockComments(src);
+  assert.ok(out.includes("export function Card()"), `съеден код: ${out}`);
+  // `/*` внутри строкового литерала — строка сохраняется как есть
+  assert.strictEqual(
+    checks.stripBlockComments('const g = "/*not a comment*/";'),
+    'const g = "/*not a comment*/";',
+  );
+  // line-comment стрипается, перенос строки сохраняется
+  assert.strictEqual(checks.stripBlockComments("a // tail\nb"), "a \nb");
+  // escape внутри строки не ломает состояние
+  assert.strictEqual(
+    checks.stripBlockComments('s = "a\\"/*x"; y'),
+    's = "a\\"/*x"; y',
+  );
+});
+
+test("isRenderVerifyCmd: браузерные раннеры — render; jsdom — нет", () => {
+  assert.ok(checks.isRenderVerifyCmd("npx vitest run --browser=chromium"));
+  assert.ok(checks.isRenderVerifyCmd("npx cypress run --component"));
+  assert.ok(!checks.isRenderVerifyCmd("npx vitest run"));
+});
+
+test("isTokenOnlyCss: @media/@supports-обёртка и attr-селектор токенов — exempt", () => {
+  assert.ok(
+    checks.isTokenOnlyCss(
+      "@media (prefers-color-scheme: dark) {\n:root {\n--bg: #000;\n}\n}\n",
+    ),
+  );
+  assert.ok(
+    checks.isTokenOnlyCss(':root, [data-theme="dark"] {\n--bg: #000;\n}\n'),
+  );
+  // @media с реальными правилами — не exempt
+  assert.ok(
+    !checks.isTokenOnlyCss("@media print {\n.card { display: none; }\n}\n"),
+  );
+});
+
+test("isRenderExemptFrontendFile: confinement — файл вне repoRoot не читается", () => {
+  const dir = tmp();
+  const outside = tmp();
+  writeFile(outside, "types.tsx", "export interface X { a: string }\n");
+  // абсолютный путь вне repoRoot → не exempt, даже если файл сам по себе type-only
+  assert.ok(
+    !checks.isRenderExemptFrontendFile(path.join(outside, "types.tsx"), dir),
+  );
+  // тот же контент внутри repoRoot → exempt (санити, что дело именно в confinement)
+  writeFile(dir, "types.tsx", "export interface X { a: string }\n");
+  assert.ok(
+    checks.isRenderExemptFrontendFile(path.join(dir, "types.tsx"), dir),
+  );
+});
+
+test("hasMutatingHandler: мутирующие сигнатуры — да; read-only/отсутствующий — нет", () => {
+  const dir = tmp();
+  const w = (rel, body) => (writeFile(dir, rel, body), rel);
+  // Next.js app router
+  assert.ok(
+    checks.hasMutatingHandler(
+      w("app/api/users/route.ts", "export async function DELETE(req) {}\n"),
+      dir,
+    ),
+  );
+  // Express-стиль
+  assert.ok(
+    checks.hasMutatingHandler(
+      w("src/routes/orders.ts", "router.post('/orders', createOrder);\n"),
+      dir,
+    ),
+  );
+  // Rails destroy
+  assert.ok(
+    checks.hasMutatingHandler(
+      w("app/controllers/users_controller.rb", "def destroy\nend\n"),
+      dir,
+    ),
+  );
+  // AdonisJS resource-метод
+  assert.ok(
+    checks.hasMutatingHandler(
+      w(
+        "app/controllers/items_controller.ts",
+        "export default class ItemsController { async destroy({ params }) {} }\n",
+      ),
+      dir,
+    ),
+  );
+  // read-only контроллер — нет сигнала
+  assert.ok(
+    !checks.hasMutatingHandler(
+      w(
+        "app/controllers/posts_controller.ts",
+        "export default class PostsController { async index() {} async show() {} }\n",
+      ),
+      dir,
+    ),
+  );
+  // мутирующая сигнатура в комментарии — стрипается, сигнала нет
+  assert.ok(
+    !checks.hasMutatingHandler(
+      w(
+        "app/controllers/notes_controller.ts",
+        "// TODO: router.delete('/notes')\nexport default class NotesController { async index() {} }\n",
+      ),
+      dir,
+    ),
+  );
+  // отсутствующий файл — нет сигнала (решает path-детект)
+  assert.ok(!checks.hasMutatingHandler("app/controllers/nope.ts", dir));
+});
+
+test("isTokenOnlyCss: только токены — exempt, любые правила — нет", () => {
+  assert.ok(
+    checks.isTokenOnlyCss(":root {\n  --brand: #fff;\n  --gap: 8px;\n}\n"),
+  );
+  assert.ok(
+    checks.isTokenOnlyCss("/* palette */\n$brand: #fff;\n$gap: 8px;\n"),
+  );
+  assert.ok(
+    checks.isTokenOnlyCss('@import "./base.css";\n:root {\n--x: 1;\n}'),
+  );
+  // однострочные комментарии (SCSS/LESS) и LESS-переменные — тоже токен-файл
+  assert.ok(checks.isTokenOnlyCss("// Color tokens\n$brand: #f00;\n"));
+  assert.ok(checks.isTokenOnlyCss("@brand-color: #f00;\n@gap: 8px;\n"));
+  // НЕ token-only: обычные правила / свойства / at-rule с блоком
+  assert.ok(!checks.isTokenOnlyCss(".card { color: red; }"));
+  assert.ok(!checks.isTokenOnlyCss(":root {\n  --x: 1;\n  color: red;\n}"));
+  assert.ok(!checks.isTokenOnlyCss("@media (max-width: 600px) {\n}\n"));
+  // пустой / без единого токена — не exempt (нечего исключать)
+  assert.ok(!checks.isTokenOnlyCss(""));
+  assert.ok(!checks.isTokenOnlyCss(":root {\n}\n"));
+  // ReDoS-guard: adversarial длинная строка отклоняется мгновенно
+  const evilLine = ":root" + " ".repeat(100_000) + "!";
+  const t0css = Date.now();
+  assert.ok(!checks.isTokenOnlyCss(evilLine));
+  assert.ok(
+    Date.now() - t0css < 500,
+    "isTokenOnlyCss квадратичен на длинной строке",
+  );
+});
+
+test("isRenderExemptFrontendFile: type-only/token-only/@generated exempt, остальное — нет", () => {
+  const dir = tmp();
+  // type-only .tsx
+  const typesTsx = writeFile(
+    dir,
+    "src/types.tsx",
+    "export interface CardProps { title: string }\n",
+  );
+  assert.ok(checks.isRenderExemptFrontendFile(typesTsx, dir));
+  // .tsx с рендерящей логикой
+  const cardTsx = writeFile(
+    dir,
+    "src/Card.tsx",
+    "export function Card() { return <div>hi</div>; }\n",
+  );
+  assert.ok(!checks.isRenderExemptFrontendFile(cardTsx, dir));
+  // token-only css
+  const tokensCss = writeFile(
+    dir,
+    "src/tokens.css",
+    ":root {\n--b: #fff;\n}\n",
+  );
+  assert.ok(checks.isRenderExemptFrontendFile(tokensCss, dir));
+  // css с правилами
+  const cardCss = writeFile(dir, "src/card.css", ".card { color: red; }\n");
+  assert.ok(!checks.isRenderExemptFrontendFile(cardCss, dir));
+  // @generated
+  const genVue = writeFile(
+    dir,
+    "src/Gen.vue",
+    "<!-- @generated -->\n<template><div/></template>\n",
+  );
+  assert.ok(checks.isRenderExemptFrontendFile(genVue, dir));
+  // презентационный SFC — НЕ exempt (визуал именно там)
+  const plainVue = writeFile(
+    dir,
+    "src/Plain.vue",
+    "<template><div>hi</div></template>\n",
+  );
+  assert.ok(!checks.isRenderExemptFrontendFile(plainVue, dir));
+  // несуществующий файл → fail toward требования (не exempt)
+  assert.ok(
+    !checks.isRenderExemptFrontendFile(path.join(dir, "nope.tsx"), dir),
+  );
+  // директория → не exempt
+  assert.ok(!checks.isRenderExemptFrontendFile(dir, dir));
 });

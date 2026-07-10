@@ -21,17 +21,12 @@ description: Personal workflow rules — language=ru, triage (bugfix → systema
 
 ## Логировать неуверенные места
 
-Не на 100% уверен в поведении кода (внешний API, async-цепочки, нетривиальное состояние, парсинг чужих форматов, редкие ветки) — ставь постоянное structured-logging, чтобы трейс уже лежал в файле к моменту, когда пользователь сообщит о баге.
+Не на 100% уверен в поведении кода (внешний API, async-цепочки, нетривиальное состояние, чужие форматы, редкие ветки) — ставь постоянное structured-logging заранее: трейс должен лежать в файле к моменту, когда пользователь сообщит о баге. Отладка начинается с `tail logs/app.log`, не с добавления print-ов post-factum.
 
-- **Стандартный logger** (Python `logging`, Node `pino`/`winston`, Go `slog`, Rust `tracing`, JVM `logback`) с file appender + ротацией. Не самописный.
-- **Ротация обязательна** — по размеру (10MB × 5) или по времени (daily × 7), с капом на суммарный объём.
-- **Уровни**: `debug` (трейс), `info` (события), `warn` (отклонения), `error` (сбой с контекстом). Прод-дефолт `info`; `debug` через `LOG_LEVEL`, не правкой кода.
-- **Структурированный формат** (JSON / key=value): `logger.info("user.login", extra={"user_id": uid})`, не `print(f"user {uid} ...")`.
-- **Секреты НИКОГДА в логах**. Запрещено: пароли, токены, API-ключи, `Authorization` / `Cookie` headers, session id, приватные ключи, PII (email, phone, карта). Перед логированием объекта — redactor по regex (`*token*`, `*secret*`, `*password*`, `*api[_-]?key*`, `authorization`, `cookie`) → `[REDACTED]`. URL — маскируй `token=` / `key=` в query.
-- **Путь к лог-файлу из env/конфига**, директория в `.gitignore` (`logs/`).
-- **Логгер не должен падать** — fallback на stderr, приложение живёт.
-
-Отладка начинается с `tail logs/app.log`, а не с добавления print-ов post-factum.
+- **Стандартный logger** (Python `logging`, Node `pino`/`winston`, Go `slog`, Rust `tracing`, JVM `logback`), не самописный; file appender + ротация (10MB × 5 или daily × 7). Структурированный формат (JSON / key=value): `logger.info("user.login", extra={"user_id": uid})`, не `print`.
+- **Уровни** `debug`/`info`/`warn`/`error`; прод-дефолт `info`, `debug` — через `LOG_LEVEL`, не правкой кода.
+- **Секреты/PII НИКОГДА в логах** (пароли, токены, api-ключи, `Authorization`/`Cookie`, session id, приватные ключи, email/phone/карта): redactor по regex (`*token*`, `*secret*`, `*password*`, `*api[_-]?key*`, `authorization`, `cookie`) → `[REDACTED]`; в URL маскируй `token=`/`key=`.
+- **Путь к лог-файлу из env/конфига**, `logs/` в `.gitignore`. Логгер не падает — fallback на stderr, приложение живёт.
 
 ## Доки обновлять в том же изменении
 
@@ -53,9 +48,7 @@ description: Personal workflow rules — language=ru, triage (bugfix → systema
 - Docker base images (`FROM node:18`, `FROM python:3.11`) → `docker manifest inspect <image>:<tag>` или `https://hub.docker.com/_/<image>` или endoflife.date по runtime
 - GitHub Actions (`uses: actions/checkout@v3`) → `gh api repos/<org>/<repo>/releases/latest` или `https://github.com/<org>/<repo>/releases`
 
-Используй latest stable / LTS. В **существующем** проекте latest подчинён совместимости: peer-dep, project-target, мажор уже зафиксирован в lockfile / другой пакет требует ≤N — бери максимально свежую совместимую и явно объяви ограничение в формате «ставлю X@N вместо latest M, потому что Y требует ≤N».
-
-Любое **другое** отклонение от latest (личное предпочтение, опасение нестабильности, привычка) — спроси «использую X вместо latest Y, причина: Z — ок?» и **дождись ack**. Без явного согласия пользователя не продолжай.
+Используй latest stable / LTS. В **существующем** проекте latest подчинён совместимости (peer-dep, project-target, lockfile): бери максимально свежую совместимую и явно объяви «ставлю X@N вместо latest M, потому что Y требует ≤N». Любое **другое** отклонение от latest (предпочтение, опасение, привычка) — спроси «использую X вместо latest Y, причина: Z — ок?» и **дождись ack**, без него не продолжай.
 
 Enforcement: Stop-триггер L в `verify-changes.js` блокирует «готово»-claim, если в сессии есть Edit/Write на manifest, но нет соответствующего lookup-вызова. Per-project opt-out (для проектов с фиксированным стеком и lockfile-ом, где апгрейды делаются плановым batch-ем): `MAIN_SKILL_VERIFY_DEPS=0`.
 
@@ -107,7 +100,7 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 **Сначала выбери самое дешёвое достаточное доказательство — калибруй под класс правки, не выкручивай на максимум.** Косметика / визуал-онли (CSS, лейаут, отступы, цвет, анимация, спиннер, текст-copy — и НЕ тронуты логика, состояние, данные, навигация/роуты, authz) → один скриншот до/после (или разовый headless open→screenshot); НЕ строй измеряющий / пиксель-ассертящий харнесс и НЕ промотируй в закоммиченный регресс-e2e. Тронута логика / API / состояние / навигация / authz → полный flow ниже + регресс-тест. **При сомнении в классе — бери пруф дороже, не дешевле.**
 
-- **Frontend** → дефолт — headless playwright (`npx playwright install chromium` + скрипт): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер. Скриншот если визуально. MCP-браузеры (`chrome-devtools-mcp`, `claude-in-chrome`) — опциональный ускоритель; их недоступность ≠ оправдание сдаться. Минимум — `curl localhost:PORT/route` → status + `grep`. Разовый зелёный смоук покрывает «отгрузить раз», но НЕ регрессию: если правка меняет user-флоу (роут-мап, дефолт-роут, добавление/удаление страниц, cross-bundle склейка) — промотируй смоук в **закоммиченный** e2e-спек, не полагайся на ручной прогон.
+- **Frontend** → дефолт — headless playwright (`npx playwright install chromium` + скрипт): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер; скриншот если визуально. Минимум — `curl localhost:PORT/route` → status + `grep`. MCP-браузеры — опциональный ускоритель, их недоступность ≠ оправдание сдаться. Правка меняет user-флоу (роут-мап, дефолт-роут, страницы, cross-bundle склейка) → промотируй смоук в **закоммиченный** e2e-спек: разовый зелёный прогон покрывает «отгрузить раз», не регрессию.
 - **API** → `curl` против реального endpoint → status + body.
 - **CLI** → re-run, paste output.
 - **MCP-плагин / slash-команда Claude Code** → `claude plugin marketplace update && claude -p "/namespace:command" --output-format stream-json` → проверь exit + контент ответа.
@@ -117,14 +110,12 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 ### Build-your-own-harness
 
-Если верификация требует окружения которого нет (docker-compose, headless browser, fake external API, peers плагина) — строй harness как часть задачи, не повод сдаться. «Сложный e2e» = триггер verify-changes. Per-channel рецепты — в `Reproduce-before-done` выше; уникальное здесь: External API → заглушка (`msw` / `nock` / локальный http-server); slash-команды в unattended-CI → `claude -p --permission-mode bypassPermissions --output-format stream-json` (требует `ANTHROPIC_API_KEY`).
+Верификация требует окружения, которого нет (docker-compose, headless browser, fake external API, peers плагина) — строй harness как часть задачи, не повод сдаться. External API → заглушка (`msw` / `nock` / локальный http-server); slash-команды в unattended-CI → `claude -p --permission-mode bypassPermissions --output-format stream-json` (требует `ANTHROPIC_API_KEY`). Незнакомую технику верификации (замер, перехват сети, измерение лейаута) провалидируй **одним** дешёвым проб-прогоном и выясни ограничения окружения (service worker глушит `page.route`, кеш/пересборка бандла, throttling headless) **до** серии полно-стековых — на CPU-боксе каждый e2e ≈ минута. Harness коммить в репо (`scripts/e2e.sh`, `docker-compose.e2e.yml`, `tests/e2e/`) — следующая правка переиспользует.
 
-Незнакомая техника верификации (новый замер, перехват сети, измерение лейаута) — провалидируй её изолированно **одним** дешёвым проб-прогоном и выясни ограничения окружения (service worker глушит `page.route`, кеш/пересборка бандла, throttling headless) **до** полно-стекового прогона. Не открывай эти грабли серией дорогих e2e — на CPU-боксе каждый ≈ минута.
+### Testing strategy — слой, right-amount, скорость
 
-Коммить harness в репо (`scripts/e2e.sh`, `docker-compose.e2e.yml`, `tests/e2e/`); следующая правка переиспользует.
-
-### Tiered test strategy
-
+- **Перед проектированием тестов нового модуля/фичи ОБЯЗАН прочитать [`references/testing-strategy.md`](references/testing-strategy.md)**: таблица выбора слоя, стоп-лист «что НЕ тестировать», рецепты для ws/canvas/video/SFC/стилей, layout-oracle, скорость прогона.
+- Ядро: доменная логика → unit; стыки (код↔БД, handler↔сервис) → integration, причём repo-слой — против РЕАЛЬНОЙ БД (Testcontainers), не моков и не in-memory; e2e — ТОЛЬКО критичные user-journeys, единицы. Over-testing (генераты, DTO, пиксели, сторонний код) — тоже баг: минус скорость сьюта и рефакторинга.
 - **После правки** — only affected: `vitest --changed`, `jest --findRelatedTests`, `pytest --testmon`, `cargo test -p <crate>`, `go test ./<pkg>`.
 - **Перед «готово»** — full suite модуля. Правил `core/shared/utils` — ещё и reverse-dependencies (`pnpm why`, `cargo tree -i`).
 - **Full > 2 мин** — зафиксируй стратегию в проектном CLAUDE.md при первой встрече. **> 10 мин** — спроси пользователя, не решай сам.
@@ -166,36 +157,25 @@ If the test suite is slow, persist a run strategy (memory, CLAUDE.md, or repo do
 ```
 <edge-cases>
 empty:tests/auth.test.ts:test_empty_password;
-expired_token:tests/auth.test.ts:test_expired_remember;
-race:tests/auth.test.ts:test_concurrent_login;
-permission:tests/auth.test.ts:test_revoked_session
+race:tests/auth.test.ts:test_concurrent_login
 </edge-cases>
 ```
 
-- Каждая запись — `name:test_file:test_name`. Разделители — `;` или перенос строки.
-- `test_file` — относительный путь от корня репо; должен существовать.
-- `test_name` — подстрока имени `it/test/describe/def` в этом файле (case-insensitive).
-- Хук `verify-changes` парсит блок и валидирует существование test_file + наличие test_name.
-- Враньё в декларации (`test_file` нет / `test_name` отсутствует) ловится механически и блокирует Stop.
-
-Минимальный обязательный набор: empty, boundary, concurrency, external-failure, permission, malformed-input, deleted-resource. Frontend — плюс browser/UX edge states. Если конкретный кейс реально N/A — пиши явно: `name:N/A:<причина>`, не выкидывай молча.
+- Запись — `name:test_file:test_name`; разделители `;` или перенос строки. `test_file` — путь от корня репо, должен существовать; `test_name` — подстрока имени `it/test/describe/def` в нём (case-insensitive). Хук валидирует механически — враньё в декларации блокирует Stop.
+- Минимальный набор: empty, boundary, concurrency, external-failure, permission, malformed-input, deleted-resource; frontend — плюс browser/UX edge states. Кейс реально N/A → пиши явно `name:N/A:<причина>`, не выкидывай молча.
 
 ### Self-review + триаж замечаний — обязательный шаг 4
 
-После Execution и до Stop, на нетривиальной правке observable-кода, ОБЯЗАТЕЛЬНО прогнать code+security ревью своими силами через суб-агентов.
-
 **Когда обязателен:** observable-правка с `≥ 20` нетривиальных строк ИЛИ затронут security-sensitive путь (`auth|api|sql|crypto|payment|admin|session|token|password|secret|jwt|oauth|cookie|cors|csrf|xss|sanitiz|escape|webhook|hash|cipher|encrypt|decrypt|hmac|signature|signin|signup|login|logout|permission|role|access|sso|saml|ldap`). Тривиальные правки — пропускаются молча; для аудита пропуска: `<self-review>skipped:trivial</self-review>`.
 
-**Как делать:**
+**Как:** ОДИН проход — повторный запуск review-агентов перед Stop ЗАПРЕЩЁН. Параллельно ДВА сабагента в одном Tool message (`Task` или `Agent`, subagent_type="general-purpose" — хук засчитывает оба):
 
-1. **Параллельно** запусти ДВА сабагента в одном Tool message (один проход). Инструмент диспатча — `Task` или `Agent` (что доступно в окружении; хук засчитывает оба):
-   - code-review — `Task/Agent(subagent_type="general-purpose", ...)` с code-review-промптом (качество, паттерны, дублирование, непокрытые edge-cases, нарушения конвенций), модель **обязательно `sonnet`** (≈5× экономия на структурном обходе diff'а). Есть superpowers → бери промпт из его скилла `requesting-code-review` (шаблон `code-reviewer.md`).
-   - `Task/Agent(subagent_type="general-purpose", ..., prompt="security review по OWASP Top-10: injection / auth-bypass / SSRF / открытые редиректы / weak crypto / leaked secrets / unsafe deserialization / missing rate-limit / TOCTOU / path traversal — на конкретные изменённые файлы [список]")` — **без `model` override** (inherit от родителя). Security-ревью должно идти на максимально capable модели (false negative дороже стоимости).
-2. **Триаж каждого замечания** — через `superpowers:receiving-code-review` если установлен, иначе той же дисциплиной напрямую. Без performative-agreement и без отмазок «minor / вне scope».
-3. **Применить applied / обосновать rejected/deferred технически** (file:line, конкретный риск, метрика, цитата кода — не «несущественно»).
-4. **Один проход.** Повторный запуск review-агентов перед Stop ЗАПРЕЩЁН.
+- code-review (качество, паттерны, дублирование, непокрытые edge-cases, конвенции) — модель **обязательно `sonnet`** (≈5× экономия на структурном обходе diff'а); есть superpowers → промпт из `requesting-code-review` (шаблон `code-reviewer.md`).
+- security-review по OWASP Top-10 (injection / auth-bypass / SSRF / редиректы / weak crypto / leaked secrets / deserialization / rate-limit / TOCTOU / path traversal) на конкретные изменённые файлы — **без `model` override**: false negative дороже стоимости.
 
-**Декларация в финальном сообщении** — два машинопроверяемых блока:
+**Триаж каждого замечания** (через `superpowers:receiving-code-review` если установлен, иначе той же дисциплиной): applied — применить; rejected/deferred — обосновать технически (file:line, конкретный риск, метрика, цитата), без performative-agreement и отмазок «minor / вне scope».
+
+**Декларация** — два машинопроверяемых блока в финальном сообщении:
 
 ```
 <self-review>
@@ -205,37 +185,24 @@ security:rejected:CSRF на /logout — POST + SameSite=Strict cookie
 
 <review-triage>
 code:1:applied:src/auth.ts:42-58 — добавил early-return на null user
-code:2:deferred:rate-limit на /login — нет данных по нагрузке, см. issue #123
-code:3:rejected:async/await в logger fire-and-forget намеренно — потеря лога приемлемее блокировки
-security:1:applied:src/auth.ts:120 — sanitize redirect_to через allowlist
-security:2:rejected:CSRF на /logout — endpoint POST + SameSite=Strict cookie
+security:1:rejected:CSRF на /logout — endpoint POST + SameSite=Strict cookie
 </review-triage>
 ```
 
-- `<self-review>` секции: `code` и `security`. Статусы: `applied`, `rejected`, `deferred`, `none-found`. Если активный режим — оба, обе секции обязательны.
-- `<review-triage>` запись: `<source>:<id>:<status>:<reason>`. Каждое замечание — отдельной строкой.
-- **Slop-обоснование блокируется**: `rejected` / `deferred` с пустым раскрытием или только словами `minor / nitpick / несущественно / вне scope / стилистика / косметика / мелочь / cosmetic / not critical / низкий приоритет` без технического маркера (file:line, идентификатор, число, класс/функция, специфический термин риска) — Stop-хук блокирует.
-- Если ревью ничего не нашли — `code:none-found` / `security:none-found`; триаж не требуется.
+- `<self-review>`: обе секции `code` и `security` обязательны (в активном режиме); статусы `applied` / `rejected` / `deferred` / `none-found`. Ревью ничего не нашло → `code:none-found` / `security:none-found`, триаж не требуется.
+- `<review-triage>`: запись `<source>:<id>:<status>:<reason>`, каждое замечание отдельной строкой. **Slop-обоснование блокируется**: `rejected`/`deferred` только со словами «minor / nitpick / несущественно / вне scope / косметика / not critical» без технического маркера (file:line, идентификатор, число, термин риска) — Stop-хук блокирует.
 
 ### Stop-триггеры verify-changes
 
-Хук `verify-changes.js` блокирует «готово»-claim по 9 триггерам (A–H, J, K) и поддерживает env-opt-outs. Полный перечень и opt-outs: [`references/stop-triggers.md`](references/stop-triggers.md).
+Хук `verify-changes.js` блокирует «готово»-claim по триггерам A–M и поддерживает env-opt-outs. Полный перечень и opt-outs: [`references/stop-triggers.md`](references/stop-triggers.md).
 
 ---
 
 # Большой план → circle-skill / worktree-skill
 
-Если в конце планирующего флоу (brainstorming → writing-plans) план выходит многодоменным или оценочно > одной сессии (≈ >40% контекста на один проход) — **предложи** оформить его под пофазное фоновое исполнение. Решение за пользователем; не оформляй без спроса и не жди явной просьбы — инициатива на тебе.
+План в конце планирующего флоу вышел многодоменным или > одной сессии (≈ >40% контекста на проход) → **предложи** пофазное фоновое исполнение: инициатива твоя, решение юзера. Движки смотри в `~/.claude/settings.json → enabledPlugins` (key `<name>@<marketplace>` = `true`):
 
-**Два движка — выбор зависит от того, что установлено и подходит ли параллелизм.** Прежде чем предлагать, прочитай `~/.claude/settings.json → enabledPlugins` и посмотри, какие из плагинов (`circle-skill`, `worktree-skill`) включены (key вида `<name>@<marketplace>` со значением `true`):
+- **`worktree-skill` включён И git-репо с базовой веткой (`dev`) И фазы можно сделать независимыми по файлам/доменам** → предложи выбор, кратко назвав trade-off: **worktree** (независимые фазы параллельно в git-worktrees, batch-мерж в `dev` — быстрее) vs **circle** (по фазе на свежую сессию — минимум конфликтов, проще отладка).
+- Иначе → предложи **circle**.
 
-- **`worktree-skill` включён И проект — git-репо с базовой веткой (`dev`) И фазы можно сделать независимыми** → предложи **выбор**:
-  - **последовательно (circle-skill)** — по фазе на свежую сессию, минимум конфликтов, простая пошаговая отладка, но медленно;
-  - **параллельно (worktree-skill)** — независимые фазы идут разом (каждая в своей git-worktree), затем batch-мерж в `dev` с авто-резолвом конфликтов по контрактам, `dev` всегда зелёный; выигрыш — время. Подходит, когда фазы удаётся сделать независимыми по файлам/доменам.
-    Выбор за пользователем; кратко назови trade-off (скорость vs простота/минимум конфликтов).
-- **Только `circle-skill`** (или worktree не подходит: не git-репо, нет `dev`, фазы жёстко последовательны) → предложи circle, как раньше.
-
-Согласился на **circle** — авторь строго по [`references/circle-plan-authoring.md`](references/circle-plan-authoring.md), запуск `/circle-skill <path>`.
-Согласился на **worktree** — авторь строго по [`references/worktree-plan-authoring.md`](references/worktree-plan-authoring.md): формат-маркеры `worktree`, декомпозиция под **независимость** (непересекающиеся файловые зоны владения), `## Контракты` для неизбежных пересечений (жёсткие `deps` — только когда контрактом не убрать), `<!-- worktree-verify: -->`, запуск `/worktree-skill <path>`.
-
-Общее для обоих: самодостаточные фазы (pre-authorized default+fallback вместо вопросов в фоновой сессии; `needs-human` только для необратимого/прод-риска), размер фаз домен-первично с целью ~30% контекста. **Разведку кодовой базы делай раз — при планировании: карта кодовой базы в преамбулу плана + файловый манифест (какие файлы фаза создаёт/меняет, привязка по символам) в тело каждой фазы.** Сам плагин не запускай — это user-invoked команды.
+Согласился → авторь строго по [`references/circle-plan-authoring.md`](references/circle-plan-authoring.md) (запуск `/circle-skill <path>`) или [`references/worktree-plan-authoring.md`](references/worktree-plan-authoring.md) (декомпозиция под независимость, `## Контракты` для пересечений, запуск `/worktree-skill <path>`). Общее: самодостаточные фазы (pre-authorized default+fallback; `needs-human` только для необратимого/прод-риска), ~30% контекста на фазу; **разведку кодовой базы делай раз — при планировании**: карта в преамбулу плана + файловый манифест в тело каждой фазы. Сам плагин не запускай — команды user-invoked.

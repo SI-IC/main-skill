@@ -8,13 +8,16 @@
 //   B — дисклеймер («не проверил», «проверь вручную») БЕЗ попыток разведки.
 //   C — делегирование shell-команды пользователю при наличии своего Bash.
 //   D — observable src без парного *.test.* / *.spec.* / __tests__/.
-//   E — controller / route / api-handler без e2e-парного теста.
+//   E — КРИТИЧНЫЙ endpoint (auth / деньги / доступ) без endpoint-level теста;
+//       рядовой controller/route покрывается D (парный тест любого слоя).
 //   F — отсутствует или невалиден блок <edge-cases>.
 //   G — npm run lint / ruff / golangci-lint / cargo clippy exit ≠ 0.
 //   H — public surface изменён без обновления *.md / docs/* в этой же сессии.
 //   J — нет валидного <self-review> блока (code+security ревью своими силами).
 //   K — <review-triage> отсутствует / невалиден / содержит slop-only обоснования.
 //   L — manifest dep добавлен/изменён без version-lookup в реестре в этой сессии.
+//   M — frontend-правка без render-класса прогона после неё (headless browser /
+//       curl|wget localhost / активный браузер-MCP; unit-раннеры не считаются).
 //
 // Опт-ауты:
 //   MAIN_SKILL_VERIFY_CHANGES=0   — все триггеры выкл.
@@ -23,6 +26,7 @@
 //   MAIN_SKILL_VERIFY_REVIEW=code — требовать только code-review секцию.
 //   MAIN_SKILL_VERIFY_REVIEW=security — требовать только security-review секцию.
 //   MAIN_SKILL_VERIFY_DEPS=0      — выкл только L.
+//   MAIN_SKILL_VERIFY_RENDER=0    — выкл только M.
 // Старое имя переменной тоже уважается: MAIN_SKILL_VERIFY_FRONTEND=0.
 
 const fs = require("fs");
@@ -174,9 +178,11 @@ function main(p) {
   let lastEditIdx = -1;
   let lastEditKind = null;
   let lastVerifyIdx = -1;
+  let lastRenderIdx = -1; // триггер M: render-класс верификация (browser/curl localhost/MCP)
   let lastAttemptIdx = -1;
   let lastBlockIdx = -1;
   let lastDelegableBashIdx = -1; // последний Bash запуск самого Claude — доказывает наличие Bash-доступа
+  const frontendEdits = []; // триггер M: {idx, fp} фронт-правок (без тест/док-файлов)
 
   lines.forEach((e, idx) => {
     if (e.type !== "assistant") return;
@@ -187,10 +193,20 @@ function main(p) {
       const inp = b.input || {};
 
       if (["Edit", "Write", "MultiEdit"].includes(name)) {
-        const kind = classify(inp.file_path || "");
+        const fp = inp.file_path || "";
+        const kind = classify(fp);
         if (observable.has(kind)) {
           lastEditIdx = idx;
           lastEditKind = kind;
+        }
+        // Триггер M: тест/док-файлы не считаются фронт-правкой — иначе правка
+        // Card.test.tsx ПОСЛЕ рендера ложно ре-триггерит M на неизменённый компонент.
+        if (
+          kind === "frontend" &&
+          !checks.isTestFile(fp) &&
+          !checks.isDocFile(fp)
+        ) {
+          frontendEdits.push({ idx, fp });
         }
       }
 
@@ -198,17 +214,19 @@ function main(p) {
         const cmd = String(inp.command || "");
         lastDelegableBashIdx = idx;
 
+        // Триггер M: render-класс (browser / curl|wget localhost) — общий
+        // детект в checks.isRenderVerifyCmd, здесь же засчитывается и как verify.
+        // Вычисляется один раз: bounded, но всё равно не гонять дважды на команду.
+        const isRenderCmd = checks.isRenderVerifyCmd(cmd);
+        if (isRenderCmd) lastRenderIdx = idx;
+
         // Реальная верификация: запустил реальную проверку после правки.
+        // Квантификаторы ограничены ({0,300}) — unbounded даёт квадратичный
+        // backtracking на adversarial-команде из множества curl-токенов.
         if (
-          /\bcurl\b[^|;&]*(localhost|127\.0\.0\.1|0\.0\.0\.0|https?:\/\/)/i.test(
-            cmd,
-          ) ||
-          /\bwget\b[^|;&]*(localhost|127\.0\.0\.1|https?:\/\/)/i.test(cmd) ||
-          /\b(playwright|puppeteer)\b[^\n]*\b(test|run|open|screenshot|goto|click)/i.test(
-            cmd,
-          ) ||
-          /chrom(e|ium)[^\n]*--headless/i.test(cmd) ||
-          /\bnpx\s+playwright\s+(test|open|screenshot)/i.test(cmd) ||
+          isRenderCmd ||
+          /\bcurl\b[^|;&\n]{0,300}https?:\/\//i.test(cmd) ||
+          /\bwget\b[^|;&\n]{0,300}https?:\/\//i.test(cmd) ||
           // Backend / CLI verification
           /\b(pytest|python\s+-m\s+pytest)\b/i.test(cmd) ||
           /\b(go\s+test|cargo\s+test|mvn\s+test|gradle\s+test|bundle\s+exec\s+rspec|rspec|phpunit|dotnet\s+test)\b/i.test(
@@ -270,6 +288,7 @@ function main(p) {
         ]);
         if (!passive.has(name)) {
           lastVerifyIdx = idx;
+          lastRenderIdx = idx; // активный браузер-MCP = render-класс (триггер M)
           lastAttemptIdx = idx;
         } else {
           lastAttemptIdx = idx;
@@ -334,7 +353,7 @@ function main(p) {
     if (hasDisclaimer && !attemptedAfterEdit) {
       trigger = "B";
     } else if (hasSuccess) {
-      // Новые мехчеки. Порядок: G (lint) → D (src↔test) → E (e2e) → H (docs) → F (edge-cases) → A (no verify).
+      // Новые мехчеки. Порядок: G (lint) → D (src↔test) → E (critical endpoint) → M (render) → H (docs) → F (edge-cases) → A (no verify).
       const repoRoot = checks.resolveRepoRoot(
         process.env.CLAUDE_PROJECT_DIR,
         allEdits,
@@ -383,17 +402,49 @@ function main(p) {
         }
       }
 
-      // E: controller/route без e2e-парного.
+      // E: критичный endpoint без endpoint-level теста. Критичность — по имени
+      // пути (isCriticalEndpoint: auth/деньги/доступ) ИЛИ по контент-сигналу
+      // мутирующего хендлера (hasMutatingHandler: POST/PUT/PATCH/DELETE,
+      // destroy/store/update) — CAVEAT бэклога: одно имя пути пропускает
+      // неназванные мутации. Рядовой read-only controller/route покрыт
+      // триггером D; e2e-форс на каждый роут = e2e-пролиферация.
       if (!trigger) {
         const missingE2e = [];
         for (const fp of observableSrcFiles) {
           if (!checks.isControllerOrRoute(fp)) continue;
+          if (
+            !checks.isCriticalEndpoint(fp) &&
+            !checks.hasMutatingHandler(fp, repoRoot)
+          )
+            continue;
           const paired = checks.findE2eFile(fp, repoRoot, sessionFiles);
           if (!paired) missingE2e.push(fp);
         }
         if (missingE2e.length > 0) {
           trigger = "E";
           triggerData = { missingE2e };
+        }
+      }
+
+      // M: фронт-правка без render-проверки после неё (опт-аут MAIN_SKILL_VERIFY_RENDER=0).
+      // Unit-раннеры (vitest/jest в jsdom) рендер НЕ покрывают — нет layout-движка:
+      // «не отрисовалось», «текст за полем», «окна внахлёст» ловит только реальный рендер.
+      if (!trigger && process.env.MAIN_SKILL_VERIFY_RENDER !== "0") {
+        // Cap 50: каждый кандидат стоит statSync+readFileSync (≤200KB) в
+        // isRenderExemptFrontendFile — без капа poisoned-транскрипт с тысячами
+        // уникальных фронт-путей превращает Stop в I/O-DoS. Для блока M
+        // достаточно ЛЮБОГО не-exempt файла; связка «>50 unrendered — все
+        // exempt» нереалистична, недосписок в reason приемлем.
+        const unrendered = [
+          ...new Set(
+            frontendEdits.filter((e) => e.idx > lastRenderIdx).map((e) => e.fp),
+          ),
+        ]
+          .slice(0, 50)
+          .filter((fp) => !checks.isRenderExemptFrontendFile(fp, repoRoot));
+        if (unrendered.length > 0) {
+          trigger = "M";
+          triggerData = { unrendered };
         }
       }
 
@@ -738,18 +789,39 @@ function main(p) {
   ].join("\n");
 
   const reasonE = [
-    "[main-skill:verify-changes] Stop заблокирован (триггер E: controller/route без e2e/functional-теста).",
+    "[main-skill:verify-changes] Stop заблокирован (триггер E: критичный endpoint без endpoint-level теста).",
     "",
-    "Ты правил controller/route/api-handler — это endpoint, требующий integration/e2e-теста.",
-    "Unit-тест на сервис не считается; нужен тест, бьющий по реальному endpoint",
-    "(например @japa/api-client / supertest / playwright / cypress).",
+    "Ты правил controller/route на критичном пути (auth / деньги / доступ) либо с",
+    "мутирующим handler-ом (POST/PUT/PATCH/DELETE, destroy/store/update) — для него",
+    "обязателен тест, бьющий по реальному endpoint. Дефолт — integration через",
+    "@japa/api-client / supertest (быстрый, без браузера); e2e (playwright / cypress) —",
+    "только если это сквозной критичный user-journey. Unit-тест на сервис не считается.",
     "",
-    "Без e2e-теста:",
+    "Без endpoint-теста:",
     ...(triggerData?.missingE2e || []).map((f) => `  • ${sanitize(f)}`),
     "",
     "Ищу в: tests/functional/, tests/e2e/, tests/integration/, e2e/, cypress/e2e/, playwright/.",
+    "Рядовых CRUD-роутов E не касается — их покрывает триггер D (парный тест любого слоя).",
     "",
-    "Опт-аут (если в проекте e2e реально не предусмотрен): MAIN_SKILL_VERIFY_CHANGES=0",
+    "Опт-аут (если endpoint-тесты в проекте реально не предусмотрены): MAIN_SKILL_VERIFY_CHANGES=0",
+  ].join("\n");
+
+  const reasonM = [
+    "[main-skill:verify-changes] Stop заблокирован (триггер M: фронт-правка без render-проверки).",
+    "",
+    "После последней правки frontend-файлов нет ни одного render-класса прогона",
+    "(headless browser / curl localhost / активный браузер-MCP). Unit-тесты в jsdom",
+    "рендер НЕ проверяют — нет layout-движка: «не отрисовалось», «текст за полем»,",
+    "«окна внахлёст» они не ловят.",
+    "",
+    "Не отрендерено после правки:",
+    ...(triggerData?.unrendered || []).map((f) => `  • ${sanitize(f)}`),
+    "",
+    "Минимум: подними dev-server и `curl -s localhost:PORT/<route>` → status + grep DOM-маркера.",
+    "Лучше: headless playwright — открой route, console clean, DOM-маркер, скриншот если визуально.",
+    "Рецепт layout-oracle (клиппинг/наложение геометрией, без пикселей): references/testing-strategy.md.",
+    "",
+    "Опт-аут: MAIN_SKILL_VERIFY_RENDER=0 (весь хук: MAIN_SKILL_VERIFY_CHANGES=0).",
   ].join("\n");
 
   const reasonF = (() => {
@@ -1068,6 +1140,7 @@ function main(p) {
     H: reasonH,
     J: reasonJ,
     K: reasonK,
+    M: reasonM,
     L: reasonL,
   };
   const reason = reasonByTrigger[trigger] || reasonA;

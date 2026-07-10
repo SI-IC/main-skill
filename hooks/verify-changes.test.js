@@ -186,7 +186,7 @@ test("triggerD: src без парного теста блокируется", ()
   expectBlock(r.stdout, "D");
 });
 
-test("triggerE: controller без e2e блокируется", () => {
+test("triggerE: критичный endpoint (auth) без endpoint-теста блокируется", () => {
   const dir = tmp();
   writeFile(dir, "app/controllers/auth_controller.ts", "x");
   // парный unit-тест есть, чтобы D не сработал раньше.
@@ -206,6 +206,200 @@ test("triggerE: controller без e2e блокируется", () => {
   ]);
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
   expectBlock(r.stdout, "E");
+});
+
+test("triggerE: рядовой controller с парным unit-тестом НЕ требует endpoint-теста", () => {
+  const dir = tmp();
+  writeFile(dir, "app/controllers/posts_controller.ts", "x");
+  // Парный same-dir тест закрывает D; E рядовой роут не трогает.
+  writeFile(
+    dir,
+    "app/controllers/posts_controller.test.ts",
+    `it('empty', () => {});`,
+  );
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/controllers/posts_controller.ts")),
+    asstBash("curl -s http://localhost:3000/posts"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("app/controllers/posts_controller.test.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerE: критичный endpoint с tests/integration-тестом проходит", () => {
+  const dir = tmp();
+  writeFile(dir, "app/controllers/auth_controller.ts", "x");
+  // integration-тест закрывает и D (SHARED_LOGIC_TEST_DIRS), и E (findE2eFile).
+  writeFile(
+    dir,
+    "tests/integration/auth_controller.test.ts",
+    `it('empty', () => {});`,
+  );
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/controllers/auth_controller.ts")),
+    asstBash("curl -s http://localhost:3000/login"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("tests/integration/auth_controller.test.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerE: рядовой по имени controller с мутирующим handler-ом блокируется", () => {
+  const dir = tmp();
+  // users_controller не матчит CRITICAL_ENDPOINT_RE, но destroy() — мутация
+  // (CAVEAT бэклога: неназванные мутации не должны миновать E).
+  writeFile(
+    dir,
+    "app/controllers/users_controller.ts",
+    "export default class UsersController { async destroy({ params }) {} }\n",
+  );
+  writeFile(
+    dir,
+    "app/controllers/users_controller.test.ts",
+    `it('empty', () => {});`,
+  ); // D закрыт — падать должен именно E
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "app/controllers/users_controller.ts")),
+    asstBash("curl -s http://localhost:3000/users"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("app/controllers/users_controller.test.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "E");
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Триггер M: фронт-правка без render-проверки
+// ────────────────────────────────────────────────────────────────────────────
+
+const CARD_TSX = "export function Card() { return <div data-x>hi</div>; }\n";
+
+function asstMcp(name, input = {}) {
+  return {
+    type: "assistant",
+    message: { content: [{ type: "tool_use", name, input }] },
+  };
+}
+
+test("triggerM: фронт-правка с unit-прогоном, но без рендера — блокируется", () => {
+  const dir = tmp();
+  writeFile(dir, "src/Card.tsx", CARD_TSX);
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`); // D закрыт
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/Card.tsx")),
+    asstBash("npx vitest run"), // verify есть (A молчит), render — нет
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "M");
+});
+
+test("triggerM: curl localhost после фронт-правки — проходит", () => {
+  const dir = tmp();
+  writeFile(dir, "src/Card.tsx", CARD_TSX);
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/Card.tsx")),
+    asstBash("curl -s http://localhost:3000/cards"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerM: активный браузер-MCP после фронт-правки — проходит", () => {
+  const dir = tmp();
+  writeFile(dir, "src/Card.tsx", CARD_TSX);
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/Card.tsx")),
+    asstMcp("mcp__claude-in-chrome__navigate", {
+      url: "http://localhost:3000",
+    }),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerM: правка тест-файла ПОСЛЕ рендера не ре-триггерит M", () => {
+  const dir = tmp();
+  writeFile(dir, "src/Card.tsx", CARD_TSX);
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/Card.tsx")),
+    asstBash("curl -s http://localhost:3000/cards"), // render
+    asstEdit(path.join(dir, "src/Card.test.tsx")), // тест-файл — не фронт-правка для M
+    asstBash("npx vitest run"), // verify после правки теста (A молчит)
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerM: type-only .tsx exempt — рендер не требуется", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "src/types.tsx",
+    "export interface CardProps { title: string }\n",
+  );
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/types.tsx")),
+    asstBash("npx vitest run"),
+    asstText(SUCCESS + " " + "<edge-cases>types:N/A:type-only</edge-cases>"),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerM: token-only CSS exempt, CSS с правилами — блокируется", () => {
+  const dir = tmp();
+  writeFile(dir, "src/tokens.css", ":root {\n--brand: #fff;\n}\n");
+  writeFile(dir, "src/dummy.test.ts", `it('empty', () => {});`);
+  const tpTokens = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/tokens.css")),
+    asstBash("npx vitest run"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/dummy.test.ts", "empty")),
+  ]);
+  expectNoBlock(runHook(tpTokens, { CLAUDE_PROJECT_DIR: dir }).stdout);
+
+  const dir2 = tmp();
+  writeFile(dir2, "src/card.css", ".card { color: red; }\n");
+  writeFile(dir2, "src/dummy.test.ts", `it('empty', () => {});`);
+  const tpRules = writeTranscript(dir2, [
+    asstEdit(path.join(dir2, "src/card.css")),
+    asstBash("npx vitest run"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/dummy.test.ts", "empty")),
+  ]);
+  expectBlock(runHook(tpRules, { CLAUDE_PROJECT_DIR: dir2 }).stdout, "M");
+});
+
+test("triggerM: MAIN_SKILL_VERIFY_RENDER=0 выключает триггер", () => {
+  const dir = tmp();
+  writeFile(dir, "src/Card.tsx", CARD_TSX);
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/Card.tsx")),
+    asstBash("npx vitest run"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_RENDER: "0",
+  });
+  expectNoBlock(r.stdout);
 });
 
 test("triggerF: нет блока <edge-cases> блокируется", () => {
@@ -1305,7 +1499,9 @@ function blockingDscenario() {
   const tp = writeTranscript(dir, [
     asstEdit(path.join(dir, "src/foo.ts")),
     asstBash("curl -s http://localhost:3000/api/foo"),
-    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("tests/unit/foo.test.ts", "empty")),
+    asstText(
+      SUCCESS + " " + EDGE_CASES_BLOCK("tests/unit/foo.test.ts", "empty"),
+    ),
   ]);
   return { dir, tp };
 }
