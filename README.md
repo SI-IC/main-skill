@@ -59,7 +59,7 @@ No env opt-out — formatting is unconditional. Per-project formatter config (`.
 
 ## Stop-hook tuning (per-project)
 
-The `verify-changes.js` Stop hook blocks "done" claims until tests are paired, docs are updated, lint is green, edge-cases are declared, and self-review is performed. It auto-detects test pairs across stacks (pnpm/yarn/cargo/go monorepos; Jest/Vitest/RSpec/PHPUnit/JUnit/Swift conventions) and skips files that aren't unit-testable (migrations, seeders, fixtures, locales, `*.d.ts`, `*.generated.*`, framework configs, type-only TS, `@generated`-headed files).
+The `verify-changes.js` Stop hook blocks "done" claims until tests are paired, docs are updated, lint is green, edge-cases are declared, a premortem block precedes non-trivial changes (trigger N: ≥3 specific "what breaks in prod" hypotheses — `input → observable failure → fix`, each with a concrete number / error code / identifier), and self-review is performed (three parallel reviewers: code, security, premortem lens). It auto-detects test pairs across stacks (pnpm/yarn/cargo/go monorepos; Jest/Vitest/RSpec/PHPUnit/JUnit/Swift conventions) and skips files that aren't unit-testable (migrations, seeders, fixtures, locales, `*.d.ts`, `*.generated.*`, framework configs, type-only TS, `@generated`-headed files).
 
 If the hook still flags files that legitimately don't need unit tests in your project, add a per-project ignore via env var (POSIX globs, `:`-separated). **Use the narrowest glob — a specific file or a name/extension pattern, never a whole folder.** A broad `dir/**` also silences must-test logic living in that folder, so the `ignore-glob-guard` PreToolUse hook rejects broad ignore-globs Claude tries to write (opt out with `MAIN_SKILL_IGNORE_GLOB_CHECK=0`):
 
@@ -78,6 +78,8 @@ Hard opt-outs:
 - `MAIN_SKILL_VERIFY_REVIEW=0` — disable J/K (self-review + review-triage).
 - `MAIN_SKILL_VERIFY_REVIEW=code` — require only code-review section.
 - `MAIN_SKILL_VERIFY_REVIEW=security` — require only security-review section.
+- `MAIN_SKILL_VERIFY_PREMORTEM=0` — disable N (premortem block) and the `edge:` section requirement in self-review.
+- `MAIN_SKILL_VERIFY_RENDER=0` — disable M (render-verification of frontend edits).
 - `MAIN_SKILL_VERIFY_DEPS=0` — disable L (dep version-lookup enforcement). Useful for projects with a frozen lockfile where dep upgrades are batched manually.
 - `MAIN_SKILL_IMPORT_SCAN_MAX_FILES=<n>` — raise trigger D's import-scan read budget (default 200, cap 10000) for monorepos with hundreds of centralized specs per package.
 - `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — disable the `ignore-glob-guard` PreToolUse hook (allow writing broad `dir/**` ignore-globs).

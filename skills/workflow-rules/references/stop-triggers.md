@@ -12,10 +12,11 @@
 - **F** — отсутствует или невалиден блок `<edge-cases>`.
 - **G** — `npm run lint` / `ruff` / `golangci-lint` / `cargo clippy` exit ≠ 0.
 - **H** — public surface (CLI, exports, plugin manifest, SKILL.md, frontmatter) изменён без обновления `*.md` / `docs/*` в той же сессии.
-- **J** — отсутствует или невалиден блок `<self-review>` (нет review-агентов в transcript / фейковый `skipped:trivial` / нет нужной секции).
-- **K** — `<review-triage>` отсутствует / невалиден / содержит slop-only `rejected` / `deferred` без технического обоснования.
+- **J** — отсутствует или невалиден блок `<self-review>` (нет review-агентов в transcript / фейковый `skipped:trivial` / нет нужной секции). В полном режиме both при включённом премортем-слое обязательна и секция `edge:` (premortem-линза — третий сабагент); её декларация без реального premortem-агента в transcript ловится как fake-decl.
+- **K** — `<review-triage>` отсутствует / невалиден / содержит slop-only `rejected` / `deferred` без технического обоснования. Источники записей: `code` / `security` / `edge`; записи неактивной секции (в т.ч. `edge` при выключенном премортем-слое или суженном режиме) — wrong-source.
 - **L** — правка manifest-файла (`package.json`, `requirements*.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `Dockerfile`, `.nvmrc`, `.tool-versions`, workflows) с новой пиновой версией без version-lookup в сессии (`npm view` / `pip index versions` / `cargo search` / endoflife.date / `gh api releases` / registry-URL). Loose-версии (`latest`, `*`, `>=0`) lookup не требуют.
 - **M** — frontend-файл правлен, но после последней фронт-правки нет render-класса прогона: headless browser / `curl`|`wget` по localhost / активный браузер-MCP. Unit-раннеры (vitest/jest в jsdom) рендером НЕ считаются — нет layout-движка. Не считаются фронт-правкой: тест/док-файлы, type-only `.tsx/.jsx`, token-only stylesheet (только custom-props/`$vars`/`@import`), `@generated`. Презентационные SFC и `.html` рендер-проверки ТРЕБУЮТ.
+- **N** — нетривиальная правка (тот же порог, что J: ≥20 нетривиальных observable-строк ИЛИ security-sensitive путь) без валидного блока `<premortem>` где-либо в сессии. Блок валиден: минимум 3 гипотезы, по одной на строку, формат `вход/состояние → наблюдаемый отказ → решение` (стрелки `→` или `->`), каждая с точным фактом — числом (лимит/код ошибки/таймаут; нумерация строки не считается), идентификатором кода (camelCase / snake_case / `литерал`) или термином механизма отказа (идемпотентность / ретрай / таймаут / кодировка / гонка / … — кириллическая конкретика принимается); generic («сеть может упасть») не проходит, частично-мусорный блок не засчитывается. Позиция «до первой правки» механически не форсится (блокировка не отматывает время) — её несёт правило workflow-rules §2; зуб ловит отсутствие/невалидность ритуала и требует ретро-премортем. `MAIN_SKILL_VERIFY_REVIEW=0` триггер N НЕ отключает — только `MAIN_SKILL_VERIFY_PREMORTEM=0`. Разобранный пример: [`premortem.md`](premortem.md).
 
 ## Env-opt-outs (per-shell, разовые)
 
@@ -26,6 +27,7 @@
 - `MAIN_SKILL_VERIFY_REVIEW=0` — выключить J/K.
 - `MAIN_SKILL_VERIFY_REVIEW=code` — требовать только code-review секцию.
 - `MAIN_SKILL_VERIFY_REVIEW=security` — требовать только security-review секцию.
+- `MAIN_SKILL_VERIFY_PREMORTEM=0` — выключить N и требование edge-секции в J.
 - `MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/*.gen.ts:src/generated/schema.ts"` — POSIX-globs (`:`-разделитель) для путей, которые не требуют парного теста (для D/E). **Только узкий глоб по имени/расширению конкретных файлов, не каталог целиком** — широкий `dir/**` прячет и тестируемую логику рядом и отклоняется PreToolUse-хуком `ignore-glob-guard`. Централизованные тесты, импортирующие исходники, D засчитывает сам (fallback выше); спеки вовсе без импортов (чистый HTTP-flow) → не глоб, а `MAIN_SKILL_VERIFY_CHANGES=0`.
 - `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — отключить `ignore-glob-guard` (разрешить запись широких ignore-глобов).
 

@@ -596,6 +596,185 @@ test("findReviewAgentCalls: нерелевантный Agent-вызов без r
   ]);
   assert.strictEqual(r.code, false);
   assert.strictEqual(r.security, false);
+  assert.strictEqual(r.edge, false);
+});
+
+test("findReviewAgentCalls: premortem-линза распознаётся (edge) по en/ru маркеру", () => {
+  const en = checks.findReviewAgentCalls([
+    asstTool("Task", {
+      subagent_type: "general-purpose",
+      description: "premortem review",
+      prompt: "top-5 гипотез, что сломается в проде",
+    }),
+  ]);
+  assert.strictEqual(en.edge, true);
+  const ru = checks.findReviewAgentCalls([
+    asstTool("Agent", {
+      subagent_type: "general-purpose",
+      prompt: "премортем: система + ограничение с числом + вход + симптом",
+    }),
+  ]);
+  assert.strictEqual(ru.edge, true);
+});
+
+// ─── премортем: parsePremortemBlock / validatePremortem / findPremortemBlocks ─
+
+test("parsePremortemBlock: валидные записи с → и ->", () => {
+  const p = checks.parsePremortemBlock(
+    "sendMessage: text >4096 → 400 MESSAGE_TOO_LONG → чанковать\n" +
+      "raw `*` in name -> 400 cant parse entities -> escape\n" +
+      "# коммент пропускается\n",
+  );
+  assert.strictEqual(p.entries.length, 2);
+  assert.ok(p.entries.every((e) => e.valid));
+  assert.strictEqual(p.entries[0].segments.length, 3);
+});
+
+test("parsePremortemBlock: одна стрелка / пустой сегмент → invalid-запись", () => {
+  const p = checks.parsePremortemBlock(
+    "лимит 4096 → учесть\n" + "вход → → решение",
+  );
+  assert.strictEqual(p.entries.length, 2);
+  assert.ok(p.entries.every((e) => !e.valid));
+});
+
+test("parsePremortemBlock: `;` НЕ разделитель — гипотеза с `;` внутри остаётся одной записью", () => {
+  const p = checks.parsePremortemBlock(
+    "batch из 50 записей; каждая до 1KB → 413 payload too large → чанковать",
+  );
+  assert.strictEqual(p.entries.length, 1);
+  assert.ok(p.entries[0].valid);
+});
+
+test("validatePremortem: generic без числа/идентификатора/термина отсекается", () => {
+  const v = checks.validatePremortem(
+    checks.parsePremortemBlock(
+      "сеть может упасть → запрос не пройдёт → обработать ошибку",
+    ),
+  );
+  assert.strictEqual(v[0].ok, false);
+  assert.match(v[0].reason, /generic/);
+});
+
+test("validatePremortem: кириллическая гипотеза с термином механизма — сигнал", () => {
+  const ok = (s) =>
+    checks.validatePremortem(checks.parsePremortemBlock(s))[0].ok;
+  // кейс премортем-ревьюера: специфично, но ни латиницы, ни цифр
+  assert.ok(
+    ok(
+      "вебхук приходит повторно при ретрае поставщика → повторная запись начисления → обеспечить идемпотентность по внешнему идентификатору",
+    ),
+  );
+  assert.ok(
+    ok("непарные кавычки в имени → отказ разметки → экранировать текст"),
+  );
+  assert.ok(
+    ok("две вкладки шлют одновременно → гонка записи → блокировка строки"),
+  );
+});
+
+test("validatePremortem: нумерация записи не считается числом-сигналом", () => {
+  const v = checks.validatePremortem(
+    checks.parsePremortemBlock(
+      "1. сеть может упасть → запрос не пройдёт → обработать ошибку\n" +
+        "2) что-то пойдёт не так → будет плохо → починим\n" +
+        "шаг 3: вход кривой → падение → добавить проверку",
+    ),
+  );
+  assert.ok(v.every((x) => !x.ok));
+});
+
+test("parsePremortemBlock: тело > PREMORTEM_MAX_BODY → invalid-маркер без парсинга", () => {
+  const p = checks.parsePremortemBlock(
+    "a → b → c\n".repeat(Math.ceil(checks.PREMORTEM_MAX_BODY / 10) + 100),
+  );
+  assert.strictEqual(p.entries.length, 1);
+  assert.strictEqual(p.entries[0].valid, false);
+  assert.match(p.entries[0].reason, /тело блока/);
+});
+
+test("parsePremortemBlock: записей > PREMORTEM_MAX_PARSED → overflow-маркер (блок не засчитывается)", () => {
+  const lines = Array.from(
+    { length: checks.PREMORTEM_MAX_PARSED + 5 },
+    (_, i) => `вход ${i} → отказ → решение`,
+  ).join("\n");
+  const p = checks.parsePremortemBlock(lines);
+  assert.strictEqual(p.entries.length, checks.PREMORTEM_MAX_PARSED + 1);
+  const last = p.entries[p.entries.length - 1];
+  assert.strictEqual(last.valid, false);
+  assert.match(last.reason, /записей/);
+});
+
+test("extractTagBlocks: adversarial незакрытые теги — линейно и 0 блоков", () => {
+  const text = "<premortem>".repeat(30_000);
+  const t0 = Date.now();
+  const blocks = checks.extractTagBlocks(text, "premortem");
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(blocks.length, 0);
+  assert.ok(elapsed < 1000, `extractTagBlocks занял ${elapsed}ms`);
+});
+
+test("extractTagBlocks: пары, регистр, кап", () => {
+  const blocks = checks.extractTagBlocks(
+    "<PREMORTEM>a</PREMORTEM> x <premortem>b</premortem>",
+    "premortem",
+  );
+  assert.deepStrictEqual(blocks, ["a", "b"]);
+  const many = checks.extractTagBlocks("<t>x</t>".repeat(500), "t");
+  assert.strictEqual(many.length, 100);
+});
+
+test("validatePremortem: число / camelCase / UPPER_SNAKE / `литерал` — сигналы", () => {
+  const ok = (s) =>
+    checks.validatePremortem(checks.parsePremortemBlock(s))[0].ok;
+  assert.ok(ok("лимит текста 4096 → отказ доставки → чанковать"));
+  assert.ok(ok("вызов sendMessage в цикле → отказ → троттлить"));
+  assert.ok(ok("превышение → ошибка MESSAGE_TOO_LONG → чанковать"));
+  assert.ok(ok("непарный `*` в тексте → отказ парсера → экранировать"));
+  assert.ok(ok("поле retry_after игнорируется → бан → уважать паузу"));
+});
+
+test("validatePremortem: «e.g.» не считается идентификатором (сегменты ≥2)", () => {
+  const v = checks.validatePremortem(
+    checks.parsePremortemBlock(
+      "внешний сервис недоступен, e.g. на деплое → отказ → повторить вызов",
+    ),
+  );
+  assert.strictEqual(v[0].ok, false);
+});
+
+test("findPremortemBlocks: собирает блоки из всех assistant-текстов с idx", () => {
+  const mk = (text) => ({
+    type: "assistant",
+    message: { content: [{ type: "text", text }] },
+  });
+  const blocks = checks.findPremortemBlocks([
+    mk("<premortem>a → b → c</premortem>"),
+    { type: "user", message: { content: "<premortem>x → y → z</premortem>" } },
+    mk("без блока"),
+    mk("до <premortem>d → e → f</premortem> после"),
+  ]);
+  assert.strictEqual(blocks.length, 2);
+  assert.strictEqual(blocks[0].idx, 0);
+  assert.strictEqual(blocks[1].idx, 3);
+  assert.match(blocks[1].body, /d → e → f/);
+});
+
+test("parseSelfReview: edge-секция парсится", () => {
+  const r = checks.parseSelfReview(
+    "<self-review>code:none-found\nsecurity:none-found\nedge:applied:чанкование по 4096</self-review>",
+  );
+  assert.strictEqual(r.edge.status, "applied");
+  assert.match(r.edge.reason, /4096/);
+});
+
+test("parseReviewTriage: edge-источник валиден", () => {
+  const r = checks.parseReviewTriage(
+    "<review-triage>edge:1:applied:src/notify.ts:12 — чанкование текста по 4096</review-triage>",
+  );
+  assert.strictEqual(r.entries.length, 1);
+  assert.ok(r.entries[0].valid);
+  assert.strictEqual(r.entries[0].source, "edge");
 });
 
 // ─── shouldSkipForTestPairing ─────────────────────────────────────────────

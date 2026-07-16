@@ -24,6 +24,7 @@ main-skill/
 │   └── workflow-rules/
 │       ├── SKILL.md        # ядро: 3-фазный workflow + universal rules
 │       └── references/     # справочные файлы (stop-triggers, testing-strategy,
+│                           # premortem — few-shot пример + классы контрактов,
 │                           # circle/worktree-plan-authoring — форматы планов)
 ├── hooks/
 │   ├── hooks.json          # регистрация SessionStart + PreToolUse + PostToolUse + Stop
@@ -33,7 +34,7 @@ main-skill/
 │   ├── claudemd-guard.test.js
 │   ├── auto-format.js      # PostToolUse-хук: форматирует файл prettier/ruff/gofmt/rustfmt/clang-format
 │   ├── auto-format.test.js
-│   ├── verify-changes.js   # Stop-хук с триггерами A–M
+│   ├── verify-changes.js   # Stop-хук с триггерами A–N
 │   ├── verify-changes.test.js
 │   └── lib/
 │       ├── checks.js       # src↔test mapping (включая generic same-dir
@@ -231,6 +232,18 @@ E требует endpoint-level тест (`findE2eFile`: functional/integration/
 - **Хук видит ФАКТ рендера, не вердикт** «выглядит правильно» — осознанный потолок teeth (как и текстовый матч команд: `echo "curl localhost"` его формально обходит); к layout-oracle (клиппинг/наложение геометрией) толкает reasonM, рецепт в `references/testing-strategy.md`.
 
 Правка `isRenderVerifyCmd` / exempt-логики / reasonM → синхронизируй `checks.test.js`, `verify-changes.test.js`, `stop-triggers.md` и эту секцию.
+
+## Триггер N — премортем-ритуал (+ edge-линза в J)
+
+Блокирует «готово» на нетривиальной правке (порог общий с J: ≥20 нетривиальных observable-строк ИЛИ security-путь) без валидного блока `<premortem>` в ЛЮБОМ assistant-тексте сессии (`findPremortemBlocks`). Блок валиден: все записи валидны И их ≥ `PREMORTEM_MIN_ENTRIES` (3) — частично-мусорный блок не закрывает ритуал. Запись = строка `вход → отказ → решение` (`→`/`->`, ≥3 непустых сегментов; разделитель ТОЛЬКО `\n` — гипотезы-фразы легально содержат `;`). Опт-аут `MAIN_SKILL_VERIFY_PREMORTEM=0` (гасит и edge-требование в J); `MAIN_SKILL_VERIFY_REVIEW=0` N НЕ отключает — развязка задокументирована в reasonN/README (ревью-кейс: юзер со старым REVIEW=0 не должен гадать).
+
+- **Анти-generic** — `_hasPremortemSignal`: число (ведущая нумерация `1.`/`2)`/`шаг 3:` стрипуется — иначе пронумерованный generic-список проходил бы) ИЛИ camelCase (`_CAMEL_RE`, общий с `_WEAK_SIGNALS`) / составной snake/UPPER/dotted bounded `{2,60}`×`{1,20}` («e.g.» не сигнал) / `` `литерал` `` / термин механизма отказа (идемпотентн*/ретра*/таймаут/кодировк*/гонк*/… — хвосты словоформ `[\p{L}]`, НЕ `\w`: JS-`\w` без кириллицы, ломал бы матч перед `_NWE`; enum узкий — механизмы, не симптомы). Термины впустили честную чисто-кириллическую гипотезу (ревью-кейс) ценой того, что «сеть упадёт → … → добавить ретраи» тоже проходит — осознанный floor: цель зуба — чтобы ритуал состоялся, качество несут SKILL.md §2 + reasonN.
+- **Позиция «до первой правки» механически НЕ форсится**: блокировка не отматывает время; зуб требует ретро-премортем. Один премортем на сессию; примеры блоков в reasonN/premortem.md закомментированы `#` — копипаста не закрывает зуб (в сессиях над САМИМ этим репо валидные блоки из тестов всё равно эхо-ятся в тексты — dogfooding-потолок).
+- **DoS-капы** (недоверенный транскрипт): экстракция тегов — линейный `extractTagBlocks` (indexOf; lazy-regex `[\s\S]*?` квадратичен на незакрытых тегах: 30k → 1.5s, замерено) — на него же переведены parseSelfReview/parseReviewTriage/parseEdgeCasesBlock; блоков ≤ 100, тело ≤ 20KB, записей ≤ 100 (сверх — invalid-маркер), сигнал-кап 2048/запись; эхо в reason: ≤ 10 записей × 200 символов (`trunc`) + sanitize.
+- **Edge-линза в J**: `reviewWantEdge = premortemEnabled && reviewMode === "both"` (суженные =code/=security не навязывают третью линзу) → обязательна секция `edge:` в `<self-review>`; fake-decl ловится `findReviewAgentCalls().edge` (маркер `premortem`/`премортем` в hay); `parseReviewTriage` принимает source `edge`; wrong-source гейтит и edge (`!reviewWantEdge` → блок): иначе в суженном режиме триаж из одних edge-записей закрывал бы K без записей активной секции.
+- **Валидировано на синтетике** (2026-07-16, Telegram 4096 + Stripe webhook): премортем-промпт вытаскивает 4096/parse_mode/retry_after/идемпотентность/zero-decimal на haiku и sonnet; sonnet специфичнее (цитаты доков через WebFetch). На изолированном 50-строчном файле контрольный code-review тоже ловит критикалы — ценность линзы = концентрация без minor-шума и walk-to-docs; в реальных больших диффах ревью 4096 пропускал (триггер-кейс плана).
+
+Правка `extractTagBlocks` / `findPremortemBlocks` / `parsePremortemBlock` / `validatePremortem` / `_hasPremortemSignal` / капов / reasonN / edge-wiring в J → синхронизируй `checks.test.js`, `verify-changes.test.js`, `stop-triggers.md`, `premortem.md`, SKILL.md §2/§self-review и эту секцию.
 
 ## Hardening hook input
 

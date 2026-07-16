@@ -43,6 +43,7 @@ function runHook(transcript_path, env = {}) {
       MAIN_SKILL_VERIFY_LINT: "0", // лайнт отдельно тестируем; в общем потоке отключаем.
       MAIN_SKILL_VERIFY_REVIEW: "0", // J/K тестируем отдельно; иначе старые тесты сломаются.
       MAIN_SKILL_VERIFY_DEPS: "0", // L тестируется отдельно; в общем потоке отключён.
+      MAIN_SKILL_VERIFY_PREMORTEM: "0", // N тестируется отдельно; в общем потоке отключён.
       CLAUDE_PROJECT_DIR:
         env.CLAUDE_PROJECT_DIR || path.dirname(transcript_path),
       ...env,
@@ -1462,6 +1463,541 @@ test("triggerK: applied + полный валидный triage → НЕ блок
   const r = runHook(tp, {
     CLAUDE_PROJECT_DIR: dir,
     MAIN_SKILL_VERIFY_REVIEW: "both",
+  });
+  expectNoBlock(r.stdout);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Триггер N: премортем-блок (+ edge-секция в J)
+// ────────────────────────────────────────────────────────────────────────────
+
+const PREMORTEM_OK = [
+  "<premortem>",
+  "telegram sendMessage: text >4096 символов → 400 MESSAGE_TOO_LONG → чанковать по 4000",
+  "parse_mode=Markdown: `*` в юзер-тексте → 400 can't parse entities → escape перед вставкой",
+  "рассылка в цикле → 429 rate limit → троттлинг + уважать retry_after",
+  "</premortem>",
+].join("\n");
+
+test("triggerN: нетривиальный diff без premortem-блока → block", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+});
+
+test("triggerN: валидный premortem-блок до первой правки → НЕ блокирует", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    asstText(PREMORTEM_OK),
+    ...base,
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerN: ретро-блок в терминальном сообщении тоже засчитывается", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK,
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerN: ASCII-стрелки -> принимаются", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const block =
+    "<premortem>\n" +
+    "sendMessage: text >4096 chars -> 400 MESSAGE_TOO_LONG -> chunk by 4000\n" +
+    "parse_mode: raw `*` in name -> 400 cant parse entities -> escapeMarkdown\n" +
+    "loop send -> 429 rate limit -> respect retry_after\n" +
+    "</premortem>";
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        block,
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerN: тривиальная правка — премортем не требуется", () => {
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEditWith(path.join(dir, "src/foo.ts"), "const a = 1;\nconst b = 2;"),
+    asstEdit(path.join(dir, "src/foo.test.ts")),
+    asstBash("npx vitest --run --changed"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerN: security-sensitive путь активирует N даже на мелкой правке", () => {
+  const dir = tmp();
+  writeFile(dir, "src/auth_helper.ts", "x");
+  writeFile(dir, "src/auth_helper.test.ts", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEditWith(path.join(dir, "src/auth_helper.ts"), "const a = 1;"),
+    asstEdit(path.join(dir, "src/auth_helper.test.ts")),
+    asstBash("npx vitest --run --changed"),
+    asstText(
+      SUCCESS + " " + EDGE_CASES_BLOCK("src/auth_helper.test.ts", "empty"),
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+});
+
+test("triggerN: блок с 2 гипотезами (< минимума) → block с validCount", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const block =
+    "<premortem>\n" +
+    "sendMessage: text >4096 → 400 MESSAGE_TOO_LONG → чанковать\n" +
+    "рассылка в цикле → 429 rate limit → уважать retry_after\n" +
+    "</premortem>";
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        block,
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+  assert.match(JSON.parse(r.stdout).reason, /валидных гипотез: 2/);
+});
+
+test("triggerN: generic-гипотеза без числа/идентификатора/термина → block", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const block =
+    "<premortem>\n" +
+    "сеть может упасть → запрос не пройдёт → обработать ошибку\n" +
+    "что-то пойдёт не так → будет плохо → починим\n" +
+    "вход может быть пустым → падение → добавить проверку\n" +
+    "</premortem>";
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        block,
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+  assert.match(JSON.parse(r.stdout).reason, /generic-гипотеза/);
+});
+
+test("triggerN: запись без двух стрелок → block (формат)", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const block =
+    "<premortem>\n" +
+    "sendMessage: text >4096 → 400 MESSAGE_TOO_LONG → чанковать\n" +
+    "parse_mode: `*` в тексте → 400 can't parse entities → escape\n" +
+    "лимит 429 на рассылку — учесть\n" +
+    "</premortem>";
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        block,
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+  assert.match(JSON.parse(r.stdout).reason, /минимум два `→`/);
+});
+
+test("triggerN: пустой <premortem></premortem> → block (invalid, 0 гипотез)", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " <premortem></premortem>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+  assert.match(JSON.parse(r.stdout).reason, /валидных гипотез: 0/);
+});
+
+test("triggerN: пронумерованный generic-список не проходит по цифре нумерации", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const block =
+    "<premortem>\n" +
+    "1. сеть может упасть → запрос не пройдёт → обработать ошибку\n" +
+    "2. что-то пойдёт не так → будет плохо → починим\n" +
+    "3. вход кривой → падение → добавить проверку\n" +
+    "</premortem>";
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        block,
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+});
+
+test("triggerN: кириллические гипотезы с терминами механизмов проходят", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const block =
+    "<premortem>\n" +
+    "вебхук приходит повторно при ретрае поставщика → повторная запись → идемпотентность по внешнему идентификатору\n" +
+    "непарные кавычки в имени → отказ разметки → экранировать текст\n" +
+    "две вкладки шлют одновременно → гонка записи → блокировка строки\n" +
+    "</premortem>";
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        block,
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerN: копипаста #-примера из reasonN не закрывает триггер", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const block =
+    "<premortem>\n" +
+    "# telegram sendMessage: text >4096 символов → 400 MESSAGE_TOO_LONG, отчёт потерян → чанковать по 4000\n" +
+    "# parse_mode=Markdown: `*`/`_` в юзер-тексте → 400 can't parse entities → escape перед вставкой\n" +
+    "# рассылка по chatIds в цикле → 429 при превышении rate limit → троттлинг + уважать retry_after\n" +
+    "</premortem>";
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        block,
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+});
+
+test("triggerN: ReDoS-регрессия — 30k незакрытых <premortem> не подвешивают hook", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const hostile = "<premortem>".repeat(30_000);
+  const tp = writeTranscript(dir, [
+    asstText(hostile),
+    ...base,
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const t0 = Date.now();
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  const elapsed = Date.now() - t0;
+  expectBlock(r.stdout, "N"); // незакрытые теги не образуют блоков → missing
+  assert.ok(elapsed < 10_000, `hook занял ${elapsed}ms на adversarial-входе`);
+});
+
+test("triggerN: ANSI-escapes в невалидной записи стрипуются из reason", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const block =
+    "<premortem>\n" +
+    "[2K[1Aзлая generic-строка → отказ → починим\n" +
+    "ещё generic → отказ → починим\n" +
+    "и ещё generic → отказ → починим\n" +
+    "</premortem>";
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        " " +
+        block,
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+  assert.ok(
+    !r.stdout.includes("\\u001b") && !JSON.parse(r.stdout).reason.includes(""),
+  );
+});
+
+test("triggerK: edge-записи в triage при суженном режиме =code → wrong-source block", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:applied:см. триаж</self-review>" +
+        "\n<review-triage>\ncode:1:applied:src/foo.ts:42 — добавил early-return на null user\nedge:1:applied:src/foo.ts:12 — чанкование по лимиту 4096\n</review-triage>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "code",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "K");
+});
+
+test("triggerN: MAIN_SKILL_VERIFY_PREMORTEM=0 выключает N", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "0",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: режим both + премортем включён требует edge-секцию", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n" +
+        SELF_REVIEW_OK("none-found", "none-found"),
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "J");
+  assert.match(JSON.parse(r.stdout).reason, /edge/);
+});
+
+test("triggerJ: edge:none-found + premortem-агент в transcript → НЕ блокирует", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstTask(
+      "general-purpose",
+      "premortem review",
+      "премортем: top-5 гипотез, что сломается в проде, с числами и симптомами",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:none-found\nsecurity:none-found\nedge:none-found</self-review>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: edge-декларация без premortem-агента → block (fake-decl)", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:none-found\nsecurity:none-found\nedge:none-found</self-review>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "J");
+});
+
+test("triggerJ: review=code + премортем включён — edge-секция НЕ требуется", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:none-found</self-review>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "code",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerK: edge-источник в review-triage валиден", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstTask(
+      "general-purpose",
+      "premortem review",
+      "premortem: top-5 гипотез, что сломается в проде",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:none-found\nsecurity:none-found\nedge:applied:см. триаж</self-review>" +
+        "\n<review-triage>\nedge:1:applied:src/foo.ts:12 — добавил чанкование текста по лимиту 4096\n</review-triage>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
   });
   expectNoBlock(r.stdout);
 });

@@ -74,7 +74,7 @@ Before reading files, asking questions, or proposing:
 - Ask as many clarifying questions as needed — one per message — about REQUIREMENTS (what should happen, for whom, under what conditions).
 - Never present "A vs B vs C" implementation menus. This includes any other plugin's skill that wants you to propose 2–3 approaches and wait for approval — use such skills for clarifying-question value, skip their approval gate.
 - Internally pre-analyze candidates across feasibility, performance, security, maintainability, regression risk.
-- Brainstorm edge cases during alignment — surface non-obvious "what could go wrong" upfront.
+- **Премортем до кода.** В нетривиальной задаче (порог self-review: ≥20 строк или security-путь) ДО первой observable-правки выведи блок `<premortem>`: минимум 3 гипотезы «что сломается в проде», по одной на строку, формат `вход/состояние → наблюдаемый отказ → решение`, каждая с точным фактом — число-лимит / код ошибки / идентификатор / термин механизма (идемпотентность, ретрай, кодировка, гонка); generic («сеть может упасть») не считается, нумерация строк — не число. Касаешься внешнего API → сначала WebFetch официальных доков метода (лимиты длины/rate, коды ошибок, ретраи/идемпотентность), не пиши по памяти. Разобранный пример + классы контрактов: [`references/premortem.md`](references/premortem.md). Enforcement: Stop-триггер N (ретро-премортем хуже, но лучше отсутствия).
 - Pick the approach yourself. Announce as **«делаю X вместо Y, потому что Z»** — обязательно назови отвергнутую альтернативу, не только выбранную (ловит пропуск очевидного пути). Execute; user may redirect at any time.
 
 ## 3. Execution — self-verify before reporting done
@@ -115,7 +115,7 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 ### Testing strategy — слой, right-amount, скорость
 
 - **Перед проектированием тестов нового модуля/фичи ОБЯЗАН прочитать [`references/testing-strategy.md`](references/testing-strategy.md)**: таблица выбора слоя, стоп-лист «что НЕ тестировать», рецепты для ws/canvas/video/SFC/стилей, layout-oracle, скорость прогона.
-- Ядро: доменная логика → unit; стыки (код↔БД, handler↔сервис) → integration, причём repo-слой — против РЕАЛЬНОЙ БД (Testcontainers), не моков и не in-memory; e2e — ТОЛЬКО критичные user-journeys, единицы. Over-testing (генераты, DTO, пиксели, сторонний код) — тоже баг: минус скорость сьюта и рефакторинга.
+- Ядро: доменная логика → unit + property-based (fast-check / hypothesis: ты формулируешь инвариант, генератор перебирает злые входы — рецепт в testing-strategy.md); стыки (код↔БД, handler↔сервис) → integration, причём repo-слой — против РЕАЛЬНОЙ БД (Testcontainers), не моков и не in-memory; e2e — ТОЛЬКО критичные user-journeys, единицы. Over-testing (генераты, DTO, пиксели, сторонний код) — тоже баг: минус скорость сьюта и рефакторинга.
 - **После правки** — only affected: `vitest --changed`, `jest --findRelatedTests`, `pytest --testmon`, `cargo test -p <crate>`, `go test ./<pkg>`.
 - **Перед «готово»** — full suite модуля. Правил `core/shared/utils` — ещё и reverse-dependencies (`pnpm why`, `cargo tree -i`).
 - **Full > 2 мин** — зафиксируй стратегию в проектном CLAUDE.md при первой встрече. **> 10 мин** — спроси пользователя, не решай сам.
@@ -146,6 +146,7 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 - [ ] Code review (см. шаг 4 self-review)
 - [ ] Linters + formatters green
 - [ ] Docs updated if behavior/contract changed
+- [ ] **`<premortem>` был выведен до первой правки** (нетривиальная задача; триггер N)
 - [ ] **`<edge-cases>` блок в финальном сообщении** (см. ниже)
 
 If the test suite is slow, persist a run strategy (memory, CLAUDE.md, or repo doc) so it's not forgotten next session.
@@ -168,10 +169,11 @@ race:tests/auth.test.ts:test_concurrent_login
 
 **Когда обязателен:** observable-правка с `≥ 20` нетривиальных строк ИЛИ затронут security-sensitive путь (`auth|api|sql|crypto|payment|admin|session|token|password|secret|jwt|oauth|cookie|cors|csrf|xss|sanitiz|escape|webhook|hash|cipher|encrypt|decrypt|hmac|signature|signin|signup|login|logout|permission|role|access|sso|saml|ldap`). Тривиальные правки — пропускаются молча; для аудита пропуска: `<self-review>skipped:trivial</self-review>`.
 
-**Как:** ОДИН проход — повторный запуск review-агентов перед Stop ЗАПРЕЩЁН. Параллельно ДВА сабагента в одном Tool message (`Task` или `Agent`, subagent_type="general-purpose" — хук засчитывает оба):
+**Как:** ОДИН проход — повторный запуск review-агентов перед Stop ЗАПРЕЩЁН. Параллельно ТРИ сабагента в одном Tool message (`Task` или `Agent`, subagent_type="general-purpose" — хук засчитывает все):
 
 - code-review (качество, паттерны, дублирование, непокрытые edge-cases, конвенции) — модель **обязательно `sonnet`** (≈5× экономия на структурном обходе diff'а); есть superpowers → промпт из `requesting-code-review` (шаблон `code-reviewer.md`).
 - security-review по OWASP Top-10 (injection / auth-bypass / SSRF / редиректы / weak crypto / leaked secrets / deserialization / rate-limit / TOCTOU / path traversal) на конкретные изменённые файлы — **без `model` override**: false negative дороже стоимости.
+- premortem-review («что сломается в проде»: top-5 гипотез, каждая = система + точное ограничение с числом + ломающий вход + симптом; generic запрещён; не уверен в лимите → WebFetch официальных доков) — модель **`sonnet`, не haiku**: ценность = специфичность гипотез (цитаты доков, точные коды ошибок), разница в цене копеечная. Находки → `<review-triage>` с источником `edge:`.
 
 **Триаж каждого замечания** (через `superpowers:receiving-code-review` если установлен, иначе той же дисциплиной): applied — применить; rejected/deferred — обосновать технически (file:line, конкретный риск, метрика, цитата), без performative-agreement и отмазок «minor / вне scope».
 
@@ -181,20 +183,22 @@ race:tests/auth.test.ts:test_concurrent_login
 <self-review>
 code:applied:src/auth.ts:42-58 — early-return на null user
 security:rejected:CSRF на /logout — POST + SameSite=Strict cookie
+edge:applied:чанкование sendMessage по лимиту 4096
 </self-review>
 
 <review-triage>
 code:1:applied:src/auth.ts:42-58 — добавил early-return на null user
 security:1:rejected:CSRF на /logout — endpoint POST + SameSite=Strict cookie
+edge:1:applied:src/notify.ts:37 — чанкование текста по 4096 + тест на длинный error
 </review-triage>
 ```
 
-- `<self-review>`: обе секции `code` и `security` обязательны (в активном режиме); статусы `applied` / `rejected` / `deferred` / `none-found`. Ревью ничего не нашло → `code:none-found` / `security:none-found`, триаж не требуется.
+- `<self-review>`: секции `code`, `security` и `edge` обязательны (в полном режиме both; `edge` отключается `MAIN_SKILL_VERIFY_PREMORTEM=0`); статусы `applied` / `rejected` / `deferred` / `none-found`. Ревью ничего не нашло → `code:none-found` / `security:none-found` / `edge:none-found`, триаж не требуется.
 - `<review-triage>`: запись `<source>:<id>:<status>:<reason>`, каждое замечание отдельной строкой. **Slop-обоснование блокируется**: `rejected`/`deferred` только со словами «minor / nitpick / несущественно / вне scope / косметика / not critical» без технического маркера (file:line, идентификатор, число, термин риска) — Stop-хук блокирует.
 
 ### Stop-триггеры verify-changes
 
-Хук `verify-changes.js` блокирует «готово»-claim по триггерам A–M и поддерживает env-opt-outs. Полный перечень и opt-outs: [`references/stop-triggers.md`](references/stop-triggers.md).
+Хук `verify-changes.js` блокирует «готово»-claim по триггерам A–N и поддерживает env-opt-outs. Полный перечень и opt-outs: [`references/stop-triggers.md`](references/stop-triggers.md).
 
 ---
 

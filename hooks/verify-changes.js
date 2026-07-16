@@ -18,15 +18,18 @@
 //   L — manifest dep добавлен/изменён без version-lookup в реестре в этой сессии.
 //   M — frontend-правка без render-класса прогона после неё (headless browser /
 //       curl|wget localhost / активный браузер-MCP; unit-раннеры не считаются).
+//   N — нетривиальная правка (порог как у J) без премортем-блока <premortem>
+//       (≥3 конкретных гипотез «что сломается»; в идеале — до первой правки).
 //
 // Опт-ауты:
 //   MAIN_SKILL_VERIFY_CHANGES=0   — все триггеры выкл.
 //   MAIN_SKILL_VERIFY_LINT=0      — выкл только G.
-//   MAIN_SKILL_VERIFY_REVIEW=0    — выкл J/K.
+//   MAIN_SKILL_VERIFY_REVIEW=0    — выкл J/K (N НЕ трогает — у него своя ручка).
 //   MAIN_SKILL_VERIFY_REVIEW=code — требовать только code-review секцию.
 //   MAIN_SKILL_VERIFY_REVIEW=security — требовать только security-review секцию.
 //   MAIN_SKILL_VERIFY_DEPS=0      — выкл только L.
 //   MAIN_SKILL_VERIFY_RENDER=0    — выкл только M.
+//   MAIN_SKILL_VERIFY_PREMORTEM=0 — выкл N (и edge-секцию в J).
 // Старое имя переменной тоже уважается: MAIN_SKILL_VERIFY_FRONTEND=0.
 
 const fs = require("fs");
@@ -49,6 +52,14 @@ function sanitize(s) {
   return String(s == null ? "" : s)
     .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
     .replace(/[‪-‮⁦-⁩]/g, "");
+}
+
+// Обрезка недоверенной строки перед эхо в reason: запись транскрипта может
+// быть мегабайтной — без капа reason раздувается в десятки MB (амплификация
+// инжектированного контента в терминал юзера и контекст Claude).
+function trunc(s, n = 200) {
+  const t = String(s == null ? "" : s);
+  return t.length > n ? t.slice(0, n) + "…" : t;
 }
 
 let payload = "";
@@ -353,7 +364,9 @@ function main(p) {
     if (hasDisclaimer && !attemptedAfterEdit) {
       trigger = "B";
     } else if (hasSuccess) {
-      // Новые мехчеки. Порядок: G (lint) → D (src↔test) → E (critical endpoint) → M (render) → H (docs) → F (edge-cases) → A (no verify).
+      // Мехчеки. Порядок: G (lint) → D (src↔test) → E (critical endpoint) → M (render)
+      // → H (docs) → F (edge-cases) → N (premortem) → J/K (self-review + triage)
+      // → A (no verify). L — отдельно, вне observable-ветки (manifest = config).
       const repoRoot = checks.resolveRepoRoot(
         process.env.CLAUDE_PROJECT_DIR,
         allEdits,
@@ -488,6 +501,65 @@ function main(p) {
         }
       }
 
+      // Общий порог нетривиальности для N (премортем) и J (self-review):
+      // ≥20 нетривиальных observable-строк ИЛИ security-sensitive путь.
+      // Считаем только observable-src правки (не docs / configs / tests). Иначе правка
+      // README на 50 строк ложно активирует J/N. Cap на 20 — раннее завершение.
+      const securityPath = checks.hasSecuritySensitivePath(observableSrcEdits);
+      const observableSrcSet = new Set(observableSrcFiles);
+      const isObservableSrc = (fp) => observableSrcSet.has(fp);
+      const nonTrivialLines =
+        observableSrcEdits.length > 0
+          ? checks.countNonTrivialDiffLines(lines, isObservableSrc, 20)
+          : 0;
+      const isTrivial = !securityPath && nonTrivialLines < 20;
+      const premortemEnabled = process.env.MAIN_SKILL_VERIFY_PREMORTEM !== "0";
+
+      // N: премортем-ритуал — где-то в сессии есть блок <premortem> с ≥3
+      // конкретными гипотезами «что сломается» (в идеале — до первой
+      // observable-правки; позиция механически не форсится: блокировка не
+      // отматывает время, ретро-премортем лучше отсутствия ритуала).
+      // Блок засчитывается, только если ВСЕ записи валидны и их ≥ минимума —
+      // частично-мусорный блок не закрывает ритуал.
+      if (
+        !trigger &&
+        premortemEnabled &&
+        observableSrcEdits.length > 0 &&
+        !isTrivial
+      ) {
+        const blocks = checks.findPremortemBlocks(lines);
+        if (blocks.length === 0) {
+          trigger = "N";
+          triggerData = { kind: "missing", securityPath, nonTrivialLines };
+        } else {
+          // Один проход: valid → выходим; иначе lastValidation — разбор
+          // ПОСЛЕДНЕГО блока (самый свежий, его Claude и будет чинить).
+          let anyValid = false;
+          let lastValidation = [];
+          for (const b of blocks) {
+            const validation = checks.validatePremortem(
+              checks.parsePremortemBlock(b.body),
+            );
+            lastValidation = validation;
+            if (
+              validation.length >= checks.PREMORTEM_MIN_ENTRIES &&
+              validation.every((v) => v.ok)
+            ) {
+              anyValid = true;
+              break;
+            }
+          }
+          if (!anyValid) {
+            trigger = "N";
+            triggerData = {
+              kind: "invalid",
+              failed: lastValidation.filter((v) => !v.ok),
+              validCount: lastValidation.filter((v) => v.ok).length,
+            };
+          }
+        }
+      }
+
       // J / K: self-review + триаж замечаний ревьюеров.
       // Опт-аут: MAIN_SKILL_VERIFY_REVIEW=0 (полностью), =code (только code-review),
       // =security (только security-review), =both (default).
@@ -500,22 +572,14 @@ function main(p) {
         : "both";
       const reviewWantCode = reviewMode === "both" || reviewMode === "code";
       const reviewWantSec = reviewMode === "both" || reviewMode === "security";
+      // edge-секция (premortem-линза) требуется только в полном режиме both и
+      // при включённом премортем-слое: суженные =code/=security — кастомизация
+      // юзера, туда третью линзу не навязываем.
+      const reviewWantEdge = premortemEnabled && reviewMode === "both";
       const reviewEnabled =
         reviewMode !== "0" && (reviewWantCode || reviewWantSec);
 
       if (!trigger && reviewEnabled && observableSrcEdits.length > 0) {
-        const securityPath =
-          checks.hasSecuritySensitivePath(observableSrcEdits);
-        // Считаем только observable-src правки (не docs / configs / tests). Иначе правка
-        // README на 50 строк ложно активирует J. Cap на 20 — раннее завершение.
-        const observableSrcSet = new Set(observableSrcFiles);
-        const isObservableSrc = (fp) => observableSrcSet.has(fp);
-        const nonTrivialLines = checks.countNonTrivialDiffLines(
-          lines,
-          isObservableSrc,
-          20,
-        );
-        const isTrivial = !securityPath && nonTrivialLines < 20;
         const selfReview = checks.parseSelfReview(lastText);
 
         // Тривиальный diff — self-review необязателен; но если объявлен `skipped:trivial`
@@ -544,6 +608,8 @@ function main(p) {
               missingSections.push("code");
             if (reviewWantSec && !selfReview.security)
               missingSections.push("security");
+            if (reviewWantEdge && !selfReview.edge)
+              missingSections.push("edge");
             if (missingSections.length > 0) {
               trigger = "J";
               triggerData = {
@@ -574,6 +640,12 @@ function main(p) {
                 !calls.security
               )
                 fakeSections.push("security");
+              if (
+                reviewWantEdge &&
+                sectionsRequiringCall("edge") &&
+                !calls.edge
+              )
+                fakeSections.push("edge");
               if (fakeSections.length > 0) {
                 trigger = "J";
                 triggerData = { kind: "fake-decl", fakeSections, reviewMode };
@@ -589,6 +661,11 @@ function main(p) {
                     selfReview.security &&
                     ["applied", "rejected", "deferred"].includes(
                       selfReview.security.status,
+                    )) ||
+                  (reviewWantEdge &&
+                    selfReview.edge &&
+                    ["applied", "rejected", "deferred"].includes(
+                      selfReview.edge.status,
                     ));
                 if (needsTriage) {
                   const triage = checks.parseReviewTriage(lastText);
@@ -602,12 +679,16 @@ function main(p) {
                       trigger = "K";
                       triggerData = { kind: "invalid", failed };
                     } else {
-                      // Все записи в триаже должны принадлежать активной по reviewMode секции.
+                      // Все записи в триаже должны принадлежать активной секции.
+                      // edge тоже гейтится (reviewWantEdge): иначе в суженном
+                      // режиме =code/=security триаж из одних edge-записей
+                      // закрывал бы K без единой записи активной секции.
                       const wrongSource = triage.entries.filter(
                         (e) =>
                           e.valid &&
                           ((e.source === "code" && !reviewWantCode) ||
-                            (e.source === "security" && !reviewWantSec)),
+                            (e.source === "security" && !reviewWantSec) ||
+                            (e.source === "edge" && !reviewWantEdge)),
                       );
                       if (wrongSource.length > 0) {
                         trigger = "K";
@@ -913,10 +994,13 @@ function main(p) {
       "[main-skill:verify-changes] Stop заблокирован (триггер F: декларация edge-cases невалидна).",
       "",
       "Невалидные записи в блоке <edge-cases>:",
-      ...failed.map(
-        (v) =>
-          `  • ${sanitize(v.entry?.raw || "<unparsed>")} — ${sanitize(v.reason)}`,
-      ),
+      ...failed
+        .slice(0, 10)
+        .map(
+          (v) =>
+            `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(v.reason)}`,
+        ),
+      ...(failed.length > 10 ? [`  … и ещё ${failed.length - 10}`] : []),
       "",
       "Каждая запись должна быть name:test_file:test_name; test_file существует;",
       "в нём — it/test/describe/def, чьё имя содержит test_name (case-insensitive).",
@@ -962,6 +1046,7 @@ function main(p) {
       "  <self-review>",
       "  code:<status>[:<reason>]",
       "  security:<status>[:<reason>]",
+      "  edge:<status>[:<reason>]        ← premortem-линза (в режиме both)",
       "  </self-review>",
       "",
       "Per-section статусы: applied | rejected | deferred | none-found.",
@@ -972,17 +1057,23 @@ function main(p) {
     ];
     const howTo = [
       "Что должен сделать:",
-      "  1. Параллельно запусти ДВА сабагента в одном сообщении (один Tool message, два Task/Agent call):",
+      "  1. Параллельно запусти ТРИ сабагента в одном сообщении (один Tool message, три Task/Agent call):",
       '       • code-review — Task/Agent(subagent_type="general-purpose") с требованием в',
       "         промпте провести code review;",
       '       • security-review — Task/Agent(subagent_type="general-purpose") с промптом',
       "         «security review по OWASP Top-10 + injection / auth-bypass / SSRF / weak-crypto /",
-      "         secret leaks» на конкретные изменённые файлы.",
-      "  2. По каждому замечанию — пункт в <review-triage> блоке (триггер K).",
+      "         secret leaks» на конкретные изменённые файлы;",
+      '       • premortem-review — Task/Agent(subagent_type="general-purpose") с промптом',
+      "         «премортем: top-5 гипотез, что сломается в проде — система + точное ограничение",
+      "         с числом + ломающий вход + симптом; generic запрещён; не уверен в лимите —",
+      "         WebFetch официальных доков» на те же файлы.",
+      "  2. По каждому замечанию — пункт в <review-triage> блоке (триггер K); источник",
+      "     находок premortem-линзы — edge:.",
       "  3. Применить applied / обосновать rejected/deferred с техническим аргументом.",
       "  4. Один проход. Повторный запуск review-агентов перед Stop запрещён.",
       "",
-      "Опт-аут: MAIN_SKILL_VERIFY_REVIEW=0 (целиком) | =code (только code) | =security (только security).",
+      "Опт-аут: MAIN_SKILL_VERIFY_REVIEW=0 (целиком) | =code (только code) | =security (только security);",
+      "edge-секцию отключает MAIN_SKILL_VERIFY_PREMORTEM=0.",
     ];
     if (triggerData?.kind === "fake-skip") {
       return [
@@ -1032,6 +1123,7 @@ function main(p) {
         '  • code  — Task/Agent с subagent_type содержащим "code-review*" или промптом упоминающим code review.',
         '  • security — Task/Agent с subagent_type содержащим "security" ИЛИ промптом упоминающим OWASP /',
         "    injection / auth bypass / secret leak / XSS / CSRF / SSRF / RCE / TOCTOU / weak crypto.",
+        '  • edge — Task/Agent с промптом/описанием, содержащим "premortem" / «премортем».',
         "",
         ...howTo,
       ].join("\n");
@@ -1088,10 +1180,15 @@ function main(p) {
         ),
         "",
         "Невалидные записи:",
-        ...(triggerData.failed || []).map(
-          (v) =>
-            `  • ${sanitize(v.entry?.raw || "<unparsed>")} — ${sanitize(v.reason)}`,
-        ),
+        ...(triggerData.failed || [])
+          .slice(0, 10)
+          .map(
+            (v) =>
+              `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(v.reason)}`,
+          ),
+        ...((triggerData.failed || []).length > 10
+          ? [`  … и ещё ${(triggerData.failed || []).length - 10}`]
+          : []),
         "",
         ...slopHelp,
         "",
@@ -1106,9 +1203,11 @@ function main(p) {
         ),
         "",
         `Режим: MAIN_SKILL_VERIFY_REVIEW=${triggerData.reviewMode}`,
-        "Записи относятся к секции, которая отключена флагом — это означает что ты их выдумал",
-        "или забыл переключить режим:",
-        ...(triggerData.wrongSource || []).map((e) => `  • ${e.raw}`),
+        "Записи относятся к секции, которая отключена флагом (edge гейтится и",
+        "MAIN_SKILL_VERIFY_PREMORTEM) — это означает что ты их выдумал или забыл переключить режим:",
+        ...(triggerData.wrongSource || [])
+          .slice(0, 10)
+          .map((e) => `  • ${sanitize(trunc(e.raw))}`),
       ].join("\n");
     }
     // missing
@@ -1123,6 +1222,81 @@ function main(p) {
       ...slopHelp,
       "",
       ...formatHelp,
+    ].join("\n");
+  })();
+
+  const reasonN = (() => {
+    const head =
+      "[main-skill:verify-changes] Stop заблокирован (триггер N: нет валидного премортем-блока).";
+    const formatHelp = [
+      `Формат: минимум ${checks.PREMORTEM_MIN_ENTRIES} гипотезы, одна на строку; каждая с точным фактом —`,
+      "число (лимит / код ошибки / таймаут; нумерация строк не считается), идентификатор кода",
+      "или термин механизма отказа (идемпотентность / ретрай / кодировка / гонка / …); generic не проходит.",
+      "Пример ниже намеренно закомментирован (#-строки парсер игнорирует) — его копипаста",
+      "триггер НЕ закроет, пиши гипотезы про СВОЮ правку:",
+      "  <premortem>",
+      "  # telegram sendMessage: text >4096 символов → 400 MESSAGE_TOO_LONG, отчёт потерян → чанковать по 4000",
+      "  # parse_mode=Markdown: `*`/`_` в юзер-тексте → 400 can't parse entities → escape перед вставкой",
+      "  # рассылка по chatIds в цикле → 429 при превышении rate limit → троттлинг + уважать retry_after",
+      "  </premortem>",
+    ];
+    const ritual = [
+      "Проведи премортем СЕЙЧАС — ретроспективно, против уже написанного кода:",
+      "  1. Перечисли внешние системы/контракты, которых касается правка: лимиты API",
+      "     (длина/размер/rate), форматы, таймауты, ретраи/идемпотентность, кодировки, конкурентность.",
+      "  2. Не уверен в точном лимите/коде ошибки — WebFetch официальных доков, не угадывай.",
+      "  3. Каждая гипотеза: конкретный вход/состояние → наблюдаемый отказ → решение.",
+      "  4. Гипотеза реальна и не покрыта кодом → добавь guard + тест (и запись в <edge-cases>).",
+      "Заметь: self-review (триггер J) дополнительно требует ОТДЕЛЬНОГО premortem-review",
+      "сабагента — запусти его параллельно с code/security-review, не дожидаясь блока J.",
+      "В следующий раз блок обязан появиться ДО первой правки кода (workflow-rules §2) —",
+      "сомнение до кода дешевле ретро-разбора.",
+    ];
+    const optOut =
+      "Опт-аут: MAIN_SKILL_VERIFY_PREMORTEM=0 — и только он: MAIN_SKILL_VERIFY_REVIEW=0" +
+      "\nтриггер N НЕ отключает (весь хук целиком: MAIN_SKILL_VERIFY_CHANGES=0).";
+    if (triggerData?.kind === "invalid") {
+      const failed = triggerData.failed || [];
+      return [
+        head.replace(
+          "нет валидного премортем-блока",
+          "премортем-блок невалиден",
+        ),
+        "",
+        `В последнем блоке <premortem> валидных гипотез: ${triggerData.validCount ?? 0}` +
+          ` (нужно ≥ ${checks.PREMORTEM_MIN_ENTRIES}, и все записи блока должны быть валидны).` +
+          (failed.length ? " Невалидные записи:" : ""),
+        ...failed
+          .slice(0, 10)
+          .map(
+            (v) =>
+              `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(v.reason)}`,
+          ),
+        ...(failed.length > 10 ? [`  … и ещё ${failed.length - 10}`] : []),
+        "",
+        ...formatHelp,
+        "",
+        ...ritual,
+        "",
+        optOut,
+      ].join("\n");
+    }
+    return [
+      head,
+      "",
+      "Правка нетривиальна (" +
+        (triggerData?.securityPath
+          ? "затронут security-sensitive путь"
+          : `${triggerData?.nonTrivialLines ?? "?"} нетривиальных строк, порог 20`) +
+        "), а в сессии нет блока <premortem>",
+      "с гипотезами «что сломается в проде». Workflow-rules §2: премортем обязателен",
+      "ДО первой observable-правки — happy-path bias ловится до кода, не после.",
+      "",
+      ...ritual,
+      "",
+      ...formatHelp,
+      "",
+      optOut,
     ].join("\n");
   })();
 
@@ -1193,6 +1367,7 @@ function main(p) {
     K: reasonK,
     M: reasonM,
     L: reasonL,
+    N: reasonN,
   };
   const reason = reasonByTrigger[trigger] || reasonA;
   process.stdout.write(JSON.stringify({ decision: "block", reason }));

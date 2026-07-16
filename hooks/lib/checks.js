@@ -1362,9 +1362,11 @@ function findE2eFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
 // POSIX-пути в репо `:` не содержат, так что test_file как ровно один сегмент — безопасно.
 function parseEdgeCasesBlock(text) {
   if (!text) return null;
-  const m = text.match(/<edge-cases>([\s\S]*?)<\/edge-cases>/i);
-  if (!m) return null;
-  const raw = m[1].trim();
+  // extractTagBlocks (indexOf) вместо lazy-regex — тот же квадратичный
+  // ReDoS-класс на незакрытых тегах, что и в findPremortemBlocks.
+  const m = extractTagBlocks(text, "edge-cases", 1);
+  if (m.length === 0) return null;
+  const raw = m[0].trim();
   if (!raw) return { entries: [], raw };
   // Разделители: ; или \n
   const parts = raw
@@ -1625,10 +1627,11 @@ function countNonTrivialDiffLines(lines, filterFn = null, cap = Infinity) {
 const SUBAGENT_TOOL_NAMES = new Set(["Task", "Agent"]);
 
 // Собирает все сабагент-вызовы (Task/Agent) из транскрипта и категоризирует по
-// типу review. Возвращает { code: bool, security: bool }.
+// типу review. Возвращает { code: bool, security: bool, edge: bool }.
 function findReviewAgentCalls(lines) {
   let code = false;
   let security = false;
+  let edge = false;
   for (const e of lines || []) {
     if (e.type !== "assistant") continue;
     const content = e.message?.content || [];
@@ -1659,20 +1662,31 @@ function findReviewAgentCalls(lines) {
       ) {
         security = true;
       }
+      // premortem-линза (edge): гипотезы «что сломается в проде».
+      // hay уже содержит sub — отдельная sub-проверка была бы мертва.
+      if (/пре-?мортем|pre-?mortem/i.test(hay)) {
+        edge = true;
+      }
     }
   }
-  return { code, security };
+  return { code, security, edge };
 }
 
-// Парсит блок <self-review>. Возвращает { code, security, skippedTrivial, raw } или null.
-// Каждое поле code/security: { status, reason } | null.
+// Парсит блок <self-review>. Возвращает { code, security, edge, skippedTrivial, raw }
+// или null. Каждое поле code/security/edge: { status, reason } | null.
 // status ∈ { applied, rejected, deferred, 'none-found' }.
 function parseSelfReview(text) {
   if (!text) return null;
-  const m = text.match(/<self-review>([\s\S]*?)<\/self-review>/i);
-  if (!m) return null;
-  const raw = m[1].trim();
-  const out = { code: null, security: null, skippedTrivial: false, raw };
+  const m = extractTagBlocks(text, "self-review", 1);
+  if (m.length === 0) return null;
+  const raw = m[0].trim();
+  const out = {
+    code: null,
+    security: null,
+    edge: null,
+    skippedTrivial: false,
+    raw,
+  };
   if (!raw) return out;
   // Может быть `skipped:trivial` целиком — без code/security секций.
   if (/^\s*skipped\s*:\s*trivial\s*$/i.test(raw)) {
@@ -1689,11 +1703,11 @@ function parseSelfReview(text) {
   // whole-block `<self-review>skipped:trivial</self-review>` валиден; см. raw-check выше.
   for (const p of parts) {
     const m2 = p.match(
-      /^(code|security)\s*:\s*(applied|rejected|deferred|none-found|none)\s*:?\s*(.*)$/i,
+      /^(code|security|edge)\s*:\s*(applied|rejected|deferred|none-found|none)\s*:?\s*(.*)$/i,
     );
     if (!m2) {
       const m3 = p.match(
-        /^(code|security)\s*:\s*(applied|rejected|deferred|none-found|none)\s*$/i,
+        /^(code|security|edge)\s*:\s*(applied|rejected|deferred|none-found|none)\s*$/i,
       );
       if (!m3) continue;
       const sec = m3[1].toLowerCase();
@@ -1712,19 +1726,19 @@ function parseSelfReview(text) {
 }
 
 // Парсит блок <review-triage>. Возвращает { entries, raw } или null.
-// Запись: <source>:<id>:<status>:<reason>; source ∈ { code, security };
-// status ∈ { applied, rejected, deferred }.
+// Запись: <source>:<id>:<status>:<reason>; source ∈ { code, security, edge };
+// status ∈ { applied, rejected, deferred }. edge — находки premortem-линзы.
 function parseReviewTriage(text) {
   if (!text) return null;
-  const m = text.match(/<review-triage>([\s\S]*?)<\/review-triage>/i);
-  if (!m) return null;
-  const raw = m[1].trim();
+  const m = extractTagBlocks(text, "review-triage", 1);
+  if (m.length === 0) return null;
+  const raw = m[0].trim();
   const out = { entries: [], raw };
   if (!raw) return out;
   // Разделитель: \n ИЛИ `;` перед началом следующей записи (`code:` / `security:`).
   // Так reason может содержать `;` (URL params, fragments) без поломки парсинга.
   const parts = raw
-    .split(/\n|;(?=\s*(?:code|security)\s*:)/i)
+    .split(/\n|;(?=\s*(?:code|security|edge)\s*:)/i)
     .map((s) => s.trim())
     .filter(Boolean)
     .filter((s) => !s.startsWith("#") && !s.startsWith("//"));
@@ -1732,7 +1746,7 @@ function parseReviewTriage(text) {
     // <source>:<id>:<status>:<reason>
     // id может содержать буквы; reason может содержать `:`.
     const m2 = p.match(
-      /^(code|security)\s*:\s*([^:]+?)\s*:\s*(applied|rejected|deferred)\s*:\s*(.+)$/i,
+      /^(code|security|edge)\s*:\s*([^:]+?)\s*:\s*(applied|rejected|deferred)\s*:\s*(.+)$/i,
     );
     if (!m2) {
       out.entries.push({
@@ -1784,12 +1798,15 @@ const _STRONG_SIGNALS = [
   ),
 ];
 
+// camelCase-идентификатор, bounded против ReDoS. Общий для _WEAK_SIGNALS
+// (triage) и _PREMORTEM_SIGNAL_RES (триггер N) — единый баунд, не дрейфует.
+const _CAMEL_RE = /[a-z][a-zA-Z]{0,30}[A-Z][a-zA-Z]{0,30}/;
+
 // Слабые сигналы — поодиночке не засчитываются, но в паре дают tech-signal.
 const _WEAK_SIGNALS = [
   // line:number стиль `:42-58`
   /:\d+(?:[-–]\d+)?/,
-  // camelCase идентификатор — ограничен 60 chars против ReDoS
-  /[a-z][a-zA-Z]{0,30}[A-Z][a-zA-Z]{0,30}/,
+  _CAMEL_RE,
   // snake_case
   /[a-z]+(?:_[a-z]+)+/,
   // common code-структуры
@@ -1851,6 +1868,184 @@ function validateReviewTriage(parsed) {
     return { entry, ok: true };
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Триггер N: премортем-блок (гипотезы «что сломается» до первой правки)
+// ────────────────────────────────────────────────────────────────────────────
+
+// Линейный (indexOf) экстрактор <tag>...</tag>-блоков БЕЗ regex: lazy
+// `[\s\S]*?` квадратичен на adversarial-тексте из незакрытых открывающих
+// тегов (30k тегов ≈ 1.5s, 50MB транскрипт → минуты → таймаут хука →
+// fail-open обход ВСЕХ триггеров). Case-insensitive; возвращает ≤ maxBlocks
+// тел непересекающихся пар (семантика non-greedy матча).
+function extractTagBlocks(text, tag, maxBlocks = 100) {
+  const out = [];
+  const s = String(text || "");
+  const lower = s.toLowerCase();
+  const open = `<${tag}>`;
+  const close = `</${tag}>`;
+  let pos = 0;
+  while (out.length < maxBlocks) {
+    const i = lower.indexOf(open, pos);
+    if (i === -1) break;
+    const j = lower.indexOf(close, i + open.length);
+    if (j === -1) break;
+    out.push(s.slice(i + open.length, j));
+    pos = j + close.length;
+  }
+  return out;
+}
+
+// Ищет блоки <premortem>...</premortem> во всех assistant-текстах транскрипта.
+// Возвращает [{ idx, body }] в порядке появления, суммарно ≤ 100 (DoS-кап).
+// Блок пишется в идеале ДО первой observable-правки; позиция механически НЕ
+// форсится — блокировка не отматывает время, а ретро-премортем против уже
+// написанного кода лучше отсутствия ритуала. Зуб ловит отсутствие/невалидность.
+const PREMORTEM_MAX_BLOCKS = 100;
+
+function findPremortemBlocks(lines) {
+  const out = [];
+  const arr = lines || [];
+  for (
+    let idx = 0;
+    idx < arr.length && out.length < PREMORTEM_MAX_BLOCKS;
+    idx++
+  ) {
+    const e = arr[idx];
+    if (!e || e.type !== "assistant") continue;
+    const content = e.message?.content || [];
+    const text = content
+      .filter((b) => b && b.type === "text")
+      .map((b) => b.text || "")
+      .join("\n");
+    if (!text) continue;
+    for (const body of extractTagBlocks(
+      text,
+      "premortem",
+      PREMORTEM_MAX_BLOCKS - out.length,
+    )) {
+      out.push({ idx, body });
+    }
+  }
+  return out;
+}
+
+// Парсит тело премортем-блока. Запись = одна строка:
+//   <вход/состояние> → <наблюдаемый отказ> → <решение>
+// Стрелки `→` или `->`; сегментов ≥ 3 (стрелка внутри решения допустима).
+// Разделитель ТОЛЬКО перенос строки: гипотезы — фразы, `;` внутри легален
+// (в отличие от коротких записей edge-cases). Капы против DoS недоверенным
+// транскриптом: тело ≤ 20KB, записей ≤ 100 (сверх — invalid-маркер, блок
+// не засчитывается; премортем — это 3–7 конкретных гипотез, не простыня).
+const PREMORTEM_MAX_BODY = 20_000;
+const PREMORTEM_MAX_PARSED = 100;
+
+function parsePremortemBlock(body) {
+  const raw = String(body == null ? "" : body).trim();
+  const out = { entries: [], raw };
+  if (!raw) return out;
+  if (raw.length > PREMORTEM_MAX_BODY) {
+    out.entries.push({
+      raw: raw.slice(0, 200),
+      valid: false,
+      reason: `тело блока > ${PREMORTEM_MAX_BODY} символов — премортем это 3–7 конкретных гипотез`,
+    });
+    return out;
+  }
+  let parts = raw
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((s) => !s.startsWith("#") && !s.startsWith("//"));
+  let overflow = false;
+  if (parts.length > PREMORTEM_MAX_PARSED) {
+    overflow = true;
+    parts = parts.slice(0, PREMORTEM_MAX_PARSED);
+  }
+  for (const p of parts) {
+    const segments = p.split(/→|->/).map((s) => s.trim());
+    if (segments.length < 3 || segments.some((s) => !s)) {
+      out.entries.push({
+        raw: p,
+        valid: false,
+        reason:
+          "формат: вход/состояние → наблюдаемый отказ → решение (минимум два `→`)",
+      });
+      continue;
+    }
+    out.entries.push({ raw: p, segments, valid: true });
+  }
+  if (overflow) {
+    out.entries.push({
+      raw: `<записи сверх ${PREMORTEM_MAX_PARSED} обрезаны>`,
+      valid: false,
+      reason: `блок содержит > ${PREMORTEM_MAX_PARSED} записей — сократи до 3–7 конкретных гипотез`,
+    });
+  }
+  return out;
+}
+
+// Анти-generic минимум: в гипотезе есть число (лимит / код ошибки / таймаут;
+// нумерация записи «1.» / «2)» / «шаг 3:» стрипуется до проверки — иначе любой
+// пронумерованный generic-список проходил бы), ИЛИ код-идентификатор
+// (camelCase / snake_case / UPPER_SNAKE / dotted.path / `литерал`), ИЛИ термин
+// механизма отказа (идемпотентность / ретрай / таймаут / кодировка / гонка …) —
+// честная кириллическая гипотеза без латинского токена и цифры («повторная
+// доставка при ретрае → двойное начисление → идемпотентность по внешнему
+// идентификатору») — не generic; enum узкий: имена механизмов, не симптомов
+// («ошибка» / «сломается» сигналом не являются).
+// «Сеть может упасть → ошибка → обработать» не проходит;
+// «sendMessage: text >4096 → 400 MESSAGE_TOO_LONG → чанковать» проходит.
+// Намеренно мягче _hasTechnicalSignal (strong или 2×weak): премортем пишется
+// ДО кода — file:line ещё не существует, а цифра-лимит и есть главный сигнал
+// специфичности. Одиночная цифра в теле обходится («смотри пункт 2») — как
+// любой текстовый зуб это floor, семантику несут SKILL.md + reason-промпт.
+const _PREMORTEM_SIGNAL_RES = [
+  /\d/, // число: лимит, код ошибки, таймаут, размер
+  _CAMEL_RE, // camelCase (общая константа с _WEAK_SIGNALS)
+  /[A-Za-z]{2,60}(?:[_.][A-Za-z0-9]{2,60}){1,20}/, // snake/UPPER/dotted, bounded (ReDoS-конвенция); сегменты ≥2 — «e.g.» не сигнал
+  /`[^`\n]{1,80}`/, // квотированный код-литерал (и однобуквенный: `*` в parse_mode-гипотезе)
+  // Хвосты словоформ — [\p{L}], НЕ \w: JS-\w = [A-Za-z0-9_] даже с /u,
+  // кириллический хвост («идемпотентн-ость») ломал бы матч перед _NWE.
+  new RegExp(
+    `${_NW}(?:идемпотентн[\\p{L}]{0,8}|ретра[йяеи][\\p{L}]{0,6}|retry|таймаут[\\p{L}]{0,3}|timeout|лимит[\\p{L}]{0,4}|limit|rate[\\s-]?limit|квот[аыуе]|кодировк[\\p{L}]{0,3}|encoding|charset|unicode|экраниров[\\p{L}]{0,6}|escap(?:e|ing)|sanitiz[\\p{L}]{0,6}|переполнен[\\p{L}]{0,4}|overflow|дедуп[\\p{L}]{0,10}|dedup[\\p{L}]{0,10}|идентификатор[\\p{L}]{0,3}|конкурентн[\\p{L}]{0,4}|гонк[аиуе]|race|пагинаци[\\p{L}]{0,2}|pagination|backoff|бэкофф[\\p{L}]{0,3}|троттл[\\p{L}]{0,6}|throttl[\\p{L}]{0,4})${_NWE}`,
+    "iu",
+  ),
+];
+
+function _hasPremortemSignal(entryRaw) {
+  // Кап 2048 — жёсткая граница стоимости regex-прогонов на одну запись
+  // (у _hasTechnicalSignal кап 4096; здесь короче — запись = одна строка).
+  const s = String(entryRaw || "")
+    .slice(0, 2048)
+    .replace(
+      /^\s*(?:\d{1,3}[.)]\s*|п\.\s?\d{1,3}\s*|шаг\s?\d{1,3}:?\s*)/iu,
+      "",
+    );
+  return _PREMORTEM_SIGNAL_RES.some((re) => re.test(s));
+}
+
+// Возвращает массив { entry, ok, reason } для каждой записи блока.
+function validatePremortem(parsed) {
+  if (!parsed) return null;
+  return (parsed.entries || []).map((entry) => {
+    if (!entry.valid) return { entry, ok: false, reason: entry.reason };
+    if (!_hasPremortemSignal(entry.raw)) {
+      return {
+        entry,
+        ok: false,
+        reason:
+          "generic-гипотеза: нужен точный факт — число (лимит/код ошибки/таймаут) или идентификатор кода",
+      };
+    }
+    return { entry, ok: true };
+  });
+}
+
+// Минимум валидных гипотез в блоке. Блок засчитывается, если ВСЕ записи
+// валидны И их ≥ PREMORTEM_MIN_ENTRIES: частично-мусорный блок не проходит,
+// иначе 3 валидных + пачка generic-шума формально закрывали бы ритуал.
+const PREMORTEM_MIN_ENTRIES = 3;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Триггер L: парсеры manifest-форматов + сбор version-lookup-ов из transcript
@@ -2433,6 +2628,14 @@ module.exports = {
   parseReviewTriage,
   validateReviewTriage,
   SECURITY_SENSITIVE_RE,
+  // N: премортем-ритуал
+  extractTagBlocks,
+  findPremortemBlocks,
+  parsePremortemBlock,
+  validatePremortem,
+  PREMORTEM_MIN_ENTRIES,
+  PREMORTEM_MAX_PARSED,
+  PREMORTEM_MAX_BODY,
   // L: dep version-lookup enforcement
   parseManifestDeps,
   findVersionLookups,
