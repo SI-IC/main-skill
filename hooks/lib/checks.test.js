@@ -3199,3 +3199,272 @@ test("findTestByImportScan: гигантский basename из транскри�
   });
   assert.strictEqual(result, null);
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// countNonTrivialDiffLines — дельта new_string vs old_string (backlog #5)
+// ────────────────────────────────────────────────────────────────────────────
+
+function editLine(file_path, old_string, new_string) {
+  return {
+    type: "assistant",
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          name: "Edit",
+          input: { file_path, old_string, new_string },
+        },
+      ],
+    },
+  };
+}
+
+function nLines(n, prefix = "const x") {
+  return Array.from({ length: n }, (_, i) => `${prefix}${i} = ${i};`).join(
+    "\n",
+  );
+}
+
+test("countNonTrivialDiffLines: rename с широким контекстом — считается только дельта", () => {
+  // 25 строк контекста, реально изменена одна: x3 → y3.
+  const old25 = nLines(25);
+  const new25 = old25.replace("const x3 = 3;", "const y3 = 3;");
+  const lines = [editLine("src/foo.ts", old25, new25)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 1);
+});
+
+test("countNonTrivialDiffLines: перестановка строк — не добавление", () => {
+  const a = "const a = 1;\nconst b = 2;\nconst c = 3;";
+  const shuffled = "const c = 3;\nconst a = 1;\nconst b = 2;";
+  const lines = [editLine("src/foo.ts", a, shuffled)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 0);
+});
+
+test("countNonTrivialDiffLines: re-indent (extract) — не добавление", () => {
+  const flat = nLines(25);
+  const indented = flat
+    .split("\n")
+    .map((l) => "    " + l)
+    .join("\n");
+  const lines = [editLine("src/foo.ts", flat, indented)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 0);
+});
+
+test("countNonTrivialDiffLines: дубликаты считаются как multiset, не Set", () => {
+  // В old одна `i++;`, в new три — добавлено 2, Set-difference дал бы 0.
+  const old = "let i = 0;\ni++;";
+  const neu = "let i = 0;\ni++;\ni++;\ni++;";
+  const lines = [editLine("src/foo.ts", old, neu)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 2);
+});
+
+test("countNonTrivialDiffLines: чистое удаление — 0 добавленных", () => {
+  const old30 = nLines(30);
+  const kept = nLines(5);
+  const lines = [editLine("src/foo.ts", old30, kept)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 0);
+});
+
+test("countNonTrivialDiffLines: пустой/отсутствующий old_string — весь new считается", () => {
+  const lines = [
+    editLine("src/foo.ts", "", nLines(25)),
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Edit",
+            input: { file_path: "src/bar.ts", new_string: nLines(3) },
+          },
+        ],
+      },
+    },
+  ];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 28);
+});
+
+test("countNonTrivialDiffLines: Write считается целиком (old недоступен)", () => {
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Write",
+            input: { file_path: "src/foo.ts", content: nLines(25) },
+          },
+        ],
+      },
+    },
+  ];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 25);
+});
+
+test("countNonTrivialDiffLines: MultiEdit — дельта по каждому edit отдельно", () => {
+  const ctx = nLines(10);
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "MultiEdit",
+            input: {
+              file_path: "src/foo.ts",
+              edits: [
+                // rename в широком контексте → 1
+                {
+                  old_string: ctx,
+                  new_string: ctx.replace("const x2 = 2;", "const y2 = 2;"),
+                },
+                // чистая вставка 3 строк → 3
+                { old_string: "", new_string: nLines(3, "const z") },
+              ],
+            },
+          },
+        ],
+      },
+    },
+  ];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 4);
+});
+
+test("countNonTrivialDiffLines: комментарии и пустые строки не входят в дельту", () => {
+  const old = "const a = 1;";
+  const neu = "const a = 1;\n// comment\n\n   \nconst b = 2;";
+  const lines = [editLine("src/foo.ts", old, neu)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 1);
+});
+
+test("countNonTrivialDiffLines: cap — early return на пороге", () => {
+  const lines = [
+    editLine("src/a.ts", "", nLines(15)),
+    editLine("src/b.ts", "", nLines(15, "const y")),
+    editLine("src/c.ts", "", nLines(15, "const z")),
+  ];
+  const r = checks.countNonTrivialDiffLines(lines, null, 20);
+  assert.ok(r >= 20, `expected >= 20, got ${r}`);
+  assert.ok(r <= 30, `early-return не сработал, got ${r}`);
+});
+
+test("countNonTrivialDiffLines: filterFn отсекает не-observable файлы", () => {
+  const lines = [
+    editLine("README.md", "", nLines(50)),
+    editLine("src/foo.ts", "", nLines(3)),
+  ];
+  const onlySrc = (fp) => fp.endsWith(".ts");
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines, onlySrc), 3);
+});
+
+test("countNonTrivialDiffLines: гигантский old_string капится без зависания", () => {
+  // 2MB old_string — должен слайснуться капом 1MB, не съесть память/время.
+  const bigOld = "const line = 1;\n".repeat(130_000); // ~2.1MB
+  const started = Date.now();
+  const lines = [editLine("src/foo.ts", bigOld, "const added = 2;")];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 1);
+  assert.ok(Date.now() - started < 2000, "слишком медленно на 2MB old_string");
+});
+
+test("countNonTrivialDiffLines: no-op edit (old === new) → 0", () => {
+  const same = nLines(25);
+  const lines = [editLine("src/foo.ts", same, same)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 0);
+});
+
+test("countNonTrivialDiffLines: внутристрочный whitespace-реформат — не добавление", () => {
+  // Выравнивание `=` и таб→пробел внутри строк — механический реформат.
+  const old25 = nLines(25);
+  const reformatted = old25
+    .split("\n")
+    .map((l) => l.replace(" = ", "  =\t "))
+    .join("\n");
+  const lines = [editLine("src/foo.ts", old25, reformatted)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 0);
+});
+
+test("countNonTrivialDiffLines: CRLF old vs LF new — не добавление (Windows-транскрипт)", () => {
+  const lines = [
+    editLine(
+      "src/foo.ts",
+      "const a = 1;\r\nconst b = 2;\r\n",
+      "const a = 1;\nconst b = 2;\nconst c = 3;",
+    ),
+  ];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 1);
+});
+
+test("countNonTrivialDiffLines: NFC vs NFD unicode — не добавление", () => {
+  // `café` в NFC (old) и NFD (new) — визуально идентичные строки.
+  const nfc = 'const label = "café";';
+  const nfd = 'const label = "café";';
+  const lines = [editLine("src/foo.ts", nfc, nfd)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 0);
+});
+
+test("countNonTrivialDiffLines: replace_all — пара считается один раз (known limitation)", () => {
+  // Множитель k сайтов неизвестен без чтения файла — фиксируем «однократно».
+  const lines = [
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Edit",
+            input: {
+              file_path: "src/foo.ts",
+              old_string: "log(x);",
+              new_string: "log(x);\ntrace(x);",
+              replace_all: true,
+            },
+          },
+        ],
+      },
+    },
+  ];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 1);
+});
+
+test("countNonTrivialDiffLines: non-string old_string/new_string из malformed-транскрипта → no-throw", () => {
+  const lines = [
+    editLine("src/foo.ts", 42, "const a = 1;"),
+    editLine("src/foo.ts", { x: 1 }, "const b = 2;"),
+    editLine("src/foo.ts", "const c = 3;", 42),
+  ];
+  let r;
+  assert.doesNotThrow(() => {
+    r = checks.countNonTrivialDiffLines(lines);
+  });
+  assert.ok(Number.isFinite(r));
+});
+
+test("countNonTrivialDiffLines: boilerplate удалённого блока поглощает совпадающие строки нового (known gap, фиксация)", () => {
+  // Замена одной из двух похожих функций: тело нового блока построчно
+  // совпадает с удалённым → под порог уходит только сигнатура. FN-класс,
+  // документирован; фиксируем фактическое поведение.
+  const old = "function a() {\n  step1();\n  step2();\n}";
+  const neu = "function b() {\n  step1();\n  step2();\n}";
+  const lines = [editLine("src/foo.ts", old, neu)];
+  assert.strictEqual(checks.countNonTrivialDiffLines(lines), 1);
+});
+
+test("countNonTrivialDiffLines: new_string за 1MB-капом → fallback на полный счёт (анти-обход)", () => {
+  // Дельта на усечённом new занулила бы логику за границей капа: old — 1.1MB
+  // блок, new — тот же блок + 30 строк логики в хвосте (за капом).
+  const filler = Array.from(
+    { length: 66_000 },
+    (_, i) => `const f${i} = ${i};`,
+  ).join("\n"); // ~1.1MB
+  const added = Array.from(
+    { length: 30 },
+    (_, i) => `handleEvent${i}(payload);`,
+  ).join("\n");
+  const started = Date.now();
+  const lines = [editLine("src/foo.ts", filler, filler + "\n" + added)];
+  const r = checks.countNonTrivialDiffLines(lines);
+  assert.ok(r >= 20, `дельта на усечённом new занулила добавленное: ${r}`);
+  assert.ok(Date.now() - started < 3000, "слишком медленно на 1.1MB");
+});

@@ -502,17 +502,20 @@ function main(p) {
       }
 
       // Общий порог нетривиальности для N (премортем) и J (self-review):
-      // ≥20 нетривиальных observable-строк ИЛИ security-sensitive путь.
+      // ≥20 ДОБАВЛЕННЫХ нетривиальных observable-строк ИЛИ security-sensitive
+      // путь. Добавленных = multiset-дельта new_string − old_string (Edit/
+      // MultiEdit; Write — целиком): широкий контекстный якорь rename/extract
+      // не надувает счётчик (backlog #5).
       // Считаем только observable-src правки (не docs / configs / tests). Иначе правка
       // README на 50 строк ложно активирует J/N. Cap на 20 — раннее завершение.
       const securityPath = checks.hasSecuritySensitivePath(observableSrcEdits);
       const observableSrcSet = new Set(observableSrcFiles);
       const isObservableSrc = (fp) => observableSrcSet.has(fp);
-      const nonTrivialLines =
+      const addedNonTrivialLines =
         observableSrcEdits.length > 0
           ? checks.countNonTrivialDiffLines(lines, isObservableSrc, 20)
           : 0;
-      const isTrivial = !securityPath && nonTrivialLines < 20;
+      const isTrivial = !securityPath && addedNonTrivialLines < 20;
       const premortemEnabled = process.env.MAIN_SKILL_VERIFY_PREMORTEM !== "0";
 
       // N: премортем-ритуал — где-то в сессии есть блок <premortem> с ≥3
@@ -530,7 +533,7 @@ function main(p) {
         const blocks = checks.findPremortemBlocks(lines);
         if (blocks.length === 0) {
           trigger = "N";
-          triggerData = { kind: "missing", securityPath, nonTrivialLines };
+          triggerData = { kind: "missing", securityPath, addedNonTrivialLines };
         } else {
           // Один проход: valid → выходим; иначе lastValidation — разбор
           // ПОСЛЕДНЕГО блока (самый свежий, его Claude и будет чинить).
@@ -590,7 +593,7 @@ function main(p) {
             triggerData = {
               kind: "missing",
               securityPath,
-              nonTrivialLines,
+              addedNonTrivialLines,
               reviewMode,
             };
           } else if (selfReview.skippedTrivial) {
@@ -598,7 +601,7 @@ function main(p) {
             triggerData = {
               kind: "fake-skip",
               securityPath,
-              nonTrivialLines,
+              addedNonTrivialLines,
               reviewMode,
             };
           } else {
@@ -1050,7 +1053,7 @@ function main(p) {
       "  </self-review>",
       "",
       "Per-section статусы: applied | rejected | deferred | none-found.",
-      "Целиком пропустить можно ТОЛЬКО если diff < 20 нетривиальных observable-строк И",
+      "Целиком пропустить можно ТОЛЬКО если diff < 20 добавленных нетривиальных observable-строк И",
       "не затронут security-sensitive путь:",
       "  <self-review>skipped:trivial</self-review>",
       "Per-section `code:skipped` / `security:skipped` НЕ принимается — это был bypass.",
@@ -1083,13 +1086,13 @@ function main(p) {
         ),
         "",
         `Ты пометил <self-review>skipped:trivial</self-review>, но diff НЕ тривиальный:`,
-        `  • non-trivial lines: ${triggerData.nonTrivialLines} (порог skip: < 20)`,
+        `  • добавленных non-trivial строк: ${triggerData.addedNonTrivialLines} (порог skip: < 20)`,
         `  • security-sensitive путь затронут: ${triggerData.securityPath ? "да" : "нет"}`,
         "",
         "Self-review обязателен. " +
           (triggerData.securityPath
             ? "Особенно тут — затронут auth/api/sql/crypto/payment/admin/session/token/..."
-            : "Diff ≥ 20 нетривиальных observable-строк."),
+            : "Diff ≥ 20 добавленных нетривиальных observable-строк."),
         "",
         ...howTo,
       ].join("\n");
@@ -1137,11 +1140,11 @@ function main(p) {
       "ревью через суб-агентов и зафиксировать результат блоком <self-review>.",
       "",
       `Диагностика (почему J активирован):`,
-      `  • non-trivial observable строк: ${triggerData?.nonTrivialLines ?? "?"} (порог skip: < 20)`,
+      `  • добавленных non-trivial observable строк: ${triggerData?.addedNonTrivialLines ?? "?"} (порог skip: < 20)`,
       `  • security-sensitive путь затронут: ${triggerData?.securityPath ? "да" : "нет"}`,
       `  • режим: MAIN_SKILL_VERIFY_REVIEW=${triggerData?.reviewMode ?? "both"}`,
       "",
-      "Тривиальные правки (< 20 нетривиальных observable-строк И не auth/api/sql/crypto/...)",
+      "Тривиальные правки (< 20 добавленных нетривиальных observable-строк И не auth/api/sql/crypto/...)",
       "self-review не требуют — у тебя случай иной.",
       "",
       ...formatHelp,
@@ -1287,7 +1290,7 @@ function main(p) {
       "Правка нетривиальна (" +
         (triggerData?.securityPath
           ? "затронут security-sensitive путь"
-          : `${triggerData?.nonTrivialLines ?? "?"} нетривиальных строк, порог 20`) +
+          : `${triggerData?.addedNonTrivialLines ?? "?"} добавленных нетривиальных строк, порог 20`) +
         "), а в сессии нет блока <premortem>",
       "с гипотезами «что сломается в проде». Workflow-rules §2: премортем обязателен",
       "ДО первой observable-правки — happy-path bias ловится до кода, не после.",

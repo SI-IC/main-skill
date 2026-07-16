@@ -1575,19 +1575,58 @@ function hasSecuritySensitivePath(allEdits) {
 // Чисто-пустые / whitespace / comment-only — не считаются.
 const COMMENT_ONLY_RE = /^\s*(\/\/|#|\/\*|\*\/|\*|--|<!--|;;|%)/;
 
-function _countNonTrivialLines(text) {
-  if (!text) return 0;
-  // Cap для больших Write/Edit — > 1MB новых данных всё равно будут считаться как
-  // «много», точное число не важно для порога 20.
-  const s =
-    String(text).length > 1_000_000
-      ? String(text).slice(0, 1_000_000)
-      : String(text);
-  let n = 0;
+// Канонические ключи нетривиальных строк текста: trim + схлопывание
+// внутреннего whitespace + NFC — механический реформат (выравнивание `=`,
+// таб→пробел, денормализованный unicode из копипаста) не порождает «новую»
+// строку. Кап 1MB — > 1MB данных всё равно «много», точное число не важно
+// для порога 20.
+function _nonTrivialLineKeys(text) {
+  if (!text) return [];
+  const s0 = String(text);
+  const s = s0.length > 1_000_000 ? s0.slice(0, 1_000_000) : s0;
+  const keys = [];
   for (const ln of s.split("\n")) {
     const t = ln.trim();
     if (!t) continue;
     if (COMMENT_ONLY_RE.test(ln)) continue;
+    keys.push(t.replace(/\s+/g, " ").normalize("NFC"));
+  }
+  return keys;
+}
+
+function _countNonTrivialLines(text) {
+  return _nonTrivialLineKeys(text).length;
+}
+
+// Добавленные нетривиальные строки Edit-пары: multiset-дельта канонических
+// строк new_string − old_string. Дельта, а не весь new_string: Edit несёт
+// контекстный блок ради уникальности якоря — rename/extract в 25-строчной
+// функции меняет одну строку, не 25 (backlog #5). Multiset, не Set (дописанный
+// дубликат строки — добавление) и не LCS (O(n·m) на недоверенном транскрипте —
+// DoS Stop-хука); перестановки/re-indent/реформат ВНУТРИ одной пары добавлением
+// не считаются, cross-edit перенос блока считается (FP-направление, безопасно).
+// Чистое удаление даёт 0 — осознанно: метрика меряет внесённое новое поведение.
+// Known gaps (FN, документированы в CLAUDE.md): replace_all считается один раз
+// (множитель сайтов неизвестен без чтения файла); построчно совпадающее тело
+// удалённого блока поглощает строки нового (rename одной из двух похожих
+// функций); код, внесённый мимо Edit/Write (Bash heredoc/sed) и эхо-ящийся
+// old_string-ом последующего Edit, абсорбируется.
+function _countAddedNonTrivialLines(newText, oldText) {
+  if (!oldText) return _countNonTrivialLines(newText);
+  // new_string за 1MB-капом → дельта на усечённом тексте занулила бы логику,
+  // добавленную ЗА границей капа (in-band обход порога). Fail toward
+  // требования: fallback на полный счёт, как до дельта-семантики.
+  if (String(newText).length > 1_000_000) return _countNonTrivialLines(newText);
+  const oldCounts = new Map();
+  for (const k of _nonTrivialLineKeys(oldText))
+    oldCounts.set(k, (oldCounts.get(k) || 0) + 1);
+  let n = 0;
+  for (const k of _nonTrivialLineKeys(newText)) {
+    const c = oldCounts.get(k) || 0;
+    if (c > 0) {
+      oldCounts.set(k, c - 1);
+      continue;
+    }
     n++;
   }
   return n;
@@ -1595,6 +1634,9 @@ function _countNonTrivialLines(text) {
 
 // `filterFn(file_path)` — опциональный фильтр (например, считать только observable
 // исходники). `cap` — early-return когда total достиг порога; для J это 20.
+// Edit/MultiEdit — дельта против old_string; Write — весь content (старого
+// содержимого в tool_use нет — known limitation, перезапись существующего файла
+// считается целиком).
 function countNonTrivialDiffLines(lines, filterFn = null, cap = Infinity) {
   let total = 0;
   for (const e of lines || []) {
@@ -1608,13 +1650,19 @@ function countNonTrivialDiffLines(lines, filterFn = null, cap = Infinity) {
       const fp = String(inp.file_path || "");
       if (filterFn && !filterFn(fp)) continue;
       if (name === "Edit") {
-        total += _countNonTrivialLines(inp.new_string || "");
+        total += _countAddedNonTrivialLines(
+          inp.new_string || "",
+          inp.old_string || "",
+        );
       } else if (name === "Write") {
         total += _countNonTrivialLines(inp.content || "");
       } else if (name === "MultiEdit") {
         const edits = Array.isArray(inp.edits) ? inp.edits : [];
         for (const ed of edits)
-          total += _countNonTrivialLines(ed?.new_string || "");
+          total += _countAddedNonTrivialLines(
+            ed?.new_string || "",
+            ed?.old_string || "",
+          );
       }
       if (total >= cap) return total;
     }

@@ -139,10 +139,31 @@ function asstEditWith(file_path, new_string) {
   };
 }
 
+// Edit с old_string И new_string — для тестов дельта-подсчёта (backlog #5).
+function asstEditDelta(file_path, old_string, new_string) {
+  return {
+    type: "assistant",
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          name: "Edit",
+          input: { file_path, old_string, new_string },
+        },
+      ],
+    },
+  };
+}
+
 const BIG_DIFF = Array.from(
   { length: 25 },
   (_, i) => `const x${i} = ${i};`,
 ).join("\n");
+
+// Механический rename в широком контекстном якоре: 25 строк old/new, реально
+// изменена одна — по дельте это тривиальная правка (< 20), не форсит J/N.
+const RENAME_OLD = BIG_DIFF;
+const RENAME_NEW = BIG_DIFF.replace("const x3 = 3;", "const renamed3 = 3;");
 
 const SUCCESS = "готово, всё работает";
 const EDGE_CASES_BLOCK = (file, name) =>
@@ -984,6 +1005,23 @@ test("triggerJ: тривиальная правка без self-review → НЕ 
   expectNoBlock(r.stdout);
 });
 
+test("triggerJ: rename с широким контекстным якорем — дельта тривиальна, self-review не требуется", () => {
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEditDelta(path.join(dir, "src/foo.ts"), RENAME_OLD, RENAME_NEW),
+    asstEdit(path.join(dir, "src/foo.test.ts")),
+    asstBash("npx vitest --run --changed"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+  });
+  expectNoBlock(r.stdout);
+});
+
 test("triggerJ: security-sensitive путь требует self-review даже на тривиальной правке", () => {
   const dir = tmp();
   writeFile(dir, "src/auth_helper.ts", "x");
@@ -1560,6 +1598,71 @@ test("triggerN: тривиальная правка — премортем не 
   writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
   const tp = writeTranscript(dir, [
     asstEditWith(path.join(dir, "src/foo.ts"), "const a = 1;\nconst b = 2;"),
+    asstEdit(path.join(dir, "src/foo.test.ts")),
+    asstBash("npx vitest --run --changed"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerN: rename с широким контекстным якорем — дельта тривиальна, премортем не требуется", () => {
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEditDelta(path.join(dir, "src/foo.ts"), RENAME_OLD, RENAME_NEW),
+    asstEdit(path.join(dir, "src/foo.test.ts")),
+    asstBash("npx vitest --run --changed"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerN: дельта ровно 20 добавленных строк → block (флип порога)", () => {
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
+  const ctx = Array.from({ length: 5 }, (_, i) => `const c${i} = ${i};`).join(
+    "\n",
+  );
+  const added20 = Array.from(
+    { length: 20 },
+    (_, i) => `const n${i} = ${i};`,
+  ).join("\n");
+  const tp = writeTranscript(dir, [
+    asstEditDelta(path.join(dir, "src/foo.ts"), ctx, ctx + "\n" + added20),
+    asstEdit(path.join(dir, "src/foo.test.ts")),
+    asstBash("npx vitest --run --changed"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "N");
+});
+
+test("triggerN: дельта 19 добавленных строк → НЕ блокирует (флип порога)", () => {
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
+  const ctx = Array.from({ length: 5 }, (_, i) => `const c${i} = ${i};`).join(
+    "\n",
+  );
+  const added19 = Array.from(
+    { length: 19 },
+    (_, i) => `const n${i} = ${i};`,
+  ).join("\n");
+  const tp = writeTranscript(dir, [
+    asstEditDelta(path.join(dir, "src/foo.ts"), ctx, ctx + "\n" + added19),
     asstEdit(path.join(dir, "src/foo.test.ts")),
     asstBash("npx vitest --run --changed"),
     asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
