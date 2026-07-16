@@ -2,9 +2,9 @@
 id: 5
 title: Триггеры N/J: нетривиальность как дельта new_string vs old_string, не весь new_string
 priority: medium
-status: open
+status: done
 created: 2026-07-16T09:12:51Z
-updated: 2026-07-16T09:12:51Z
+updated: 2026-07-16T10:20:20Z
 ---
 countNonTrivialDiffLines (hooks/lib/checks.js:~1596) суммирует ВСЕ непустые не-comment строки каждого Edit.new_string. Механический rename/extract с широким контекстным блоком (old_string/new_string расширены ради уникальности якоря) надувает счётчик до порога ≥20 → форсит премортем (триггер N) и self-review (триггер J) на чисто рефакторинговой сессии без единого внешнего контракта.
 
