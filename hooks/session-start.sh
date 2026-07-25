@@ -78,7 +78,7 @@ emit_plugin_check() {
 
 emit_skill_invocation() {
   cat <<'EOF'
-ОБЯЗАТЕЛЬНО — перед любым ответом, включая clarifying questions, вызови `Skill` tool со skill `main-skill:workflow-rules`. Это твои персональные workflow-правила (язык общения, триаж, edge-cases, verify, self-review). Содержимое приходит через skill-канал и не обрезается 10KB-капом хуков. Не «и так помню» — версия в плагине меняется, перечитай свежее. После загрузки следуй ему до конца сессии.
+Перед первым ответом — включая clarifying questions — вызови `Skill` tool со skill `main-skill:workflow-rules`: персональные workflow-правила пользователя (язык общения, триаж, edge-cases, verify, self-review). Содержимое приходит через skill-канал без 10KB-капа хуков; версия меняется между сессиями, поэтому перечитай свежую, не полагайся на память. После загрузки следуй правилам до конца сессии.
 EOF
 }
 

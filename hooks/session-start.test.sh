@@ -10,6 +10,8 @@ FAIL=0
 
 BANNER_MARKER="рекомендованные плагины не установлены"
 SKILL_MARKER="main-skill:workflow-rules"
+SKILL_PHRASE="Перед первым ответом"
+CAPS_PRESSURE="ОБЯЗАТЕЛЬНО"
 
 # temp HOME с заданным enabledPlugins JSON; печатает путь в stdout.
 mk_home() {
@@ -42,6 +44,10 @@ OUT=$(HOME="$H" MAIN_SKILL_AUTO_UPDATE=0 sh "$HOOK")
 rm -rf "$H"
 assert_contains "$OUT" "$BANNER_MARKER" "empty enabledPlugins → баннер"
 assert_contains "$OUT" "$SKILL_MARKER" "empty enabledPlugins → skill-инструкция"
+# Формулировка инструкции: чёткий императив без CAPS-нажима (5-gen стиль,
+# см. CLAUDE.md «Как писать правила»). Регресс тона ловится обеими проверками.
+assert_contains "$OUT" "$SKILL_PHRASE" "инструкция начинается с императива «Перед первым ответом»"
+assert_not_contains "$OUT" "$CAPS_PRESSURE" "инструкция без CAPS-нажима (ОБЯЗАТЕЛЬНО)"
 
 # 2. всё включено → нет баннера, инструкция есть.
 H=$(mk_home '{"enabledPlugins":{"superpowers@x":true,"ui-ux-pro-max@y":true}}')

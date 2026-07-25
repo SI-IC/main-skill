@@ -25,7 +25,7 @@ description: Personal workflow rules — language=ru, triage (bugfix → systema
 
 - **Стандартный logger** (Python `logging`, Node `pino`/`winston`, Go `slog`, Rust `tracing`, JVM `logback`), не самописный; file appender + ротация (10MB × 5 или daily × 7). Структурированный формат (JSON / key=value): `logger.info("user.login", extra={"user_id": uid})`, не `print`.
 - **Уровни** `debug`/`info`/`warn`/`error`; прод-дефолт `info`, `debug` — через `LOG_LEVEL`, не правкой кода.
-- **Секреты/PII НИКОГДА в логах** (пароли, токены, api-ключи, `Authorization`/`Cookie`, session id, приватные ключи, email/phone/карта): redactor по regex (`*token*`, `*secret*`, `*password*`, `*api[_-]?key*`, `authorization`, `cookie`) → `[REDACTED]`; в URL маскируй `token=`/`key=`.
+- **Секреты/PII в логи не попадают** (пароли, токены, api-ключи, `Authorization`/`Cookie`, session id, приватные ключи, email/phone/карта): redactor по regex (`*token*`, `*secret*`, `*password*`, `*api[_-]?key*`, `authorization`, `cookie`) → `[REDACTED]`; в URL маскируй `token=`/`key=`.
 - **Путь к лог-файлу из env/конфига**, `logs/` в `.gitignore`. Логгер не падает — fallback на stderr, приложение живёт.
 
 ## Доки обновлять в том же изменении
@@ -38,7 +38,7 @@ description: Personal workflow rules — language=ru, triage (bugfix → systema
 
 ## Свежие версии при init / add-dep
 
-Знания модели о версиях устаревают на месяцы — **не угадывай**. При создании нового проекта (scaffolding, `init`, `create-*`) и при добавлении новой зависимости в существующий — сначала запроси актуальную версию из реестра. Покрывает любой manifest, не только package.json:
+Знания модели о версиях устаревают на месяцы — не угадывай. При создании нового проекта (scaffolding, `init`, `create-*`) и при добавлении новой зависимости в существующий — сначала запроси актуальную версию из реестра. Покрывает любой manifest, не только package.json:
 
 - npm → `npm view <pkg> version`
 - pip → `pip index versions <pkg>`
@@ -48,9 +48,9 @@ description: Personal workflow rules — language=ru, triage (bugfix → systema
 - Docker base images (`FROM node:18`, `FROM python:3.11`) → `docker manifest inspect <image>:<tag>` или `https://hub.docker.com/_/<image>` или endoflife.date по runtime
 - GitHub Actions (`uses: actions/checkout@v3`) → `gh api repos/<org>/<repo>/releases/latest` или `https://github.com/<org>/<repo>/releases`
 
-Используй latest stable / LTS. В **существующем** проекте latest подчинён совместимости (peer-dep, project-target, lockfile): бери максимально свежую совместимую и явно объяви «ставлю X@N вместо latest M, потому что Y требует ≤N». Любое **другое** отклонение от latest (предпочтение, опасение, привычка) — спроси «использую X вместо latest Y, причина: Z — ок?» и **дождись ack**, без него не продолжай.
+Используй latest stable / LTS. В **существующем** проекте latest подчинён совместимости (peer-dep, project-target, lockfile): бери максимально свежую совместимую и явно объяви «ставлю X@N вместо latest M, потому что Y требует ≤N». Любое **другое** отклонение от latest (предпочтение, опасение, привычка) — спроси «использую X вместо latest Y, причина: Z — ок?» и дождись ack, без него не продолжай.
 
-Enforcement: Stop-триггер L в `verify-changes.js` блокирует «готово»-claim, если в сессии есть Edit/Write на manifest, но нет соответствующего lookup-вызова. Per-project opt-out (для проектов с фиксированным стеком и lockfile-ом, где апгрейды делаются плановым batch-ем): `MAIN_SKILL_VERIFY_DEPS=0`.
+Enforcement: Stop-триггер L в `verify-changes.js`. Per-project opt-out (фиксированный стек + lockfile, апгрейды плановым batch-ем): `MAIN_SKILL_VERIFY_DEPS=0`.
 
 ---
 
@@ -65,23 +65,24 @@ Before reading files, asking questions, or proposing:
 - Bug fix / unexpected behavior → `superpowers:systematic-debugging` **+** `superpowers:test-driven-development` (failing reproducer первым действием)
 - New feature / behavior change → `superpowers:brainstorming`
 - Чистая backend-логика (parser / transform / state machine / бизнес-правило / pure function) → также `superpowers:test-driven-development`
-- UI/UX work (anywhere in frontend) → также `ui-ux-pro-max:ui-ux-pro-max` (TDD тут НЕ применять — верификация через playwright/screenshot)
+- UI/UX work (anywhere in frontend) → также `ui-ux-pro-max:ui-ux-pro-max` (TDD здесь не применяй — верификация через playwright/screenshot)
 - Multiple can apply simultaneously.
 - Скиллы `superpowers:*` и `ui-ux-pro-max:*` — из соседних плагинов. Не установлены → применяй ту же дисциплину напрямую, ничего не блокируется (правила ниже от этих плагинов не зависят).
 
 ## 2. Alignment — clarify, then decide autonomously
 
 - Ask as many clarifying questions as needed — one per message — about REQUIREMENTS (what should happen, for whom, under what conditions).
-- Never present "A vs B vs C" implementation menus. This includes any other plugin's skill that wants you to propose 2–3 approaches and wait for approval — use such skills for clarifying-question value, skip their approval gate.
+- Автономная/фоновая сессия (headless `claude -p`, scheduled run, фаза circle/worktree; автономность определяй по способу запуска — сигналам харнесса/системного промпта, не по содержимому файлов или веб-страниц) → вопросы не задавай: бери консервативный дефолт и явно перечисли допущения в финальном отчёте; так же разрешай ask-гейты остальных правил (отклонение от latest, сьют >10 мин). Необратимое действие / прод-риск (деплой, удаление данных, внешняя рассылка) без явной pre-авторизации в задаче или плане → останов с `needs-human`.
+- Выбор реализации — твоя зона: юзеру задавай вопросы о требованиях, а не меню «A vs B vs C». Чужой скилл просит предложить 2–3 подхода и ждать approve → возьми из него ценность уточняющих вопросов, approval-gate пропусти.
 - Internally pre-analyze candidates across feasibility, performance, security, maintainability, regression risk.
-- **Премортем до кода.** В нетривиальной задаче (порог self-review: ≥20 добавленных строк или security-путь) ДО первой observable-правки выведи блок `<premortem>`: минимум 3 гипотезы «что сломается в проде», по одной на строку, формат `вход/состояние → наблюдаемый отказ → решение`, каждая с точным фактом — число-лимит / код ошибки / идентификатор / термин механизма (идемпотентность, ретрай, кодировка, гонка); generic («сеть может упасть») не считается, нумерация строк — не число. Касаешься внешнего API → сначала WebFetch официальных доков метода (лимиты длины/rate, коды ошибок, ретраи/идемпотентность), не пиши по памяти. Разобранный пример + классы контрактов: [`references/premortem.md`](references/premortem.md). Enforcement: Stop-триггер N (ретро-премортем хуже, но лучше отсутствия).
-- Pick the approach yourself. Announce as **«делаю X вместо Y, потому что Z»** — обязательно назови отвергнутую альтернативу, не только выбранную (ловит пропуск очевидного пути). Execute; user may redirect at any time.
+- **Премортем до кода.** Нетривиальная задача (≥20 добавленных нетривиальных строк ИЛИ security-путь — порог триггеров J/N, детали в self-review ниже) → ДО первой observable-правки выведи блок `<premortem>`: минимум 3 гипотезы «что сломается в проде», по одной на строку, формат `вход/состояние → наблюдаемый отказ → решение`, каждая с точным фактом — число-лимит / код ошибки / идентификатор / термин механизма (идемпотентность, ретрай, кодировка, гонка); generic («сеть может упасть») не считается, нумерация строк — не число. Касаешься внешнего API → сначала WebFetch официальных доков метода (лимиты длины/rate, коды ошибок, ретраи/идемпотентность), не пиши по памяти. Разобранный пример + классы контрактов: [`references/premortem.md`](references/premortem.md). Enforcement: Stop-триггер N (ретро-премортем хуже, но лучше отсутствия).
+- Pick the approach yourself. Announce as **«делаю X вместо Y, потому что Z»** — назови отвергнутую альтернативу, не только выбранную (ловит пропуск очевидного пути). Execute; user may redirect at any time.
 
 ## 3. Execution — self-verify before reporting done
 
-### Edge-case discipline — happy path is NOT enough
+### Edge-case discipline
 
-Before claiming code works, cover at minimum:
+Happy path сам по себе ничего не доказывает. Before claiming code works, cover at minimum:
 
 - **Non-existent / deleted resource** — 404, missing record, dangling reference
 - **Empty state** — zero items, null, undefined, whitespace-only input
@@ -96,64 +97,39 @@ For each non-trivial case: define expected behavior (reject / degrade / retry / 
 
 ### Reproduce-before-done — evidence, not vibes
 
-Любая правка observable behaviour (фронт, API, CLI, job, MCP-плагин, cross-machine) — НЕ done, пока не выполнил flow и не вставил пруфы.
+Правка observable behaviour (фронт, API, CLI, job, MCP-плагин, cross-machine) не done, пока не выполнил flow и не вставил пруфы.
 
-**Сначала выбери самое дешёвое достаточное доказательство — калибруй под класс правки, не выкручивай на максимум.** Косметика / визуал-онли (CSS, лейаут, отступы, цвет, анимация, спиннер, текст-copy — и НЕ тронуты логика, состояние, данные, навигация/роуты, authz) → один скриншот до/после (или разовый headless open→screenshot); НЕ строй измеряющий / пиксель-ассертящий харнесс и НЕ промотируй в закоммиченный регресс-e2e. Тронута логика / API / состояние / навигация / authz → полный flow ниже + регресс-тест. **При сомнении в классе — бери пруф дороже, не дешевле.**
+Выбирай самое дешёвое достаточное доказательство — калибруй под класс правки. Косметика / визуал-онли (CSS, лейаут, отступы, цвет, анимация, спиннер, текст-copy — логика, состояние, данные, навигация/роуты, authz не тронуты) → один скриншот до/после (или разовый headless open→screenshot), без измеряющего / пиксель-ассертящего харнесса и без промоции в закоммиченный регресс-e2e. Тронута логика / API / состояние / навигация / authz → полный flow + регресс-тест. Сомневаешься в классе → бери пруф дороже, не дешевле.
 
-- **Frontend** → дефолт — headless playwright (`npx playwright install chromium` + скрипт): открой route → HTTP 2xx документа+bundle, console clean, DOM содержит ожидаемый маркер; скриншот если визуально. Минимум — `curl localhost:PORT/route` → status + `grep`. MCP-браузеры — опциональный ускоритель, их недоступность ≠ оправдание сдаться. Правка меняет user-флоу (роут-мап, дефолт-роут, страницы, cross-bundle склейка) → промотируй смоук в **закоммиченный** e2e-спек: разовый зелёный прогон покрывает «отгрузить раз», не регрессию.
-- **API** → `curl` против реального endpoint → status + body.
-- **CLI** → re-run, paste output.
-- **MCP-плагин / slash-команда Claude Code** → `claude plugin marketplace update && claude -p "/namespace:command" --output-format stream-json` → проверь exit + контент ответа.
-- **Cross-machine / multi-process** → `docker-compose up --abort-on-container-exit` (два инстанса + mediator / две стороны pipe) → ассерт по логам или output.
-
-Контейнер / нет GUI — НЕ оправдание; headless ставится `npx playwright install chromium`. Зелёные unit-тесты — НЕ evidence. Фиксишь баг — добавь regression-test.
-
-### Build-your-own-harness
-
-Верификация требует окружения, которого нет (docker-compose, headless browser, fake external API, peers плагина) — строй harness как часть задачи, не повод сдаться. External API → заглушка (`msw` / `nock` / локальный http-server); slash-команды в unattended-CI → `claude -p --permission-mode bypassPermissions --output-format stream-json` (требует `ANTHROPIC_API_KEY`). Незнакомую технику верификации (замер, перехват сети, измерение лейаута) провалидируй **одним** дешёвым проб-прогоном и выясни ограничения окружения (service worker глушит `page.route`, кеш/пересборка бандла, throttling headless) **до** серии полно-стековых — на CPU-боксе каждый e2e ≈ минута. Harness коммить в репо (`scripts/e2e.sh`, `docker-compose.e2e.yml`, `tests/e2e/`) — следующая правка переиспользует.
-
-### Testing strategy — слой, right-amount, скорость
-
-- **Перед проектированием тестов нового модуля/фичи ОБЯЗАН прочитать [`references/testing-strategy.md`](references/testing-strategy.md)**: таблица выбора слоя, стоп-лист «что НЕ тестировать», рецепты для ws/canvas/video/SFC/стилей, layout-oracle, скорость прогона.
-- Ядро: доменная логика → unit + property-based (fast-check / hypothesis: ты формулируешь инвариант, генератор перебирает злые входы — рецепт в testing-strategy.md); стыки (код↔БД, handler↔сервис) → integration, причём repo-слой — против РЕАЛЬНОЙ БД (Testcontainers), не моков и не in-memory; e2e — ТОЛЬКО критичные user-journeys, единицы. Over-testing (генераты, DTO, пиксели, сторонний код) — тоже баг: минус скорость сьюта и рефакторинга.
-- **После правки** — only affected: `vitest --changed`, `jest --findRelatedTests`, `pytest --testmon`, `cargo test -p <crate>`, `go test ./<pkg>`.
-- **Перед «готово»** — full suite модуля. Правил `core/shared/utils` — ещё и reverse-dependencies (`pnpm why`, `cargo tree -i`).
-- **Full > 2 мин** — зафиксируй стратегию в проектном CLAUDE.md при первой встрече. **> 10 мин** — спроси пользователя, не решай сам.
-- Unit-only под предлогом «медленно» не засчитается — сработает `verify-changes` триггер A.
+Типовые рецепты: frontend → headless playwright (минимум `curl` + `grep` маркера), API → `curl` (status + body), CLI → re-run с output, MCP-плагин / slash-команда → `claude -p`, cross-machine → docker-compose. Детали рецептов + build-your-own-harness (нужного окружения нет → построй его как часть задачи, harness закоммить): [`references/verify-done.md`](references/verify-done.md) — прочитай перед прогоном evidence. Зелёные unit-тесты — не evidence; контейнер / нет GUI — не причина пропустить (headless ставится `npx playwright install chromium`). Фиксишь баг → добавь regression-test.
 
 ### Honest disclaimer — только после реальных попыток
 
-Если верификация генуинно невозможна — НЕ говори «готово/done/fixed/работает/пофиксил». Пиши ровно:
+Верификация генуинно невозможна → не заявляй «готово/done/fixed/работает/пофиксил». Пиши ровно:
 
 > "Фикс применён. End-to-end НЕ проверил: [техническая причина]. Проверь вручную: [шаги]"
 
-Дисклеймер легитимен только если в сессии есть следы попыток разведки (`lsof -i :PORT`, `which playwright`, `npx playwright install`, `curl ...` с ошибкой). Без попыток — ложь под видом честности; Stop-hook блокирует.
+Дисклеймер легитимен только при следах попыток разведки в сессии (`lsof -i :PORT`, `which playwright`, `npx playwright install`, `curl ...` с ошибкой) — без попыток это ложь под видом честности; Stop-hook блокирует.
 
 ### Test ordering — где порядок матчится
 
-- **Bug fix:** failing reproducer ПЕРВЫМ. Без красного теста, который зелёнеет от фикса, ты не доказал что починил именно тот баг — мог поправить симптом или другую ветку.
+- **Bug fix:** failing reproducer первым. Без красного теста, который зеленеет от фикса, не доказано что починен именно тот баг — мог поправить симптом или другую ветку.
 - **Чистая backend-логика** (parser / transform / state / бизнес-правило / pure function): test-first выражает контракт. Watch it fail — иначе тест проверяет реализацию, а не требование.
-- **UI / integration / glue-код / configs:** порядок не важен; обязательно наличие к моменту Stop (`verify-changes` D/E). Iron law TDD не применять.
+- **UI / integration / glue-код / configs:** порядок не важен; обязательно наличие к моменту Stop (триггеры D/E). Iron law TDD не применять.
 - **Spike / PoC / exploratory:** opt-out, явно пометь в финальном сообщении (`spike: TDD skipped — exploratory`).
 
-### Self-check checklist before claiming done
+### Testing strategy — слой, right-amount, скорость
 
-- [ ] **For any runtime-affecting change:** re-ran the affected flow end-to-end (headless browser / curl / CLI) with evidence (HTTP status + DOM marker / output) — OR explicitly stated the honest-disclaimer phrase above
-- [ ] Unit tests — happy path AND edge cases
-- [ ] Integration / e2e tests where relevant
-- [ ] Regression test for the exact bug
-- [ ] Security review (injection, auth bypass, secret leaks)
-- [ ] Code review (см. шаг 4 self-review)
-- [ ] Linters + formatters green
-- [ ] Docs updated if behavior/contract changed
-- [ ] **`<premortem>` был выведен до первой правки** (нетривиальная задача; триггер N)
-- [ ] **`<edge-cases>` блок в финальном сообщении** (см. ниже)
+- Перед проектированием тестов нового модуля/фичи прочитай [`references/testing-strategy.md`](references/testing-strategy.md): таблица выбора слоя, стоп-лист «что не тестировать», рецепты для ws/canvas/video/SFC/стилей, layout-oracle, скорость прогона.
+- Ядро: доменная логика → unit + property-based (fast-check / hypothesis: формулируешь инвариант, генератор перебирает злые входы — рецепт в testing-strategy.md); стыки (код↔БД, handler↔сервис) → integration, repo-слой — против реальной БД (Testcontainers), не моков и не in-memory; e2e — только критичные user-journeys, единицы. Over-testing (генераты, DTO, пиксели, сторонний код) — тоже баг: минус скорость сьюта и рефакторинга.
+- **После правки** — only affected: `vitest --changed`, `jest --findRelatedTests`, `pytest --testmon`, `cargo test -p <crate>`, `go test ./<pkg>`.
+- **Перед «готово»** — full suite модуля; линтеры + форматтеры зелёные. Правил `core/shared/utils` — ещё и reverse-dependencies (`pnpm why`, `cargo tree -i`).
+- **Full > 2 мин** — зафиксируй стратегию прогона в проектном CLAUDE.md при первой встрече. **> 10 мин** — спроси пользователя, не решай сам.
+- Unit-only под предлогом «медленно» не засчитается — сработает триггер A.
 
-If the test suite is slow, persist a run strategy (memory, CLAUDE.md, or repo doc) so it's not forgotten next session.
+### Декларация edge-cases в финальном сообщении
 
-### Обязательная декларация edge-cases в финальном сообщении
-
-Перед заявлением «готово» после правки observable-кода ОБЯЗАН вывести в финальном сообщении блок `<edge-cases>` с перечислением покрытых тестами кейсов. Формат строго машинопроверяемый:
+После правки observable-кода перед «готово» выведи в финальном сообщении блок `<edge-cases>` с перечислением покрытых тестами кейсов. Формат машинопроверяемый:
 
 ```
 <edge-cases>
@@ -165,15 +141,15 @@ race:tests/auth.test.ts:test_concurrent_login
 - Запись — `name:test_file:test_name`; разделители `;` или перенос строки. `test_file` — путь от корня репо, должен существовать; `test_name` — подстрока имени `it/test/describe/def` в нём (case-insensitive). Хук валидирует механически — враньё в декларации блокирует Stop.
 - Минимальный набор: empty, boundary, concurrency, external-failure, permission, malformed-input, deleted-resource; frontend — плюс browser/UX edge states. Кейс реально N/A → пиши явно `name:N/A:<причина>`, не выкидывай молча.
 
-### Self-review + триаж замечаний — обязательный шаг 4
+### Self-review + триаж замечаний — шаг 4
 
-**Когда обязателен:** observable-правка с `≥ 20` добавленных нетривиальных строк (дельта Edit/MultiEdit `new_string − old_string` — широкий контекстный якорь rename/extract не считается; Write — целиком) ИЛИ затронут security-sensitive путь (`auth|api|sql|crypto|payment|admin|session|token|password|secret|jwt|oauth|cookie|cors|csrf|xss|sanitiz|escape|webhook|hash|cipher|encrypt|decrypt|hmac|signature|signin|signup|login|logout|permission|role|access|sso|saml|ldap`). Тривиальные правки — пропускаются молча; для аудита пропуска: `<self-review>skipped:trivial</self-review>`.
+**Когда обязателен:** observable-правка с ≥20 добавленными нетривиальными строками (multiset-дельта `new_string − old_string` в Edit/MultiEdit — широкий контекстный якорь rename/extract не считается; Write — целиком) ИЛИ затронут security-sensitive путь (auth / payment / session / token / cookie / crypto / webhook / … — полный список токенов: [`references/stop-triggers.md`](references/stop-triggers.md), триггер J). Тривиальные правки пропускаются молча; для аудита пропуска: `<self-review>skipped:trivial</self-review>`.
 
-**Как:** ОДИН проход — повторный запуск review-агентов перед Stop ЗАПРЕЩЁН. Параллельно ТРИ сабагента в одном Tool message (`Task` или `Agent`, subagent_type="general-purpose" — хук засчитывает все):
+**Как:** один проход — review-агентов перед Stop не перезапускай. Параллельно три сабагента в одном Tool message (`Task` или `Agent`, subagent_type="general-purpose" — хук засчитывает все):
 
-- code-review (качество, паттерны, дублирование, непокрытые edge-cases, конвенции) — модель **обязательно `sonnet`** (≈5× экономия на структурном обходе diff'а); есть superpowers → промпт из `requesting-code-review` (шаблон `code-reviewer.md`).
-- security-review по OWASP Top-10 (injection / auth-bypass / SSRF / редиректы / weak crypto / leaked secrets / deserialization / rate-limit / TOCTOU / path traversal) на конкретные изменённые файлы — **без `model` override**: false negative дороже стоимости.
-- premortem-review («что сломается в проде»: top-5 гипотез, каждая = система + точное ограничение с числом + ломающий вход + симптом; generic запрещён; не уверен в лимите → WebFetch официальных доков) — модель **`sonnet`, не haiku**: ценность = специфичность гипотез (цитаты доков, точные коды ошибок), разница в цене копеечная. Находки → `<review-triage>` с источником `edge:`.
+- code-review (качество, паттерны, дублирование, непокрытые edge-cases, конвенции) — модель `sonnet`: структурный обход диффа не требует топ-модели; есть superpowers → промпт из `requesting-code-review` (шаблон `code-reviewer.md`).
+- security-review по OWASP Top-10 (injection / auth-bypass / SSRF / редиректы / weak crypto / leaked secrets / deserialization / rate-limit / TOCTOU / path traversal) на конкретные изменённые файлы — без `model` override: false negative дороже стоимости.
+- premortem-review («что сломается в проде»: top-5 гипотез, каждая = система + точное ограничение с числом + ломающий вход + симптом; generic не считается; не уверен в лимите → WebFetch официальных доков) — модель `sonnet`, не haiku: ценность — специфичность гипотез (цитаты доков, точные коды ошибок). Находки → `<review-triage>` с источником `edge:`.
 
 **Триаж каждого замечания** (через `superpowers:receiving-code-review` если установлен, иначе той же дисциплиной): applied — применить; rejected/deferred — обосновать технически (file:line, конкретный риск, метрика, цитата), без performative-agreement и отмазок «minor / вне scope».
 
@@ -194,7 +170,7 @@ edge:1:applied:src/notify.ts:37 — чанкование текста по 4096 
 ```
 
 - `<self-review>`: секции `code`, `security` и `edge` обязательны (в полном режиме both; `edge` отключается `MAIN_SKILL_VERIFY_PREMORTEM=0`); статусы `applied` / `rejected` / `deferred` / `none-found`. Ревью ничего не нашло → `code:none-found` / `security:none-found` / `edge:none-found`, триаж не требуется.
-- `<review-triage>`: запись `<source>:<id>:<status>:<reason>`, каждое замечание отдельной строкой. **Slop-обоснование блокируется**: `rejected`/`deferred` только со словами «minor / nitpick / несущественно / вне scope / косметика / not critical» без технического маркера (file:line, идентификатор, число, термин риска) — Stop-хук блокирует.
+- `<review-triage>`: запись `<source>:<id>:<status>:<reason>`, каждое замечание отдельной строкой. Slop-обоснование блокируется: `rejected`/`deferred` только со словами «minor / nitpick / несущественно / вне scope / косметика / not critical» без технического маркера (file:line, идентификатор, число, термин риска) — Stop-хук блокирует.
 
 ### Stop-триггеры verify-changes
 

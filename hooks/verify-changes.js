@@ -859,7 +859,7 @@ function main(p) {
     "[main-skill:verify-changes] Stop заблокирован (триггер D: src-файл без парного test-файла).",
     "",
     "Ты правил observable src-файлы, но для них нет парного test-файла ни в репо,",
-    "ни среди правок этой сессии. Запрещено правилом workflow-rules §3 («happy path NOT enough»).",
+    "ни среди правок этой сессии. Запрещено правилом workflow-rules §3 (Edge-case discipline).",
     "",
     "Файлы без тестов:",
     ...(triggerData?.missingTests || []).map((f) => `  • ${sanitize(f)}`),
@@ -1016,7 +1016,7 @@ function main(p) {
     "[main-skill:verify-changes] Stop заблокирован (триггер G: лайнтер красный).",
     "",
     `Команда: ${triggerData?.cmd || "<lint>"}`,
-    "Exit-код ≠ 0. Workflow-rules §3 требует «Linters + formatters green» перед done.",
+    "Exit-код ≠ 0. Workflow-rules §3 требует зелёные линтеры + форматтеры перед done.",
     "",
     "Output (хвост):",
     ...(triggerData?.output || "")

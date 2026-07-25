@@ -2414,3 +2414,24 @@ test("session-disabled: сентинел-файл под HOME → Stop не бл
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, HOME: home });
   expectNoBlock(r.stdout);
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// reason-статика: цитаты SKILL.md в reason-текстах не дрейфуют от самого SKILL.md
+// (редактура 1.11.0 переименовала секцию «happy path is NOT enough» и удалила
+// чеклист с «Linters + formatters green» — reason-тексты обязаны цитировать
+// живые формулировки, иначе блок-сообщение отсылает к несуществующему тексту).
+// ────────────────────────────────────────────────────────────────────────────
+
+test("reason-статика: reasonD/reasonG цитируют актуальные формулировки SKILL.md", () => {
+  const src = fs.readFileSync(HOOK, "utf8");
+  assert.ok(src.includes("Edge-case discipline"), "reasonD: живое имя секции");
+  assert.ok(!src.includes("NOT enough"), "reasonD: старая цитата удалена");
+  assert.ok(
+    !src.includes("Linters + formatters green"),
+    "reasonG: старая цитата удалена",
+  );
+  assert.ok(
+    src.includes("зелёные линтеры + форматтеры"),
+    "reasonG: новая формулировка",
+  );
+});
