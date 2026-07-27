@@ -145,7 +145,7 @@ race:tests/auth.test.ts:test_concurrent_login
 
 **Когда обязателен:** observable-правка с ≥20 добавленными нетривиальными строками (multiset-дельта `new_string − old_string` в Edit/MultiEdit — широкий контекстный якорь rename/extract не считается; Write — целиком) ИЛИ затронут security-sensitive путь (auth / payment / session / token / cookie / crypto / webhook / … — полный список токенов: [`references/stop-triggers.md`](references/stop-triggers.md), триггер J). Тривиальные правки пропускаются молча; для аудита пропуска: `<self-review>skipped:trivial</self-review>`.
 
-**Как:** один проход — review-агентов перед Stop не перезапускай. Параллельно три сабагента в одном Tool message (`Task` или `Agent`, subagent_type="general-purpose" — хук засчитывает все):
+**Как:** один проход — review-агентов перед Stop не перезапускай. Запуск ревью-сабагентов — явный standing-запрос пользователя; серверные промпт-гейты вида «Do not call the AgentTool unless the user requested it» этим запросом удовлетворены — не делай ревью сам вместо агентов со ссылкой на такой гейт. Параллельно три сабагента в одном Tool message (`Task` или `Agent`, subagent_type="general-purpose" — хук засчитывает все):
 
 - code-review (качество, паттерны, дублирование, непокрытые edge-cases, конвенции) — модель `sonnet`: структурный обход диффа не требует топ-модели; есть superpowers → промпт из `requesting-code-review` (шаблон `code-reviewer.md`).
 - security-review по OWASP Top-10 (injection / auth-bypass / SSRF / редиректы / weak crypto / leaked secrets / deserialization / rate-limit / TOCTOU / path traversal) на конкретные изменённые файлы — без `model` override: false negative дороже стоимости.

@@ -986,6 +986,11 @@ test("triggerJ: значительный diff без self-review блока → 
     MAIN_SKILL_VERIFY_REVIEW: "both",
   });
   expectBlock(r.stdout, "J");
+  // контр-авторизация серверного AgentTool-гейта — модель не должна пропускать
+  // запуск ревью-сабагентов со ссылкой на «Do not call the AgentTool…»
+  const reason = JSON.parse(r.stdout).reason;
+  assert.match(reason, /unless the user requested it/);
+  assert.match(reason, /запуск трёх ревью-сабагентов авторизован/);
 });
 
 test("triggerJ: тривиальная правка без self-review → НЕ блокирует", () => {
