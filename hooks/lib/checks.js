@@ -1420,19 +1420,28 @@ function validateEdgeCases(parsed, repoRoot) {
         reason: `test_file не найден: ${entry.test_file}`,
       };
     }
-    let body;
-    try {
-      body = fs.readFileSync(abs, "utf8");
-    } catch (e) {
+    // Чтение с confinement (realpath внутрь repoRoot, обычный файл, ≤200KB):
+    // test_file приходит из недоверенного текста — traversal/симлинк наружу,
+    // FIFO (висящее чтение) и гигантский файл отсекаются, не Stop-хук.
+    const body = readRepoFileSafe(entry.test_file, repoRoot);
+    if (body === null) {
       return {
         entry,
         ok: false,
-        reason: `не удалось прочитать ${entry.test_file}: ${e.message}`,
+        reason: `не удалось прочитать ${entry.test_file} (вне repoRoot / не обычный файл / >200KB)`,
       };
     }
+    // Кап длины до компиляции RegExp: многокилобайтный test_name раздул бы
+    // паттерн до «Regular expression too large» → exception → fail-open всего
+    // хука (in-band обход всех триггеров). Конвенция rankSpecCandidates: ≤200.
+    const name =
+      entry.test_name.length > 200
+        ? entry.test_name.slice(0, 200)
+        : entry.test_name;
+    const shown = entry.test_name.length > 200 ? name + "…" : name;
     // Ищем it('...test_name...') / test('...test_name...') / describe('...') — гибко по подстроке.
     // test_name может быть как точная строка, так и snake/camel-вариант.
-    const escaped = escapeRegExp(entry.test_name);
+    const escaped = escapeRegExp(name);
     const re = new RegExp(
       `(?:^|\\W)(?:it|test|describe|context|specify|t\\.run|test\\.it)\\s*\\(\\s*['"\`][^'"\`]*${escaped}[^'"\`]*['"\`]`,
       "i",
@@ -1444,11 +1453,43 @@ function validateEdgeCases(parsed, repoRoot) {
         "i",
       );
       if (!reFn.test(body)) {
-        return {
-          entry,
-          ok: false,
-          reason: `в ${entry.test_file} нет теста с именем «${entry.test_name}»`,
-        };
+        // fallback: sh-интеграционные тесты — только ТЕСТ-именованный *.sh/*.bash
+        // (isTestFile: `*.test.sh` / `tests/…`): иначе комментарий в продакшн-
+        // скрипте «доказывал» бы несуществующий тест. Матчатся: TAP-лейбл
+        // `ok - …`/`not ok - …`, строка assert-хелпера (лейбл — кавычный аргумент,
+        // литерала `ok - <лейбл>` в файле нет) и комментарий-заголовок блока
+        // (`# 7d. …`; шебанг `#!` исключён). test_name < 3 символов — отказ:
+        // матчится слишком дёшево. Квантификаторы bounded (ReDoS-конвенция).
+        const isShTest =
+          /\.(sh|bash)$/i.test(entry.test_file) &&
+          isTestFile(entry.test_file) &&
+          name.trim().length >= 3;
+        const reShLabel = new RegExp(
+          `(?:^|[^A-Za-z0-9])(?:not )?ok - [^\\n]{0,500}${escaped}`,
+          "i",
+        );
+        const reShAssert = new RegExp(
+          `(?:^|[^A-Za-z0-9_])assert[A-Za-z_]{0,40}\\b[^\\n]{0,500}${escaped}`,
+          "i",
+        );
+        const reShComment = new RegExp(
+          `^[ \\t]{0,8}#(?!!)[^\\n]{0,500}${escaped}`,
+          "im",
+        );
+        if (
+          !isShTest ||
+          !(
+            reShLabel.test(body) ||
+            reShAssert.test(body) ||
+            reShComment.test(body)
+          )
+        ) {
+          return {
+            entry,
+            ok: false,
+            reason: `в ${entry.test_file} нет теста с именем «${shown}»`,
+          };
+        }
       }
     }
     return { entry, ok: true };

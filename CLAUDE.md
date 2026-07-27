@@ -229,6 +229,16 @@ E требует endpoint-level тест (`findE2eFile`: functional/integration/
 
 Рядовой read-only controller/route покрывается триггером D (парный тест любого слоя): e2e-форс на каждый роут = e2e-пролиферация → получасовые прогоны. False positive (лишний endpoint-тест на `authors_controller`) безвреден; false negative (мутация в непокрытой сигнатурами конвенции) деградирует до D-парного теста — который может быть unit-ом; это осознанный остаток дыры, сужаемый добавлением сигнатур. reasonE толкает к integration (api-client/supertest) как дефолту, e2e — только для сквозных user-journeys.
 
+## Триггер F — sh-fallback в validateEdgeCases
+
+`validateEdgeCases` (`checks.js`) ищет `test_name` как имя `it/test/describe/context/specify` либо `def/func/fn`; третий fallback — sh-интеграционные тесты: TAP-лейбл `ok - …`/`not ok - …`, строка assert-хелпера (`assert_contains "$out" … "лейбл"` — лейбл живёт кавычным аргументом, литерала `ok - <лейбл>` в файле нет) или комментарий-заголовок блока (`# 7d. …`). Закрывает дог-фудинг-кейс v1.12.0: честно покрытые sh-кейсы выдавливались в фиктивные `N/A`.
+
+- **Гейт — только тест-именованный `*.sh`/`*.bash`** (`isTestFile`: `*.test.sh` / `tests/…`): иначе комментарий в самом правленом продакшн-скрипте «доказывал» бы несуществующий тест (live-exploit из ревью: `hooks/session-start.sh` + его же `# 4. …`-комментарий). Шебанг исключён (`#(?!!)`), `test_name` < 3 символов — отказ (матчится слишком дёшево).
+- **Hardening для всех паттернов F** (та же правка): `test_name` капится ≤200 до `new RegExp` (иначе «Regular expression too large» → exception → fail-open всего хука, конвенция `rankSpecCandidates`); чтение `test_file` — через `readRepoFileSafe` (realpath-confinement под repoRoot, обычный файл, ≤200KB — traversal/FIFO/гигант отсекаются); эхо `v.reason` в reason-ах — `sanitize(trunc(…, 300))`.
+- **Осознанные потолки**: `not ok - X` доказывает существование теста X (F проверяет существование, не green — как и `it(...)`-паттерн); окно `[^\n]{0,500}` до `test_name` bounded by design; матч — дословная подстрока (перифраз лейбла → честный отказ, декларируй лейбл verbatim).
+
+Правка fallback-паттернов / гейта / капов → синхронизируй `checks.test.js`, `verify-changes.test.js`, `reasonF`, `stop-triggers.md`, SKILL.md §edge-cases и эту секцию.
+
 ## Триггер M — render-verify для фронт-правок
 
 Блокирует «готово», если после последней фронт-правки (classify `frontend`, минус тест/док-файлы — иначе правка `Card.test.tsx` после рендера ложно ре-триггерила бы M) нет render-класса прогона. Render-детект — `checks.isRenderVerifyCmd` (headless browser / curl|wget по localhost; НАМЕРЕННО без unit-раннеров — jsdom не рендерит, и без внешнего `https://` — прод-URL не проверяет локальную правку); активный браузер-MCP засчитывается по имени tool_use в `verify-changes.js`. Опт-аут `MAIN_SKILL_VERIFY_RENDER=0`.

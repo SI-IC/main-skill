@@ -975,7 +975,9 @@ function main(p) {
         "  </edge-cases>",
         "",
         "Каждая запись — name:test_file:test_name. Хук проверит существование test_file",
-        "и наличие it/test/describe/def с этим именем.",
+        "и наличие it/test/describe/def с этим именем; для тест-именованных *.sh",
+        "(*.test.sh / tests/…) — лейбла `ok - …`/`not ok - …`, строки assert-хелпера",
+        "или комментария-заголовка блока (`# 7d. …`).",
         "",
         "Минимум edge-кейсов из workflow-rules §3:",
         "  • non-existent / deleted resource",
@@ -1001,12 +1003,14 @@ function main(p) {
         .slice(0, 10)
         .map(
           (v) =>
-            `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(v.reason)}`,
+            `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(trunc(v.reason, 300))}`,
         ),
       ...(failed.length > 10 ? [`  … и ещё ${failed.length - 10}`] : []),
       "",
       "Каждая запись должна быть name:test_file:test_name; test_file существует;",
-      "в нём — it/test/describe/def, чьё имя содержит test_name (case-insensitive).",
+      "в нём — it/test/describe/def, чьё имя содержит test_name (case-insensitive);",
+      "для тест-именованных *.sh (*.test.sh / tests/…) — лейбл `ok - …`/`not ok - …`,",
+      "строка assert-хелпера или комментарий-заголовок блока с test_name.",
       "",
       "Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0",
     ].join("\n");
@@ -1190,7 +1194,7 @@ function main(p) {
           .slice(0, 10)
           .map(
             (v) =>
-              `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(v.reason)}`,
+              `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(trunc(v.reason, 300))}`,
           ),
         ...((triggerData.failed || []).length > 10
           ? [`  … и ещё ${(triggerData.failed || []).length - 10}`]
@@ -1276,7 +1280,7 @@ function main(p) {
           .slice(0, 10)
           .map(
             (v) =>
-              `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(v.reason)}`,
+              `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(trunc(v.reason, 300))}`,
           ),
         ...(failed.length > 10 ? [`  … и ещё ${failed.length - 10}`] : []),
         "",

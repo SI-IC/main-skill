@@ -138,7 +138,7 @@ race:tests/auth.test.ts:test_concurrent_login
 </edge-cases>
 ```
 
-- Запись — `name:test_file:test_name`; разделители `;` или перенос строки. `test_file` — путь от корня репо, должен существовать; `test_name` — подстрока имени `it/test/describe/def` в нём (case-insensitive). Хук валидирует механически — враньё в декларации блокирует Stop.
+- Запись — `name:test_file:test_name`; разделители `;` или перенос строки. `test_file` — путь от корня репо, должен существовать; `test_name` — подстрока имени `it/test/describe/def` в нём (case-insensitive); для тест-именованных `*.sh` — подстрока лейбла `ok - …`/`not ok - …`, строки assert-хелпера или комментария-заголовка блока. Хук валидирует механически — враньё в декларации блокирует Stop.
 - Минимальный набор: empty, boundary, concurrency, external-failure, permission, malformed-input, deleted-resource; frontend — плюс browser/UX edge states. Кейс реально N/A → пиши явно `name:N/A:<причина>`, не выкидывай молча.
 
 ### Self-review + триаж замечаний — шаг 4

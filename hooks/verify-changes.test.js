@@ -636,6 +636,46 @@ test("triggerF: невалидная декларация блокируется
   expectBlock(r.stdout, "F");
 });
 
+test("triggerF: sh-декларация — TAP-лейбл в *.test.sh засчитывается (нет блока)", () => {
+  const dir = tmp();
+  writeFile(dir, "scripts/foo.sh", "#!/bin/sh\necho hi\n");
+  writeFile(
+    dir,
+    "scripts/foo.test.sh",
+    `#!/bin/sh\n# 2a. пустой stdin\necho "ok - пустой stdin не роняет хук"\n`,
+  );
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "scripts/foo.sh")),
+    asstBash("sh scripts/foo.test.sh"),
+    asstText(
+      SUCCESS +
+        " <edge-cases>empty:scripts/foo.test.sh:пустой stdin не роняет</edge-cases>",
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerF: sh-декларация с несуществующим лейблом блокируется", () => {
+  const dir = tmp();
+  writeFile(dir, "scripts/foo.sh", "#!/bin/sh\necho hi\n");
+  writeFile(
+    dir,
+    "scripts/foo.test.sh",
+    `#!/bin/sh\necho "ok - совсем другой лейбл"\n`,
+  );
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "scripts/foo.sh")),
+    asstBash("sh scripts/foo.test.sh"),
+    asstText(
+      SUCCESS +
+        " <edge-cases>race:scripts/foo.test.sh:concurrent login</edge-cases>",
+    ),
+  ]);
+  const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
+  expectBlock(r.stdout, "F");
+});
+
 test("lastText: промежуточный success-нарратив, за которым идёт tool_use, НЕ считается финальным claim", () => {
   // Регресс: моё «Marking docs task done» сообщение (за ним TaskUpdate) ложно
   // принималось за финальный claim → F-блок, хотя реальный финал (с блоком

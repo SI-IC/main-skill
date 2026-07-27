@@ -1936,6 +1936,184 @@ test("validateEdgeCases: N/A с пустой причиной — не ok", () =
   assert.match(v[0].reason, /причин/i);
 });
 
+test("validateEdgeCases: sh-тест — TAP-лейбл `ok - …` засчитывается", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "hooks/session-start.test.sh",
+    `#!/bin/sh\necho "ok - баннер идёт перед skill-инструкцией"\n`,
+  );
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>empty:hooks/session-start.test.sh:баннер идёт перед</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, true);
+});
+
+test("validateEdgeCases: sh-тест — лейбл `not ok - …` тоже засчитывается", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "t/run.test.sh",
+    `echo "not ok - симлинк CLAUDE.md пропускается (ожидал подстроку: $2)"\n`,
+  );
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>malformed:t/run.test.sh:симлинк CLAUDE.md пропускается</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, true);
+});
+
+test("validateEdgeCases: sh-тест — комментарий-заголовок блока `# 7d. …`", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "hooks/session-start.test.sh",
+    `#!/bin/sh\n# 7d. standing-request переживает стирание HTML-comment\nout=$(run_hook)\nassert_contains "$out" "x" "лейбл"\n`,
+  );
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>boundary:hooks/session-start.test.sh:standing-request переживает</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, true);
+});
+
+test("validateEdgeCases: sh-тест без матча → не ok", () => {
+  const dir = tmp();
+  writeFile(
+    dir,
+    "t/run.test.sh",
+    `echo "ok - совсем другой лейбл"\n# другой блок\n`,
+  );
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>race:t/run.test.sh:concurrent login</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, false);
+});
+
+test("validateEdgeCases: sh-fallback НЕ применяется к не-.sh файлам", () => {
+  // Комментарий `# test_empty` в py-файле не должен засчитывать несуществующий тест.
+  const dir = tmp();
+  writeFile(
+    dir,
+    "tests/test_auth.py",
+    `# test_empty — задел на будущее\npass\n`,
+  );
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>empty:tests/test_auth.py:test_empty</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, false);
+});
+
+test("validateEdgeCases: sh — `look - done` не матчится как `ok - `", () => {
+  const dir = tmp();
+  writeFile(dir, "t/run.test.sh", `echo "look - done deal"\n`);
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>empty:t/run.test.sh:done deal</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, false);
+});
+
+test("validateEdgeCases: sh — кириллица case-insensitive", () => {
+  const dir = tmp();
+  writeFile(dir, "t/run.test.sh", `echo "ok - Баннер напечатан"\n`);
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>empty:t/run.test.sh:баннер напечатан</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, true);
+});
+
+test("validateEdgeCases: sh — regex-спецсимволы в test_name не роняют матч", () => {
+  const dir = tmp();
+  writeFile(dir, "t/run.test.sh", `# 3b. глоб src/** (deny) отклоняется\n`);
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>malformed:t/run.test.sh:глоб src/** (deny)</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, true);
+});
+
+test("validateEdgeCases: sh — лейбл в аргументе assert-хелпера засчитывается", () => {
+  // Реальный стиль session-start.test.sh: литерал `ok - $3` в хелпере,
+  // текст лейбла живёт только как кавычный аргумент assert_contains.
+  const dir = tmp();
+  writeFile(
+    dir,
+    "hooks/session-start.test.sh",
+    `#!/bin/sh\nassert_contains "$out" "Перед первым" "инструкция начинается с императива"\n`,
+  );
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>malformed:hooks/session-start.test.sh:инструкция начинается с императива</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, true);
+});
+
+test("validateEdgeCases: sh-fallback НЕ применяется к продакшн-.sh (не тест-именованному)", () => {
+  // Иначе комментарий в самом правленом скрипте «доказывал» бы несуществующий тест.
+  const dir = tmp();
+  writeFile(
+    dir,
+    "hooks/session-start.sh",
+    `#!/bin/sh\n# 4. non-blocking banner if recommended plugins missing\n`,
+  );
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>empty:hooks/session-start.sh:non-blocking banner</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, false);
+});
+
+test("validateEdgeCases: sh — шебанг не считается комментарием-заголовком", () => {
+  const dir = tmp();
+  writeFile(dir, "t/run.test.sh", `#!/bin/sh\necho hi\n`);
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>empty:t/run.test.sh:/bin/sh</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, false);
+});
+
+test("validateEdgeCases: sh — test_name короче 3 символов не принимается", () => {
+  const dir = tmp();
+  writeFile(dir, "t/run.test.sh", `# sh block\necho "ok - sh"\n`);
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>empty:t/run.test.sh:sh</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, false);
+});
+
+test("validateEdgeCases: гигантский test_name не роняет хук (кап до RegExp)", () => {
+  // Без капа «Regular expression too large» → exception → fail-open всего хука.
+  const dir = tmp();
+  writeFile(dir, "tests/auth.test.ts", `it('happy', () => {});`);
+  const huge = "x".repeat(300_000);
+  const parsed = checks.parseEdgeCasesBlock(
+    `<edge-cases>empty:tests/auth.test.ts:${huge}</edge-cases>`,
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, false);
+  assert.ok(v[0].reason.length < 1000, "reason не тащит гигантское имя");
+});
+
+test("validateEdgeCases: test_file вне repoRoot (traversal) → не ok", () => {
+  const outer = tmp();
+  const dir = path.join(outer, "repo");
+  fs.mkdirSync(dir, { recursive: true });
+  writeFile(outer, "secret.test.sh", `# handles empty input\n`);
+  const parsed = checks.parseEdgeCasesBlock(
+    "<edge-cases>empty:../secret.test.sh:handles empty input</edge-cases>",
+  );
+  const v = checks.validateEdgeCases(parsed, dir);
+  assert.strictEqual(v[0].ok, false);
+  assert.match(v[0].reason, /не удалось прочитать/);
+});
+
 test("runLint возвращает null если ничего не настроено", () => {
   const dir = tmp();
   const r = checks.runLint(dir);
