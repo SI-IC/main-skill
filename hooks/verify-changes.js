@@ -623,7 +623,20 @@ function main(p) {
             } else {
               // Анти-фейк: если секция объявлена со статусом != skipped, в transcript должен быть
               // соответствующий Task-вызов. `none-found` тоже требует реального запуска.
-              const calls = checks.findReviewAgentCalls(lines);
+              // Аномалия обхода транскрипта не должна ронять хук в silent exit —
+              // это погасило бы все триггеры разом. Fail toward требования:
+              // вызовов не видно → секции считаются незапущенными (fake-decl).
+              let calls;
+              try {
+                calls = checks.findReviewAgentCalls(lines);
+              } catch {
+                calls = {
+                  code: false,
+                  security: false,
+                  edge: false,
+                  edgeModel: "",
+                };
+              }
               const fakeSections = [];
               const sectionsRequiringCall = (sec) => {
                 const e = selfReview[sec];
@@ -652,6 +665,20 @@ function main(p) {
               if (fakeSections.length > 0) {
                 trigger = "J";
                 triggerData = { kind: "fake-decl", fakeSections, reviewMode };
+              } else if (
+                reviewWantEdge &&
+                sectionsRequiringCall("edge") &&
+                calls.edge &&
+                checks.isWeakPremortemModel(calls.edgeModel)
+              ) {
+                // premortem-линза запущена на haiku вопреки SKILL.md — специфичность
+                // гипотез и есть её ценность. Модель берётся из последнего вызова,
+                // поэтому переанонс на sonnet снимает блок.
+                trigger = "J";
+                triggerData = {
+                  kind: "weak-edge-model",
+                  model: calls.edgeModel,
+                };
               } else {
                 // K: триаж требуется, если хоть в одной активной секции есть applied/rejected/deferred.
                 const needsTriage =
@@ -1136,6 +1163,31 @@ function main(p) {
         '  • edge — Task/Agent с промптом/описанием, содержащим "premortem" / «премортем».',
         "",
         ...howTo,
+      ].join("\n");
+    }
+    if (triggerData?.kind === "weak-edge-model") {
+      return [
+        baseHead.replace(
+          "нет валидного <self-review> блока",
+          "premortem-линза запущена на haiku",
+        ),
+        "",
+        `premortem-агент вызван с model="${sanitize(trunc(triggerData.model, 60))}".`,
+        "workflow-rules §self-review требует для этой линзы sonnet и дословно «не haiku»:",
+        "ценность премортема — специфичность гипотез (точные лимиты, коды ошибок, цитаты доков),",
+        "именно она первой деградирует на самой дешёвой модели. Экономия здесь покупается за счёт",
+        "того единственного, ради чего линза запускается.",
+        "",
+        'Что сделать: перезапусти premortem-агента с model="sonnet" (или без override — тогда',
+        "наследуется модель сессии) и обнови секцию edge: в <self-review> по его находкам.",
+        "Правило «один проход» здесь не действует — прогон на haiku не засчитан.",
+        "",
+        "Учти: реально исполненная модель могла отличаться от запрошенной — её переопределяют",
+        "CLAUDE_CODE_SUBAGENT_MODEL и организационный availableModels-allowlist, а хук видит",
+        "только то, что ты написал в вызове. Если модель форсится извне — это ложное срабатывание,",
+        "снимается опт-аутом ниже.",
+        "",
+        "Опт-аут: MAIN_SKILL_VERIFY_PREMORTEM=0 (снимает edge-секцию и триггер N целиком).",
       ].join("\n");
     }
     // missing

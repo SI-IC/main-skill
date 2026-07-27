@@ -1715,12 +1715,37 @@ function countNonTrivialDiffLines(lines, filterFn = null, cap = Infinity) {
 // экспонирован как Task ИЛИ Agent (в Agent-окружении Task отсутствует вовсе).
 const SUBAGENT_TOOL_NAMES = new Set(["Task", "Agent"]);
 
+// Поле tool_use.input из транскрипта — недоверенный JSON: значением может быть
+// объект, и тогда String(v) БРОСАЕТ TypeError (`{"toString": 1}` — ToPrimitive не
+// находит callable). Необёрнутый throw убил бы весь Stop-хук в silent exit, погасив
+// все триггеры разом. Не-строки схлопываем в "", длину капим как соседний prompt.
+function safeInputStr(v, max = 2000) {
+  if (typeof v === "string") return v.slice(0, max);
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  return "";
+}
+
+// Модель, запрещённая для premortem-линзы: SKILL.md §self-review требует sonnet
+// и дословно «не haiku» — ценность линзы в специфичности гипотез. Матчим только
+// Anthropic-формы: алиас целиком (`haiku`) либо ID/Bedrock-ARN с сегментом
+// `claude-haiku` (`claude-haiku-4-5-20251001`, `us.anthropic.claude-haiku-…`).
+// Подстрока `haiku` где угодно дала бы FP на кастомных именах деплоя у
+// не-Anthropic провайдеров (`prod-haiku-router`, переименованный на Sonnet-класс).
+function isWeakPremortemModel(model) {
+  const s = safeInputStr(model, 200).trim();
+  return /^haiku$/i.test(s) || /claude-haiku/i.test(s);
+}
+
 // Собирает все сабагент-вызовы (Task/Agent) из транскрипта и категоризирует по
-// типу review. Возвращает { code: bool, security: bool, edge: bool }.
+// типу review. Возвращает { code: bool, security: bool, edge: bool, edgeModel: string }.
+// edgeModel — значение input.model ПОСЛЕДНЕГО premortem-вызова ("" если не передан,
+// т.е. модель наследуется от сессии или от frontmatter кастомного сабагента —
+// в транскрипте этого не видно). Последний, а не первый: его находки идут в триаж.
 function findReviewAgentCalls(lines) {
   let code = false;
   let security = false;
   let edge = false;
+  let edgeModel = "";
   for (const e of lines || []) {
     if (e.type !== "assistant") continue;
     const content = e.message?.content || [];
@@ -1728,9 +1753,9 @@ function findReviewAgentCalls(lines) {
       if (!b || b.type !== "tool_use" || !SUBAGENT_TOOL_NAMES.has(b.name))
         continue;
       const inp = b.input || {};
-      const sub = String(inp.subagent_type || "");
-      const desc = String(inp.description || "");
-      const prompt = String(inp.prompt || "").slice(0, 2000);
+      const sub = safeInputStr(inp.subagent_type);
+      const desc = safeInputStr(inp.description);
+      const prompt = safeInputStr(inp.prompt);
       const hay = `${sub}\n${desc}\n${prompt}`;
       // code review: subagent_type явно code-reviewer ИЛИ описание/промпт упоминает code review.
       if (
@@ -1755,10 +1780,11 @@ function findReviewAgentCalls(lines) {
       // hay уже содержит sub — отдельная sub-проверка была бы мертва.
       if (/пре-?мортем|pre-?mortem/i.test(hay)) {
         edge = true;
+        edgeModel = safeInputStr(inp.model, 200);
       }
     }
   }
-  return { code, security, edge };
+  return { code, security, edge, edgeModel };
 }
 
 // Парсит блок <self-review>. Возвращает { code, security, edge, skippedTrivial, raw }
@@ -2713,6 +2739,8 @@ module.exports = {
   hasSecuritySensitivePath,
   countNonTrivialDiffLines,
   findReviewAgentCalls,
+  isWeakPremortemModel,
+  safeInputStr,
   parseSelfReview,
   parseReviewTriage,
   validateReviewTriage,

@@ -93,17 +93,13 @@ function asstText(text) {
   return { type: "assistant", message: { content: [{ type: "text", text }] } };
 }
 
-function asstTask(subagent_type, description, prompt) {
+function asstTask(subagent_type, description, prompt, model) {
+  const input = { subagent_type, description, prompt };
+  if (model !== undefined) input.model = model;
   return {
     type: "assistant",
     message: {
-      content: [
-        {
-          type: "tool_use",
-          name: "Task",
-          input: { subagent_type, description, prompt },
-        },
-      ],
+      content: [{ type: "tool_use", name: "Task", input }],
     },
   };
 }
@@ -2091,6 +2087,227 @@ test("triggerJ: edge-декларация без premortem-агента → bloc
     MAIN_SKILL_VERIFY_PREMORTEM: "1",
   });
   expectBlock(r.stdout, "J");
+});
+
+test("triggerJ: отравленный tool_use не роняет хук в silent exit", () => {
+  // {toString: 1} ломает String(v) TypeError-ом. До safeInputStr одна такая
+  // запись в транскрипте гасила ВСЕ триггеры (silent exit), т.е. отключала хук.
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const poisoned = {
+    type: "assistant",
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          name: "Task",
+          input: {
+            subagent_type: { toString: 1 },
+            description: { toString: 1 },
+            prompt: { toString: 1 },
+            model: { toString: 1 },
+          },
+        },
+      ],
+    },
+  };
+  const tp = writeTranscript(dir, [
+    ...base,
+    poisoned,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:none-found\nsecurity:none-found\nedge:none-found</self-review>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  // edge-секция объявлена, premortem-агента нет → fake-decl. Главное — блок ЕСТЬ.
+  expectBlock(r.stdout, "J");
+});
+
+test("triggerJ: premortem-агент на haiku → block (weak-edge-model)", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstTask(
+      "general-purpose",
+      "premortem review",
+      "премортем: top-5 гипотез",
+      "claude-haiku-4-5-20251001",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:none-found\nsecurity:none-found\nedge:none-found</self-review>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "J");
+  assert.match(r.stdout, /haiku/);
+});
+
+test("triggerJ: premortem перезапущен на sonnet после haiku → блока нет", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstTask(
+      "general-purpose",
+      "premortem review",
+      "премортем: top-5",
+      "haiku",
+    ),
+    asstTask(
+      "general-purpose",
+      "premortem review",
+      "премортем: top-5",
+      "sonnet",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:none-found\nsecurity:none-found\nedge:none-found</self-review>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  assert.strictEqual(r.stdout.trim(), "");
+});
+
+test("triggerJ: premortem без override модели (наследование сессии) — не блок", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstTask("general-purpose", "premortem review", "премортем: top-5 гипотез"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:none-found\nsecurity:none-found\nedge:none-found</self-review>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  assert.strictEqual(r.stdout.trim(), "");
+});
+
+test("triggerJ: haiku-премортем при MAIN_SKILL_VERIFY_PREMORTEM=0 — не блок", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstTask("general-purpose", "premortem review", "премортем", "haiku"),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n<self-review>code:none-found\nsecurity:none-found</self-review>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "0",
+  });
+  assert.strictEqual(r.stdout.trim(), "");
+});
+
+test("triggerJ: ANSI в имени модели санитизируется в reason", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstTask("superpowers:code-reviewer", "review", "code review please"),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+    ),
+    asstTask(
+      "general-purpose",
+      "premortem review",
+      "премортем",
+      "claude-haiku-4-5[2K[1Aevil",
+    ),
+    asstText(
+      SUCCESS +
+        " " +
+        EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+        "\n" +
+        PREMORTEM_OK +
+        "\n<self-review>code:none-found\nsecurity:none-found\nedge:none-found</self-review>",
+    ),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "J");
+  // stdout — JSON, ESC там экранирован: проверяем распарсенный reason.
+  const parsed = JSON.parse(r.stdout);
+  assert.ok(
+    !parsed.reason.includes("\x1b"),
+    "reason содержит ESC после sanitize",
+  );
+  assert.match(parsed.reason, /haiku/, "имя модели должно эхо-иться в reason");
 });
 
 test("triggerJ: review=code + премортем включён — edge-секция НЕ требуется", () => {

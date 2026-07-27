@@ -617,6 +617,85 @@ test("findReviewAgentCalls: premortem-линза распознаётся (edge)
   assert.strictEqual(ru.edge, true);
 });
 
+test("findReviewAgentCalls: edgeModel — модель последнего premortem-вызова", () => {
+  const none = checks.findReviewAgentCalls([
+    asstTool("Task", { subagent_type: "general-purpose", prompt: "премортем" }),
+  ]);
+  assert.strictEqual(none.edgeModel, "");
+  const pinned = checks.findReviewAgentCalls([
+    asstTool("Task", {
+      subagent_type: "general-purpose",
+      model: "sonnet",
+      prompt: "премортем: гипотезы",
+    }),
+  ]);
+  assert.strictEqual(pinned.edgeModel, "sonnet");
+  // Перезапуск: побеждает последний вызов — его находки и идут в <review-triage>.
+  const rerun = checks.findReviewAgentCalls([
+    asstTool("Task", {
+      subagent_type: "general-purpose",
+      model: "haiku",
+      prompt: "премортем: гипотезы",
+    }),
+    asstTool("Task", {
+      subagent_type: "general-purpose",
+      model: "sonnet",
+      prompt: "премортем: гипотезы",
+    }),
+  ]);
+  assert.strictEqual(rerun.edgeModel, "sonnet");
+});
+
+test("findReviewAgentCalls: объект без callable toString не роняет обход", () => {
+  // String({toString: 1}) бросает TypeError → необёрнутый throw увёл бы весь
+  // Stop-хук в silent exit и погасил все триггеры разом.
+  const r = checks.findReviewAgentCalls([
+    asstTool("Task", {
+      subagent_type: { toString: 1 },
+      description: { toString: 1 },
+      prompt: "премортем",
+      model: { toString: 1 },
+    }),
+  ]);
+  assert.strictEqual(r.edge, true);
+  assert.strictEqual(r.edgeModel, "");
+  assert.strictEqual(checks.isWeakPremortemModel(r.edgeModel), false);
+});
+
+test("safeInputStr: не-строки схлопываются, длина капится", () => {
+  assert.strictEqual(checks.safeInputStr({ toString: 1 }), "");
+  assert.strictEqual(checks.safeInputStr(null), "");
+  assert.strictEqual(checks.safeInputStr(undefined), "");
+  assert.strictEqual(checks.safeInputStr(["haiku"]), "");
+  assert.strictEqual(checks.safeInputStr(42), "42");
+  assert.strictEqual(checks.safeInputStr("x".repeat(5000)).length, 2000);
+  assert.strictEqual(checks.safeInputStr("x".repeat(5000), 200).length, 200);
+});
+
+test("isWeakPremortemModel: алиас и полный ID haiku — да, остальное — нет", () => {
+  assert.strictEqual(checks.isWeakPremortemModel("haiku"), true);
+  assert.strictEqual(
+    checks.isWeakPremortemModel("claude-haiku-4-5-20251001"),
+    true,
+  );
+  assert.strictEqual(checks.isWeakPremortemModel("Haiku"), true);
+  assert.strictEqual(
+    checks.isWeakPremortemModel("us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+    true,
+  );
+  assert.strictEqual(checks.isWeakPremortemModel("sonnet"), false);
+  assert.strictEqual(checks.isWeakPremortemModel("claude-opus-4-8"), false);
+  // Кастомное имя деплоя у не-Anthropic провайдера: подстрока haiku, но модель
+  // за ней может быть любого класса — подстрочный матч дал бы ложный блок.
+  assert.strictEqual(checks.isWeakPremortemModel("prod-haiku-router"), false);
+  assert.strictEqual(checks.isWeakPremortemModel("haiku-legacy-alias"), false);
+  assert.strictEqual(checks.isWeakPremortemModel("  haiku  "), true);
+  // Не передан → наследование модели сессии, нарушением не считается.
+  assert.strictEqual(checks.isWeakPremortemModel(""), false);
+  assert.strictEqual(checks.isWeakPremortemModel(undefined), false);
+  assert.strictEqual(checks.isWeakPremortemModel(null), false);
+});
+
 // ─── премортем: parsePremortemBlock / validatePremortem / findPremortemBlocks ─
 
 test("parsePremortemBlock: валидные записи с → и ->", () => {

@@ -149,7 +149,7 @@ race:tests/auth.test.ts:test_concurrent_login
 
 - code-review (качество, паттерны, дублирование, непокрытые edge-cases, конвенции) — модель `sonnet`: структурный обход диффа не требует топ-модели; есть superpowers → промпт из `requesting-code-review` (шаблон `code-reviewer.md`).
 - security-review по OWASP Top-10 (injection / auth-bypass / SSRF / редиректы / weak crypto / leaked secrets / deserialization / rate-limit / TOCTOU / path traversal) на конкретные изменённые файлы — без `model` override: false negative дороже стоимости.
-- premortem-review («что сломается в проде»: top-5 гипотез, каждая = система + точное ограничение с числом + ломающий вход + симптом; generic не считается; не уверен в лимите → WebFetch официальных доков) — модель `sonnet`, не haiku: ценность — специфичность гипотез (цитаты доков, точные коды ошибок). Находки → `<review-triage>` с источником `edge:`.
+- premortem-review («что сломается в проде»: top-5 гипотез, каждая = система + точное ограничение с числом + ломающий вход + симптом; generic не считается; не уверен в лимите → WebFetch официальных доков) — модель `sonnet`, не haiku (явный haiku в вызове блокирует триггер J): ценность — специфичность гипотез (цитаты доков, точные коды ошибок). Находки → `<review-triage>` с источником `edge:`.
 
 **Триаж каждого замечания** (через `superpowers:receiving-code-review` если установлен, иначе той же дисциплиной): applied — применить; rejected/deferred — обосновать технически (file:line, конкретный риск, метрика, цитата), без performative-agreement и отмазок «minor / вне scope».
 
