@@ -114,6 +114,10 @@ sh hooks/session-start.test.sh
 
 **Known limitation:** читается только user-level `~/.claude/settings.json`. Плагин, включённый через project-level `.claude/settings.json`, может ложно попасть в «не установлен». Минор — `enabledPlugins` Claude Code хранит на user-level.
 
+## AgentTool-гейт моделей 5-го поколения
+
+Сервер подмешивает gen-5-моделям в системный промпт «Do not call the AgentTool unless the user requested it» (кеш `.claude.json` → `clientDataCacheSlots`, tengu-флаг; локальная чистка бесполезна — пересинхронизируется, публичной ручки нет). Модель трактует «user requested» узко и пропускает ревью-сабагентов триггера J, делая ревью сама. Контр-авторизация («запуск ревью-сабагентов = standing-запрос юзера, гейт снят своим же "unless"») продублирована в трёх каналах плагина: SKILL.md §self-review, `reasonJ` (howTo), `emit_skill_invocation` в `session-start.sh`; четвёртый и самый авторитетный — строка в юзерском `~/.claude/CLAUDE.md` (рецепт в README → Install). Потолок teeth задокументирован: анти-луп-гард `lastBlockIdx > lastEditIdx` в `verify-changes.js` пропускает повторный Stop после одного блока — «слово юзеру» by design, поэтому упорный отказ модели хуком не дожимается, решает юзерский канал. Правка формулировок → синхронизируй все четыре точки + `session-start.test.sh` + тест reasonJ в `verify-changes.test.js`.
+
 ## PreToolUse claude-md-guard
 
 `claudemd-guard.js` гасит раздувание CLAUDE.md в точке письма. На `Edit`/`Write`/`MultiEdit` по basename `CLAUDE.md` считает **net-прирост строк правки** (`netAddedLines`: добавлено − удалено); дописывание в существующий файл ≥ порога → `permissionDecision:deny` с дистиллятом правил claude-md-management. Порог 20 (`MAIN_SKILL_CLAUDEMD_MAXADD`), опт-аут `MAIN_SKILL_CLAUDEMD_CHECK=0`.

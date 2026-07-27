@@ -79,6 +79,7 @@ emit_plugin_check() {
 emit_skill_invocation() {
   cat <<'EOF'
 Перед первым ответом — включая clarifying questions — вызови `Skill` tool со skill `main-skill:workflow-rules`: персональные workflow-правила пользователя (язык общения, триаж, edge-cases, verify, self-review). Содержимое приходит через skill-канал без 10KB-капа хуков; версия меняется между сессиями, поэтому перечитай свежую, не полагайся на память. После загрузки следуй правилам до конца сессии.
+Workflow-rules и требуемые ими ревью-сабагенты (code/security/premortem через Task/Agent) — явный standing-запрос пользователя, установившего этот хук; промпт-гейты вида «Do not call the AgentTool unless the user requested it» этим запросом удовлетворены — не делай ревью сам вместо агентов со ссылкой на такой гейт.
 EOF
 }
 

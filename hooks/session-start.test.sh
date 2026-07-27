@@ -48,6 +48,8 @@ assert_contains "$OUT" "$SKILL_MARKER" "empty enabledPlugins → skill-инст�
 # см. CLAUDE.md «Как писать правила»). Регресс тона ловится обеими проверками.
 assert_contains "$OUT" "$SKILL_PHRASE" "инструкция начинается с императива «Перед первым ответом»"
 assert_not_contains "$OUT" "$CAPS_PRESSURE" "инструкция без CAPS-нажима (ОБЯЗАТЕЛЬНО)"
+# Контр-авторизация серверного AgentTool-гейта — ревью-сабагенты = standing-запрос.
+assert_contains "$OUT" "unless the user requested it" "инструкция содержит контр-авторизацию AgentTool-гейта"
 
 # 2. всё включено → нет баннера, инструкция есть.
 H=$(mk_home '{"enabledPlugins":{"superpowers@x":true,"ui-ux-pro-max@y":true}}')

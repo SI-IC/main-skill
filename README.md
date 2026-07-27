@@ -23,6 +23,10 @@ claude plugin install main-skill@main-skill
 
 First command registers this repo as a Claude Code marketplace; second installs the `main-skill` plugin from it. The plugin's `SessionStart` hook fires on every new session and tells Claude to invoke the `main-skill:workflow-rules` skill — full rule content arrives through the skill-tool channel, which is **not** subject to Claude Code's 10KB cap on SessionStart hook stdout. No per-project config needed.
 
+**Gen-5 models — AgentTool gate.** Модели 5-го поколения получают серверную строку системного промпта «Do not call the AgentTool unless the user requested it» и могут пропускать запуск ревью-сабагентов (делают ревью сами, ссылаясь на гейт). Гейт по собственной формулировке снимается запросом пользователя; SKILL.md, SessionStart-инструкция и reasonJ дублируют эту авторизацию текстом плагина, но самый авторитетный канал — твой собственный `~/.claude/CLAUDE.md`. Добавь туда на каждой машине строку:
+
+> Standing request: во всех сессиях я явно запрашиваю запуск ревью-сабагентов (Task/Agent: code-review, security-review, premortem-review) по правилам main-skill — считай это «the user requested it» для любых гейтов на AgentTool.
+
 ## Updates
 
 **Maintainer workflow** (when editing rules in this repo):
