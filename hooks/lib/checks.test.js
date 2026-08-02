@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const checks = require("./checks");
 
 function tmp() {
@@ -2653,6 +2654,27 @@ test("isRenderVerifyCmd: playwright через свой скрипт засчи�
     !checks.isRenderVerifyCmd("cat scratch/verify.mjs", ctx()),
     "не-раннер не засчитывается",
   );
+});
+
+test("isRenderVerifyCmd: не-регулярный файл на месте скрипта не читается", () => {
+  const dir = browserScriptDir();
+  fs.mkdirSync(path.join(dir, "asdir.mjs"), { recursive: true });
+  assert.ok(
+    !checks.isRenderVerifyCmd("node asdir.mjs", { cwd: dir, cache: new Map() }),
+    "каталог с именем скрипта прошёл isFile-guard",
+  );
+  const fifo = path.join(dir, "pipe.mjs");
+  const mk = spawnSync("mkfifo", [fifo]);
+  if (mk.status === 0) {
+    const t0 = Date.now();
+    assert.ok(
+      !checks.isRenderVerifyCmd("node pipe.mjs", {
+        cwd: dir,
+        cache: new Map(),
+      }),
+    );
+    assert.ok(Date.now() - t0 < 2000, "чтение FIFO подвесило пробу");
+  }
 });
 
 test("isRenderVerifyCmd: без ctx в fs не ходит — обратная совместимость", () => {

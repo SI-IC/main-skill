@@ -2859,6 +2859,24 @@ test("trace: файл больше капа не растёт", () => {
   assert.strictEqual(fs.statSync(trace).size, before, "кап trace не соблюдён");
 });
 
+test("trace: недоступный для записи путь не ломает блокировку", () => {
+  const { dir, tp } = blockingDscenario();
+  const locked = path.join(dir, "locked");
+  fs.mkdirSync(locked, { recursive: true });
+  fs.chmodSync(locked, 0o500);
+  try {
+    expectBlock(
+      runHook(tp, {
+        CLAUDE_PROJECT_DIR: dir,
+        MAIN_SKILL_VERIFY_TRACE: path.join(locked, "trace.jsonl"),
+      }).stdout,
+      "D",
+    );
+  } finally {
+    fs.chmodSync(locked, 0o700);
+  }
+});
+
 test("trace: MAIN_SKILL_VERIFY_TRACE=1 пишет под HOME/.claude", () => {
   const { dir, tp } = blockingDscenario();
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "msv-trhome-"));
