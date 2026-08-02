@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const checks = require("./lib/checks");
 const { isDisabled } = require("./lib/session-disabled");
@@ -7,6 +8,12 @@ const { isDisabled } = require("./lib/session-disabled");
 // Не менять, потому что без капа сессия с image-вложениями съедает память
 // Node-процесса хука.
 const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024;
+
+const TRACE_MAX_BYTES = 5 * 1024 * 1024;
+
+const TAIL_WAIT_DEFAULT_MS = 2000;
+const TAIL_WAIT_MAX_MS = 10_000;
+const TAIL_WAIT_STEP_MS = 100;
 
 // Не менять, потому что это канонический набор для всего репо (остальные хуки
 // копируют его): C0 + DEL + C1 (U+009B — 8-bit CSI, xterm читает как ESC[ →
@@ -25,6 +32,35 @@ function trunc(s, n = 200) {
   return t.length > n ? t.slice(0, n) + "…" : t;
 }
 
+// Не менять, потому что Claude Code для Stop-хуков не сохраняет ни stdout, ни stderr: тихий выход виден только в своём файле.
+function tracePath() {
+  const v = process.env.MAIN_SKILL_VERIFY_TRACE;
+  if (!v) return null;
+  if (v !== "1") return v;
+  const home = process.env.HOME || os.homedir();
+  return home
+    ? path.join(home, ".claude", "main-skill-verify-trace.jsonl")
+    : null;
+}
+
+function trace(exit, extra = {}) {
+  const fp = tracePath();
+  if (!fp) return;
+  try {
+    let size = 0;
+    try {
+      size = fs.statSync(fp).size;
+    } catch {
+      size = 0;
+    }
+    if (size > TRACE_MAX_BYTES) return;
+    const rec = { ts: new Date().toISOString(), exit, ...extra };
+    fs.appendFileSync(fp, JSON.stringify(rec) + "\n");
+  } catch {
+    return;
+  }
+}
+
 let payload = "";
 process.stdin.on("data", (c) => (payload += c));
 process.stdin.on("end", () => {
@@ -36,16 +72,16 @@ process.stdin.on("end", () => {
 });
 
 function main(p) {
-  if (isDisabled()) return;
+  if (isDisabled()) return trace("disabled");
   if (
     process.env.MAIN_SKILL_VERIFY_CHANGES === "0" ||
     process.env.MAIN_SKILL_VERIFY_FRONTEND === "0"
   ) {
-    return;
+    return trace("env-off");
   }
 
   const tp = p.transcript_path;
-  if (!tp || !fs.existsSync(tp)) return;
+  if (!tp || !fs.existsSync(tp)) return trace("no-transcript");
 
   // Не менять, потому что без realpath+isFile симлинк `~/.claude/x.jsonl → /etc/passwd`
   // подсунет хуку произвольный файл, а FIFO подвесит чтение.
@@ -53,27 +89,15 @@ function main(p) {
   try {
     resolvedTp = fs.realpathSync(tp);
     const st = fs.statSync(resolvedTp);
-    if (!st.isFile()) return;
-    if (st.size > MAX_TRANSCRIPT_BYTES) return;
+    if (!st.isFile()) return trace("transcript-not-file");
+    if (st.size > MAX_TRANSCRIPT_BYTES) return trace("transcript-too-big");
   } catch {
-    return;
+    return trace("transcript-unreadable");
   }
 
-  const lines = fs
-    .readFileSync(resolvedTp, "utf8")
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((l) => {
-      try {
-        return JSON.parse(l);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-
-  const lastText = findLastAssistantText(lines);
-  if (!lastText) return;
+  const { lines, lastText, waitedMs, settled } =
+    readSettledTranscript(resolvedTp);
+  if (!lastText) return trace("no-last-text", { waitedMs, settled });
 
   const successPat =
     /(^|[^\p{L}\p{N}_])(готово|готов|готова|done|fixed|fix(ed)?|works?|работает|пофиксил|починил|ready|complete[d]?|применил|применён|примен[её]н|pushed|bumped|shipped|deployed)([^\p{L}\p{N}_]|$)/iu;
@@ -88,7 +112,9 @@ function main(p) {
     delegatePat.test(lastText) &&
     /```[a-z]*\s*\n[\s\S]*?\n```|`[^`\n]{3,}`/m.test(lastText);
 
-  if (!hasSuccess && !hasDisclaimer && !hasDelegation) return;
+  if (!hasSuccess && !hasDisclaimer && !hasDelegation) {
+    return trace("no-claim", { waitedMs, settled });
+  }
 
   const classify = (fp = "") => {
     const f = String(fp);
@@ -154,6 +180,10 @@ function main(p) {
   let lastBlockIdx = -1;
   let lastDelegableBashIdx = -1;
   const frontendEdits = [];
+  const renderCtx = {
+    cwd: process.env.CLAUDE_PROJECT_DIR || "",
+    cache: new Map(),
+  };
 
   lines.forEach((e, idx) => {
     if (e.type !== "assistant") return;
@@ -185,7 +215,7 @@ function main(p) {
         const cmd = String(inp.command || "");
         lastDelegableBashIdx = idx;
 
-        const isRenderCmd = checks.isRenderVerifyCmd(cmd);
+        const isRenderCmd = checks.isRenderVerifyCmd(cmd, renderCtx);
         if (isRenderCmd) lastRenderIdx = idx;
 
         // Не менять, потому что квантификаторы обязаны быть ограничены ({0,300}):
@@ -288,6 +318,9 @@ function main(p) {
 
   let trigger = null;
   let triggerData = null;
+  // Не менять, потому что анти-луп даёт один блок на пачку правок: по одному ритуалу за раз F/N/J до Claude не доходят.
+  const rituals = [];
+  const addRitual = (t, d) => rituals.push({ t, d });
 
   if (hasDelegation && lastDelegableBashIdx >= 0) {
     const interactiveHint =
@@ -302,7 +335,9 @@ function main(p) {
   if (!trigger && lastEditIdx >= 0) {
     // Не менять, потому что без этого выхода хук блокирует Stop бесконечно, когда
     // Claude не может выполнить требование: одно слово юзеру — by design.
-    if (lastBlockIdx > lastEditIdx) return;
+    if (lastBlockIdx > lastEditIdx) {
+      return trace("anti-loop", { lastBlockIdx, lastEditIdx });
+    }
 
     const verifiedAfterEdit = lastVerifyIdx > lastEditIdx;
     const attemptedAfterEdit = lastAttemptIdx > lastEditIdx;
@@ -310,8 +345,7 @@ function main(p) {
     if (hasDisclaimer && !attemptedAfterEdit) {
       trigger = "B";
     } else if (hasSuccess) {
-      // Не менять, потому что порядок определяет, какое требование Claude увидит
-      // первым: дешёвые мехчеки (lint, парный тест) идут раньше дорогих ритуалов.
+      // Не менять, потому что порядок внутри мехчеков ставит дешёвые (lint, парный тест) раньше дорогих.
       const repoRoot = checks.resolveRepoRoot(
         process.env.CLAUDE_PROJECT_DIR,
         allEdits,
@@ -410,17 +444,15 @@ function main(p) {
         }
       }
 
-      if (!trigger) {
+      {
         const parsed = checks.parseEdgeCasesBlock(lastText);
         if (!parsed || parsed.entries.length === 0) {
-          trigger = "F";
-          triggerData = { kind: "missing" };
+          addRitual("F", { kind: "missing" });
         } else {
           const validation = checks.validateEdgeCases(parsed, repoRoot);
           const failed = validation.filter((v) => !v.ok);
           if (failed.length > 0) {
-            trigger = "F";
-            triggerData = { kind: "invalid", failed };
+            addRitual("F", { kind: "invalid", failed });
           }
         }
       }
@@ -440,16 +472,14 @@ function main(p) {
 
       // Не менять, потому что позиция блока не проверяется намеренно: блокировка не
       // отматывает время, ретро-премортем — единственное, что зуб может потребовать.
-      if (
-        !trigger &&
-        premortemEnabled &&
-        observableSrcEdits.length > 0 &&
-        !isTrivial
-      ) {
+      if (premortemEnabled && observableSrcEdits.length > 0 && !isTrivial) {
         const blocks = checks.findPremortemBlocks(lines);
         if (blocks.length === 0) {
-          trigger = "N";
-          triggerData = { kind: "missing", securityPath, addedNonTrivialLines };
+          addRitual("N", {
+            kind: "missing",
+            securityPath,
+            addedNonTrivialLines,
+          });
         } else {
           // Не менять, потому что чинить Claude будет ПОСЛЕДНИЙ блок — его разбор и
           // должен попасть в reason.
@@ -469,12 +499,11 @@ function main(p) {
             }
           }
           if (!anyValid) {
-            trigger = "N";
-            triggerData = {
+            addRitual("N", {
               kind: "invalid",
               failed: lastValidation.filter((v) => !v.ok),
               validCount: lastValidation.filter((v) => v.ok).length,
-            };
+            });
           }
         }
       }
@@ -494,28 +523,26 @@ function main(p) {
       const reviewEnabled =
         reviewMode !== "0" && (reviewWantCode || reviewWantSec);
 
-      if (!trigger && reviewEnabled && observableSrcEdits.length > 0) {
+      if (reviewEnabled && observableSrcEdits.length > 0) {
         const selfReview = checks.parseSelfReview(lastText);
 
         // Не менять, потому что `skipped:trivial` в нетривиальной правке обязан
         // блокировать: иначе строка-заглушка закрывает весь триггер J.
         if (!isTrivial) {
           if (!selfReview) {
-            trigger = "J";
-            triggerData = {
+            addRitual("J", {
               kind: "missing",
               securityPath,
               addedNonTrivialLines,
               reviewMode,
-            };
+            });
           } else if (selfReview.skippedTrivial) {
-            trigger = "J";
-            triggerData = {
+            addRitual("J", {
               kind: "fake-skip",
               securityPath,
               addedNonTrivialLines,
               reviewMode,
-            };
+            });
           } else {
             const missingSections = [];
             if (reviewWantCode && !selfReview.code)
@@ -525,12 +552,11 @@ function main(p) {
             if (reviewWantEdge && !selfReview.edge)
               missingSections.push("edge");
             if (missingSections.length > 0) {
-              trigger = "J";
-              triggerData = {
+              addRitual("J", {
                 kind: "missing-sections",
                 missingSections,
                 reviewMode,
-              };
+              });
             } else {
               // Не менять, потому что аномалия разбора транскрипта обязана считаться
               // «сабагент не запускался»: silent-exit здесь снимает весь триггер J.
@@ -571,8 +597,7 @@ function main(p) {
               )
                 fakeSections.push("edge");
               if (fakeSections.length > 0) {
-                trigger = "J";
-                triggerData = { kind: "fake-decl", fakeSections, reviewMode };
+                addRitual("J", { kind: "fake-decl", fakeSections, reviewMode });
               } else if (
                 reviewWantEdge &&
                 sectionsRequiringCall("edge") &&
@@ -581,11 +606,10 @@ function main(p) {
               ) {
                 // Не менять, потому что модель берётся из ПОСЛЕДНЕГО premortem-вызова: именно
                 // его находки уходят в триаж.
-                trigger = "J";
-                triggerData = {
+                addRitual("J", {
                   kind: "weak-edge-model",
                   model: calls.edgeModel,
-                };
+                });
               } else {
                 const needsTriage =
                   (reviewWantCode &&
@@ -606,14 +630,12 @@ function main(p) {
                 if (needsTriage) {
                   const triage = checks.parseReviewTriage(lastText);
                   if (!triage || triage.entries.length === 0) {
-                    trigger = "K";
-                    triggerData = { kind: "missing" };
+                    addRitual("K", { kind: "missing" });
                   } else {
                     const validation = checks.validateReviewTriage(triage);
                     const failed = validation.filter((v) => !v.ok);
                     if (failed.length > 0) {
-                      trigger = "K";
-                      triggerData = { kind: "invalid", failed };
+                      addRitual("K", { kind: "invalid", failed });
                     } else {
                       // Не менять, потому что edge гейтится наравне с остальными: иначе в режиме
                       // =code/=security триаж из одних edge-записей закрывает K впустую.
@@ -625,12 +647,11 @@ function main(p) {
                             (e.source === "edge" && !reviewWantEdge)),
                       );
                       if (wrongSource.length > 0) {
-                        trigger = "K";
-                        triggerData = {
+                        addRitual("K", {
                           kind: "wrong-source",
                           wrongSource,
                           reviewMode,
-                        };
+                        });
                       }
                     }
                   }
@@ -669,7 +690,9 @@ function main(p) {
     }
   }
 
-  if (!trigger) return;
+  if (!trigger && rituals.length === 0) {
+    return trace("no-trigger", { lastEditIdx, lastEditKind });
+  }
 
   const hintsByKind = {
     frontend: [
@@ -881,8 +904,8 @@ function main(p) {
     "Опт-аут: MAIN_SKILL_VERIFY_RENDER=0 (весь хук: MAIN_SKILL_VERIFY_CHANGES=0).",
   ].join("\n");
 
-  const reasonF = (() => {
-    if (triggerData?.kind === "missing") {
+  const reasonF = (ritualData) => {
+    if (ritualData?.kind === "missing") {
       return [
         "[main-skill:verify-changes] Stop заблокирован (триггер F: нет декларации edge-cases).",
         "",
@@ -916,7 +939,7 @@ function main(p) {
         "Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0",
       ].join("\n");
     }
-    const failed = triggerData?.failed || [];
+    const failed = ritualData?.failed || [];
     return [
       "[main-skill:verify-changes] Stop заблокирован (триггер F: декларация edge-cases невалидна).",
       "",
@@ -936,7 +959,7 @@ function main(p) {
       "",
       "Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0",
     ].join("\n");
-  })();
+  };
 
   const reasonG = [
     "[main-skill:verify-changes] Stop заблокирован (триггер G: лайнтер красный).",
@@ -967,7 +990,7 @@ function main(p) {
     "Опт-аут (редко): MAIN_SKILL_VERIFY_CHANGES=0",
   ].join("\n");
 
-  const reasonJ = (() => {
+  const reasonJ = (ritualData) => {
     const baseHead =
       "[main-skill:verify-changes] Stop заблокирован (триггер J: нет валидного <self-review> блока).";
     const formatHelp = [
@@ -1007,7 +1030,7 @@ function main(p) {
       "Опт-аут: MAIN_SKILL_VERIFY_REVIEW=0 (целиком) | =code (только code) | =security (только security);",
       "edge-секцию отключает MAIN_SKILL_VERIFY_PREMORTEM=0.",
     ];
-    if (triggerData?.kind === "fake-skip") {
+    if (ritualData?.kind === "fake-skip") {
       return [
         baseHead.replace(
           "нет валидного <self-review> блока",
@@ -1015,40 +1038,40 @@ function main(p) {
         ),
         "",
         `Ты пометил <self-review>skipped:trivial</self-review>, но diff НЕ тривиальный:`,
-        `  • добавленных non-trivial строк: ${triggerData.addedNonTrivialLines} (порог skip: < 20)`,
-        `  • security-sensitive путь затронут: ${triggerData.securityPath ? "да" : "нет"}`,
+        `  • добавленных non-trivial строк: ${ritualData.addedNonTrivialLines} (порог skip: < 20)`,
+        `  • security-sensitive путь затронут: ${ritualData.securityPath ? "да" : "нет"}`,
         "",
         "Self-review обязателен. " +
-          (triggerData.securityPath
+          (ritualData.securityPath
             ? "Особенно тут — затронут auth/api/sql/crypto/payment/admin/session/token/..."
             : "Diff ≥ 20 добавленных нетривиальных observable-строк."),
         "",
         ...howTo,
       ].join("\n");
     }
-    if (triggerData?.kind === "missing-sections") {
+    if (ritualData?.kind === "missing-sections") {
       return [
         baseHead.replace(
           "нет валидного <self-review> блока",
           "не все секции в <self-review>",
         ),
         "",
-        `Режим: MAIN_SKILL_VERIFY_REVIEW=${triggerData.reviewMode}`,
-        `Отсутствуют секции: ${triggerData.missingSections.join(", ")}`,
+        `Режим: MAIN_SKILL_VERIFY_REVIEW=${ritualData.reviewMode}`,
+        `Отсутствуют секции: ${ritualData.missingSections.join(", ")}`,
         "",
         ...formatHelp,
         "",
         ...howTo,
       ].join("\n");
     }
-    if (triggerData?.kind === "fake-decl") {
+    if (ritualData?.kind === "fake-decl") {
       return [
         baseHead.replace(
           "нет валидного <self-review> блока",
           "декларация без реального запуска review-агента",
         ),
         "",
-        `Ты задекларировал секции [${triggerData.fakeSections.join(", ")}] в <self-review>, но в`,
+        `Ты задекларировал секции [${ritualData.fakeSections.join(", ")}] в <self-review>, но в`,
         "transcript этой сессии НЕТ соответствующих сабагент-вызовов (Task/Agent). Это враньё под видом дисциплины.",
         "",
         "Что считается реальным запуском:",
@@ -1060,14 +1083,14 @@ function main(p) {
         ...howTo,
       ].join("\n");
     }
-    if (triggerData?.kind === "weak-edge-model") {
+    if (ritualData?.kind === "weak-edge-model") {
       return [
         baseHead.replace(
           "нет валидного <self-review> блока",
           "premortem-линза запущена на haiku",
         ),
         "",
-        `premortem-агент вызван с model="${sanitize(trunc(triggerData.model, 60))}".`,
+        `premortem-агент вызван с model="${sanitize(trunc(ritualData.model, 60))}".`,
         "workflow-rules §self-review требует для этой линзы sonnet и дословно «не haiku»:",
         "ценность премортема — специфичность гипотез (точные лимиты, коды ошибок, цитаты доков),",
         "именно она первой деградирует на самой дешёвой модели. Экономия здесь покупается за счёт",
@@ -1093,9 +1116,9 @@ function main(p) {
       "ревью через суб-агентов и зафиксировать результат блоком <self-review>.",
       "",
       `Диагностика (почему J активирован):`,
-      `  • добавленных non-trivial observable строк: ${triggerData?.addedNonTrivialLines ?? "?"} (порог skip: < 20)`,
-      `  • security-sensitive путь затронут: ${triggerData?.securityPath ? "да" : "нет"}`,
-      `  • режим: MAIN_SKILL_VERIFY_REVIEW=${triggerData?.reviewMode ?? "both"}`,
+      `  • добавленных non-trivial observable строк: ${ritualData?.addedNonTrivialLines ?? "?"} (порог skip: < 20)`,
+      `  • security-sensitive путь затронут: ${ritualData?.securityPath ? "да" : "нет"}`,
+      `  • режим: MAIN_SKILL_VERIFY_REVIEW=${ritualData?.reviewMode ?? "both"}`,
       "",
       "Тривиальные правки (< 20 добавленных нетривиальных observable-строк И не auth/api/sql/crypto/...)",
       "self-review не требуют — у тебя случай иной.",
@@ -1104,9 +1127,9 @@ function main(p) {
       "",
       ...howTo,
     ].join("\n");
-  })();
+  };
 
-  const reasonK = (() => {
+  const reasonK = (ritualData) => {
     const baseHead =
       "[main-skill:verify-changes] Stop заблокирован (триггер K: нет валидного <review-triage> блока).";
     const formatHelp = [
@@ -1128,7 +1151,7 @@ function main(p) {
       "«мелочь», «cosmetic», «not critical» и т.п.) без технического раскрытия — БЛОКИРУЕТСЯ.",
       "Раскрой каждое отвергнутое замечание: file:line, конкретный риск, метрика, цитата кода.",
     ];
-    if (triggerData?.kind === "invalid") {
+    if (ritualData?.kind === "invalid") {
       return [
         baseHead.replace(
           "нет валидного <review-triage> блока",
@@ -1136,14 +1159,14 @@ function main(p) {
         ),
         "",
         "Невалидные записи:",
-        ...(triggerData.failed || [])
+        ...(ritualData.failed || [])
           .slice(0, 10)
           .map(
             (v) =>
               `  • ${sanitize(trunc(v.entry?.raw || "<unparsed>"))} — ${sanitize(trunc(v.reason, 300))}`,
           ),
-        ...((triggerData.failed || []).length > 10
-          ? [`  … и ещё ${(triggerData.failed || []).length - 10}`]
+        ...((ritualData.failed || []).length > 10
+          ? [`  … и ещё ${(ritualData.failed || []).length - 10}`]
           : []),
         "",
         ...slopHelp,
@@ -1151,17 +1174,17 @@ function main(p) {
         ...formatHelp,
       ].join("\n");
     }
-    if (triggerData?.kind === "wrong-source") {
+    if (ritualData?.kind === "wrong-source") {
       return [
         baseHead.replace(
           "нет валидного <review-triage> блока",
           "записи в <review-triage> для отключённой секции",
         ),
         "",
-        `Режим: MAIN_SKILL_VERIFY_REVIEW=${triggerData.reviewMode}`,
+        `Режим: MAIN_SKILL_VERIFY_REVIEW=${ritualData.reviewMode}`,
         "Записи относятся к секции, которая отключена флагом (edge гейтится и",
         "MAIN_SKILL_VERIFY_PREMORTEM) — это означает что ты их выдумал или забыл переключить режим:",
-        ...(triggerData.wrongSource || [])
+        ...(ritualData.wrongSource || [])
           .slice(0, 10)
           .map((e) => `  • ${sanitize(trunc(e.raw))}`),
       ].join("\n");
@@ -1178,9 +1201,9 @@ function main(p) {
       "",
       ...formatHelp,
     ].join("\n");
-  })();
+  };
 
-  const reasonN = (() => {
+  const reasonN = (ritualData) => {
     const head =
       "[main-skill:verify-changes] Stop заблокирован (триггер N: нет валидного премортем-блока).";
     const formatHelp = [
@@ -1210,15 +1233,15 @@ function main(p) {
     const optOut =
       "Опт-аут: MAIN_SKILL_VERIFY_PREMORTEM=0 — и только он: MAIN_SKILL_VERIFY_REVIEW=0" +
       "\nтриггер N НЕ отключает (весь хук целиком: MAIN_SKILL_VERIFY_CHANGES=0).";
-    if (triggerData?.kind === "invalid") {
-      const failed = triggerData.failed || [];
+    if (ritualData?.kind === "invalid") {
+      const failed = ritualData.failed || [];
       return [
         head.replace(
           "нет валидного премортем-блока",
           "премортем-блок невалиден",
         ),
         "",
-        `В последнем блоке <premortem> валидных гипотез: ${triggerData.validCount ?? 0}` +
+        `В последнем блоке <premortem> валидных гипотез: ${ritualData.validCount ?? 0}` +
           ` (нужно ≥ ${checks.PREMORTEM_MIN_ENTRIES}, и все записи блока должны быть валидны).` +
           (failed.length ? " Невалидные записи:" : ""),
         ...failed
@@ -1240,9 +1263,9 @@ function main(p) {
       head,
       "",
       "Правка нетривиальна (" +
-        (triggerData?.securityPath
+        (ritualData?.securityPath
           ? "затронут security-sensitive путь"
-          : `${triggerData?.addedNonTrivialLines ?? "?"} добавленных нетривиальных строк, порог 20`) +
+          : `${ritualData?.addedNonTrivialLines ?? "?"} добавленных нетривиальных строк, порог 20`) +
         "), а в сессии нет блока <premortem>",
       "с гипотезами «что сломается в проде». Workflow-rules §2: премортем обязателен",
       "ДО первой observable-правки — happy-path bias ловится до кода, не после.",
@@ -1253,7 +1276,7 @@ function main(p) {
       "",
       optOut,
     ].join("\n");
-  })();
+  };
 
   const reasonL = (() => {
     const missing = triggerData?.missing || [];
@@ -1324,8 +1347,80 @@ function main(p) {
     L: reasonL,
     N: reasonN,
   };
-  const reason = reasonByTrigger[trigger] || reasonA;
+  const parts = [];
+  if (trigger) parts.push(reasonByTrigger[trigger] || reasonA);
+  for (const r of rituals) parts.push(reasonByTrigger[r.t](r.d));
+  const fired = [trigger, ...rituals.map((r) => r.t)].filter(Boolean);
+  const preamble =
+    fired.length > 1
+      ? `[main-skill:verify-changes] Сработало триггеров: ${fired.join(", ")} — блок один, закрывать надо все.\n\n`
+      : "";
+  const reason = preamble + parts.join(`\n\n${"─".repeat(66)}\n\n`);
+  trace("block", { fired, bytes: Buffer.byteLength(reason) });
   process.stdout.write(JSON.stringify({ decision: "block", reason }));
+}
+
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    return;
+  }
+}
+
+function parseTranscript(fp) {
+  return fs
+    .readFileSync(fp, "utf8")
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+// Не менять, потому что Claude Code дописывает финальное сообщение хода в JSONL уже после старта Stop-хука.
+function readSettledTranscript(fp) {
+  const rawBudget = Number(process.env.MAIN_SKILL_VERIFY_TAIL_WAIT_MS);
+  const budgetMs = Number.isFinite(rawBudget)
+    ? Math.max(0, Math.min(rawBudget, TAIL_WAIT_MAX_MS))
+    : TAIL_WAIT_DEFAULT_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + budgetMs;
+
+  let lines = [];
+  let lastText = "";
+  let prevSize = -1;
+  let settled = false;
+  for (;;) {
+    let size;
+    try {
+      const st = fs.statSync(fp);
+      if (!st.isFile() || st.size > MAX_TRANSCRIPT_BYTES) {
+        return {
+          lines,
+          lastText: "",
+          waitedMs: Date.now() - startedAt,
+          settled,
+        };
+      }
+      size = st.size;
+      lines = parseTranscript(fp);
+    } catch {
+      return { lines, lastText: "", waitedMs: Date.now() - startedAt, settled };
+    }
+    lastText = findLastAssistantText(lines);
+    // Не менять, потому что размер стабилен и до флаша, а непустой текст бывает и у stale-чтения предыдущего хода.
+    settled = Boolean(lastText) && size === prevSize;
+    if (settled || Date.now() >= deadline) break;
+    prevSize = size;
+    sleepSync(TAIL_WAIT_STEP_MS);
+  }
+  return { lines, lastText, waitedMs: Date.now() - startedAt, settled };
 }
 
 // Не менять, потому что оценивать можно только текст, после которого нет

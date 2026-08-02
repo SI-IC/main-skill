@@ -32,6 +32,7 @@ function runHook(transcript_path, env = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
+      MAIN_SKILL_VERIFY_TAIL_WAIT_MS: "0",
       MAIN_SKILL_VERIFY_LINT: "0",
       MAIN_SKILL_VERIFY_REVIEW: "0",
       MAIN_SKILL_VERIFY_DEPS: "0",
@@ -467,6 +468,36 @@ function asstMcp(name, input = {}) {
     message: { content: [{ type: "tool_use", name, input }] },
   };
 }
+
+test("triggerM: playwright через свой скрипт закрывает рендер-проверку", () => {
+  const dir = tmp();
+  writeFile(dir, "src/Card.tsx", CARD_TSX);
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
+  writeFile(
+    dir,
+    "scratch/verify.mjs",
+    'import { chromium } from "playwright";\nawait chromium.launch();\n',
+  );
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/Card.tsx")),
+    asstBash(`cd ${path.join(dir, "scratch")} && node verify.mjs "jwt" 2>&1`),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
+  ]);
+  expectNoBlock(runHook(tp, { CLAUDE_PROJECT_DIR: dir }).stdout);
+});
+
+test("triggerM: скрипт без браузерного драйвера рендер не закрывает", () => {
+  const dir = tmp();
+  writeFile(dir, "src/Card.tsx", CARD_TSX);
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
+  writeFile(dir, "scratch/verify.mjs", 'console.log("no browser");\n');
+  const tp = writeTranscript(dir, [
+    asstEdit(path.join(dir, "src/Card.tsx")),
+    asstBash(`cd ${path.join(dir, "scratch")} && node verify.mjs 2>&1`),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
+  ]);
+  expectBlock(runHook(tp, { CLAUDE_PROJECT_DIR: dir }).stdout, "M");
+});
 
 test("triggerM: фронт-правка с unit-прогоном, но без рендера — блокируется", () => {
   const dir = tmp();
@@ -966,6 +997,101 @@ function setupReviewBase(
 
 const SELF_REVIEW_OK = (codeStatus = "none-found", secStatus = "none-found") =>
   `<self-review>code:${codeStatus}\nsecurity:${secStatus}</self-review>`;
+
+test("агрегация: мехчек и ритуал приходят одним блоком", () => {
+  const dir = tmp();
+  writeFile(dir, "src/Card.tsx", CARD_TSX);
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEditWith(path.join(dir, "src/Card.tsx"), BIG_DIFF),
+    asstEdit(path.join(dir, "src/Card.test.tsx")),
+    asstBash("npx vitest run"),
+    asstText(SUCCESS),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "0",
+  });
+  const reason = JSON.parse(r.stdout).reason;
+  assert.match(reason, /триггер M\b/, "мехчек M обязан быть в reason");
+  assert.match(reason, /триггер F\b/, "ритуал F обязан быть в том же reason");
+});
+
+test("агрегация: J достижим, даже когда мехчек M уже сработал", () => {
+  const dir = tmp();
+  writeFile(dir, "src/Card.tsx", CARD_TSX);
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
+  const tp = writeTranscript(dir, [
+    asstEditWith(path.join(dir, "src/Card.tsx"), BIG_DIFF),
+    asstEdit(path.join(dir, "src/Card.test.tsx")),
+    asstBash("npx vitest run"),
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "code",
+  });
+  const reason = JSON.parse(r.stdout).reason;
+  assert.match(reason, /триггер M\b/);
+  assert.match(reason, /триггер J\b/, "до фикса J был недостижим за M");
+});
+
+test("агрегация: F, N и J приходят одним блоком", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [...base, asstText(SUCCESS)]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  const reason = JSON.parse(r.stdout).reason;
+  const heads = reason
+    .split("\n")
+    .filter((l) =>
+      l.startsWith("[main-skill:verify-changes] Stop заблокирован"),
+    );
+  assert.deepStrictEqual(
+    heads.map((h) => (h.match(/триггер ([A-N])/) || [])[1]),
+    ["F", "N", "J"],
+    `ожидались все три ритуала, получено: ${heads.join(" | ")}`,
+  );
+  assert.match(reason, /Сработало триггеров: F, N, J/);
+});
+
+test("агрегация: закрытый ритуал в блок не попадает", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  const reason = JSON.parse(r.stdout).reason;
+  assert.ok(!/триггер F\b/.test(reason), "валидный <edge-cases> закрыл F");
+  assert.match(reason, /триггер N\b/);
+  assert.match(reason, /триггер J\b/);
+});
+
+test("агрегация: одиночный ритуал приходит без разделителя", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...base,
+    asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/foo.test.ts", "empty")),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+  });
+  const reason = JSON.parse(r.stdout).reason;
+  assert.match(reason, /триггер J\b/);
+  assert.ok(!reason.includes("─────"), "лишний разделитель при одном триггере");
+});
 
 test("triggerJ: значительный diff без self-review блока → block", () => {
   const dir = tmp();
@@ -2396,6 +2522,7 @@ function runHookWithDeps(transcript_path, env = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
+      MAIN_SKILL_VERIFY_TAIL_WAIT_MS: "0",
       MAIN_SKILL_VERIFY_LINT: "0",
       MAIN_SKILL_VERIFY_REVIEW: "0",
       CLAUDE_PROJECT_DIR:
@@ -2592,6 +2719,162 @@ test("session-disabled: сентинел-файл под HOME → Stop не бл
   );
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, HOME: home });
   expectNoBlock(r.stdout);
+});
+
+function raceScenario() {
+  const dir = tmp();
+  writeFile(dir, "src/foo.ts", "x");
+  const entries = [
+    asstEdit(path.join(dir, "src/foo.ts")),
+    asstBash("curl -s http://localhost:3000/api/foo"),
+    asstText(
+      SUCCESS + " " + EDGE_CASES_BLOCK("tests/unit/foo.test.ts", "empty"),
+    ),
+  ];
+  const tp = path.join(dir, "transcript.jsonl");
+  const flushed = entries
+    .slice(0, -1)
+    .map((e) => JSON.stringify(e))
+    .join("\n");
+  fs.writeFileSync(tp, flushed);
+  const tail = "\n" + JSON.stringify(entries[entries.length - 1]);
+  return { dir, tp, tail };
+}
+
+test("flush-гонка: финальное сообщение дописано после старта хука → триггер всё равно виден", () => {
+  const { dir, tp, tail } = raceScenario();
+  const child = require("child_process").spawn(
+    "node",
+    [
+      "-e",
+      `const fs=require("fs");setTimeout(()=>fs.appendFileSync(${JSON.stringify(tp)},${JSON.stringify(tail)}),300);`,
+    ],
+    { detached: true, stdio: "ignore" },
+  );
+  child.unref();
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_TAIL_WAIT_MS: "3000",
+  });
+  expectBlock(r.stdout, "D");
+});
+
+test("flush-гонка: без ожидания тот же транскрипт даёт молчание (регресс до фикса)", () => {
+  const { dir, tp } = raceScenario();
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_TAIL_WAIT_MS: "0",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("flush-гонка: хвост так и не дописан → выход по бюджету, без зависания", () => {
+  const { dir, tp } = raceScenario();
+  const t0 = Date.now();
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_TAIL_WAIT_MS: "600",
+  });
+  const spent = Date.now() - t0;
+  expectNoBlock(r.stdout);
+  assert.ok(spent < 10_000, `хук завис: ${spent}ms`);
+});
+
+test("flush-гонка: бюджет ожидания зажат сверху и снизу", () => {
+  const src = fs.readFileSync(HOOK, "utf8");
+  assert.match(
+    src,
+    /Math\.max\(0,\s*Math\.min\(rawBudget,\s*TAIL_WAIT_MAX_MS\)\)/,
+    "бюджет из env обязан зажиматься в [0, TAIL_WAIT_MAX_MS]",
+  );
+});
+
+function traceLines(fp) {
+  if (!fs.existsSync(fp)) return [];
+  return fs
+    .readFileSync(fp, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+}
+
+test("trace: по умолчанию ничего не пишет", () => {
+  const { dir, tp } = blockingDscenario();
+  const trace = path.join(dir, "trace.jsonl");
+  expectBlock(runHook(tp, { CLAUDE_PROJECT_DIR: dir }).stdout, "D");
+  assert.ok(!fs.existsSync(trace), "trace создан без явной ручки");
+});
+
+test("trace: тихий выход по недописанному хвосту виден в файле", () => {
+  const { dir, tp } = raceScenario();
+  const trace = path.join(dir, "trace.jsonl");
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_TRACE: trace,
+    MAIN_SKILL_VERIFY_TAIL_WAIT_MS: "200",
+  });
+  expectNoBlock(r.stdout);
+  const recs = traceLines(trace);
+  assert.strictEqual(recs.length, 1);
+  assert.strictEqual(recs[0].exit, "no-last-text");
+  assert.strictEqual(recs[0].settled, false);
+  assert.ok(typeof recs[0].waitedMs === "number");
+});
+
+test("trace: блок пишет список сработавших триггеров", () => {
+  const { dir, tp } = blockingDscenario();
+  const trace = path.join(dir, "trace.jsonl");
+  expectBlock(
+    runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_TRACE: trace })
+      .stdout,
+    "D",
+  );
+  const recs = traceLines(trace);
+  assert.strictEqual(recs[0].exit, "block");
+  assert.deepStrictEqual(recs[0].fired, ["D", "F"]);
+  assert.ok(recs[0].bytes > 0);
+});
+
+test("trace: анти-луп и опт-аут различимы по коду выхода", () => {
+  const { dir, tp } = blockingDscenario();
+  const trace = path.join(dir, "trace.jsonl");
+  runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_TRACE: trace,
+    MAIN_SKILL_VERIFY_CHANGES: "0",
+  });
+  assert.strictEqual(traceLines(trace)[0].exit, "env-off");
+});
+
+test("trace: файл больше капа не растёт", () => {
+  const { dir, tp } = blockingDscenario();
+  const trace = path.join(dir, "trace.jsonl");
+  fs.writeFileSync(trace, "x".repeat(6 * 1024 * 1024));
+  const before = fs.statSync(trace).size;
+  expectBlock(
+    runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_VERIFY_TRACE: trace })
+      .stdout,
+    "D",
+  );
+  assert.strictEqual(fs.statSync(trace).size, before, "кап trace не соблюдён");
+});
+
+test("trace: MAIN_SKILL_VERIFY_TRACE=1 пишет под HOME/.claude", () => {
+  const { dir, tp } = blockingDscenario();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "msv-trhome-"));
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+  expectBlock(
+    runHook(tp, {
+      CLAUDE_PROJECT_DIR: dir,
+      MAIN_SKILL_VERIFY_TRACE: "1",
+      HOME: home,
+    }).stdout,
+    "D",
+  );
+  const recs = traceLines(
+    path.join(home, ".claude", "main-skill-verify-trace.jsonl"),
+  );
+  assert.strictEqual(recs[0].exit, "block");
 });
 
 test("reason-статика: reasonD/reasonG цитируют актуальные формулировки SKILL.md", () => {

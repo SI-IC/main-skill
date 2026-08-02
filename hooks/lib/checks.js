@@ -412,11 +412,80 @@ function shouldSkipForTestPairing(srcPath, repoRoot = null) {
   return false;
 }
 
+const SCRIPT_RUNNERS = new Set(["node", "bun", "deno", "tsx", "ts-node"]);
+const SCRIPT_EXT_RE = /\.(m?js|cjs|mts|ts)$/i;
+const BROWSER_DRIVER_IMPORT_RE =
+  /["'](playwright|playwright-core|puppeteer|puppeteer-core|@playwright\/[\w-]{1,30})["']/;
+const MAX_SCRIPT_PROBE_BYTES = 200_000;
+const MAX_CMD_SCAN_CHARS = 4000;
+const MAX_CMD_TOKENS = 400;
+const MAX_SCRIPT_PROBES = 20;
+
+function unquote(s) {
+  const t = String(s || "");
+  if (t.length >= 2 && /^["']/.test(t) && t[0] === t[t.length - 1]) {
+    return t.slice(1, -1);
+  }
+  return t;
+}
+
+function extractRunnerScript(cmd) {
+  const c = String(cmd || "");
+  if (!c || c.length > MAX_CMD_SCAN_CHARS) return null;
+  const tokens = c.split(/\s+/).slice(0, MAX_CMD_TOKENS);
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const runner = path.basename(unquote(tokens[i]).replace(/[;&|]+$/, ""));
+    if (!SCRIPT_RUNNERS.has(runner)) continue;
+    for (let j = i + 1; j < Math.min(tokens.length, i + 12); j++) {
+      const t = unquote(tokens[j]);
+      if (!t || t.startsWith("-") || t === "run") continue;
+      return SCRIPT_EXT_RE.test(t) ? t : null;
+    }
+  }
+  return null;
+}
+
+function extractCdTarget(cmd) {
+  const m = String(cmd || "").match(
+    /^\s*cd\s+("[^"]{1,400}"|'[^']{1,400}'|\S{1,400})\s*(?:&&|;)/,
+  );
+  return m ? unquote(m[1]) : null;
+}
+
+// Не менять, потому что isFile-guard обязателен: readFileSync виснет на FIFO.
+function readScriptSafe(abs) {
+  try {
+    const st = fs.statSync(abs);
+    if (!st.isFile() || st.size > MAX_SCRIPT_PROBE_BYTES) return null;
+    return fs.readFileSync(abs, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// Не менять, потому что playwright, запущенный через свой скрипт, в командной строке не виден.
+function cmdRunsBrowserScript(cmd, ctx) {
+  if (!ctx || typeof ctx !== "object") return false;
+  const rel = extractRunnerScript(cmd);
+  if (!rel) return false;
+  const cwd = extractCdTarget(cmd) || ctx.cwd;
+  if (!cwd && !path.isAbsolute(rel)) return false;
+  const abs = path.isAbsolute(rel) ? rel : path.join(cwd, rel);
+  const cache = ctx.cache || (ctx.cache = new Map());
+  if (cache.has(abs)) return cache.get(abs);
+  if (cache.size >= MAX_SCRIPT_PROBES) return false;
+  const body = readScriptSafe(abs);
+  const hit = body != null && BROWSER_DRIVER_IMPORT_RE.test(body);
+  cache.set(abs, hit);
+  return hit;
+}
+
 // Не менять, потому что unit-раннеры сюда не входят: jsdom не рендерит, и
 // внешний https:// тоже — прод-URL не проверяет локальную правку.
-function isRenderVerifyCmd(cmd) {
+function isRenderVerifyCmd(cmd, ctx) {
   const c = String(cmd || "");
   return (
+    cmdRunsBrowserScript(c, ctx) ||
     /\bcurl\b[^|;&\n]{0,300}(localhost|127\.0\.0\.1|0\.0\.0\.0)/i.test(c) ||
     /\bwget\b[^|;&\n]{0,300}(localhost|127\.0\.0\.1|0\.0\.0\.0)/i.test(c) ||
     /\b(playwright|puppeteer)\b[^\n]{0,300}\b(test|run|open|screenshot|goto|click)/i.test(

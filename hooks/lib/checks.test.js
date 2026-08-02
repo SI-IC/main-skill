@@ -2615,6 +2615,75 @@ test("isRenderVerifyCmd: render-класс — браузер и curl localhost"
   assert.ok(!checks.isRenderVerifyCmd(null));
 });
 
+function browserScriptDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "msc-render-"));
+  fs.mkdirSync(path.join(dir, "scratch"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "scratch", "verify.mjs"),
+    'import { chromium } from "playwright";\nawait chromium.launch();\n',
+  );
+  fs.writeFileSync(path.join(dir, "plain.mjs"), 'console.log("hi");\n');
+  return dir;
+}
+
+test("isRenderVerifyCmd: playwright через свой скрипт засчитывается как render", () => {
+  const dir = browserScriptDir();
+  const ctx = () => ({ cwd: dir, cache: new Map() });
+  assert.ok(
+    checks.isRenderVerifyCmd(
+      `cd ${path.join(dir, "scratch")} && node verify.mjs "jwt" 2>&1`,
+      ctx(),
+    ),
+    "cd-префикс задаёт cwd для относительного пути",
+  );
+  assert.ok(checks.isRenderVerifyCmd("node scratch/verify.mjs", ctx()));
+  assert.ok(
+    checks.isRenderVerifyCmd(
+      `node ${path.join(dir, "scratch", "verify.mjs")}`,
+      ctx(),
+    ),
+  );
+  assert.ok(checks.isRenderVerifyCmd("bun scratch/verify.mjs", ctx()));
+  assert.ok(
+    checks.isRenderVerifyCmd("deno run --allow-net scratch/verify.mjs", ctx()),
+  );
+  assert.ok(!checks.isRenderVerifyCmd("node plain.mjs", ctx()));
+  assert.ok(!checks.isRenderVerifyCmd("node missing.mjs", ctx()));
+  assert.ok(
+    !checks.isRenderVerifyCmd("cat scratch/verify.mjs", ctx()),
+    "не-раннер не засчитывается",
+  );
+});
+
+test("isRenderVerifyCmd: без ctx в fs не ходит — обратная совместимость", () => {
+  const dir = browserScriptDir();
+  assert.ok(!checks.isRenderVerifyCmd("node scratch/verify.mjs"));
+  assert.ok(
+    !checks.isRenderVerifyCmd(
+      `node ${path.join(dir, "scratch", "verify.mjs")}`,
+    ),
+  );
+});
+
+test("isRenderVerifyCmd: скрипт-проба ограничена капами", () => {
+  const dir = browserScriptDir();
+  const ctx = { cwd: dir, cache: new Map() };
+  assert.ok(
+    !checks.isRenderVerifyCmd("node " + "a".repeat(5000) + ".mjs", ctx),
+    "команда длиннее кап-а не сканируется",
+  );
+  for (let i = 0; i < 25; i++) {
+    checks.isRenderVerifyCmd(`node miss${i}.mjs`, ctx);
+  }
+  assert.ok(ctx.cache.size <= 20, `кап проб превышен: ${ctx.cache.size}`);
+  const big = path.join(dir, "big.mjs");
+  fs.writeFileSync(big, 'import "playwright";\n' + "x".repeat(300_000));
+  assert.ok(
+    !checks.isRenderVerifyCmd(`node ${big}`, { cwd: dir, cache: new Map() }),
+    "файл больше кап-а не читается",
+  );
+});
+
 test("stripBlockComments: посимвольный O(n), безопасен на adversarial", () => {
   assert.strictEqual(checks.stripBlockComments("a /* b */ c"), "a  c");
   assert.strictEqual(checks.stripBlockComments("/* x */y/* z */"), "y");

@@ -91,6 +91,8 @@ Hard opt-outs:
 - `MAIN_SKILL_VERIFY_PREMORTEM=0` — disable N (premortem block) and the `edge:` section requirement in self-review.
 - `MAIN_SKILL_VERIFY_RENDER=0` — disable M (render-verification of frontend edits).
 - `MAIN_SKILL_VERIFY_DEPS=0` — disable L (dep version-lookup enforcement). Useful for projects with a frozen lockfile where dep upgrades are batched manually.
+- `MAIN_SKILL_VERIFY_TAIL_WAIT_MS=<ms>` — how long the Stop hook waits for Claude Code to finish appending the turn's final message to the transcript (default 2000, capped at 10000, polled every 100 ms). Without the wait the hook reads a tail that has no final message yet and silently lets the Stop through. Set `0` to restore the old no-wait behaviour.
+- `MAIN_SKILL_VERIFY_TRACE=<path>` (or `=1` for `~/.claude/main-skill-verify-trace.jsonl`) — append one JSONL record per Stop-hook run with the exit point (`no-last-text`, `anti-loop`, `no-trigger`, `block`, …). Claude Code keeps neither stdout nor stderr of Stop hooks, so a silent pass is otherwise indistinguishable from "nothing to report". Off by default; the file stops growing past 5 MB.
 - `MAIN_SKILL_IMPORT_SCAN_MAX_FILES=<n>` — raise trigger D's import-scan read budget (default 200, cap 10000) for monorepos with hundreds of centralized specs per package.
 - `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — disable the `ignore-glob-guard` PreToolUse hook (allow writing broad `dir/**` ignore-globs).
 - `MAIN_SKILL_COMMENT_CHECK=0` — disable the `comment-guard` PreToolUse hook (projects whose convention mandates code comments).
