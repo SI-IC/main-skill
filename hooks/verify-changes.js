@@ -1,62 +1,25 @@
 #!/usr/bin/env node
-// Stop hook: блокирует завершение, если ассистент заявил «готово/done/работает»
-// после правки observable-файла (frontend, backend, CLI, MCP plugin, etc.), но
-// не выполнил ни одной реальной верификации ПОСЛЕ последней правки.
-//
-// Триггеры:
-//   A — success-слово («готово», «fixed», «pushed», ...) БЕЗ верификации.
-//   B — дисклеймер («не проверил», «проверь вручную») БЕЗ попыток разведки.
-//   C — делегирование shell-команды пользователю при наличии своего Bash.
-//   D — observable src без парного *.test.* / *.spec.* / __tests__/.
-//   E — КРИТИЧНЫЙ endpoint (auth / деньги / доступ) без endpoint-level теста;
-//       рядовой controller/route покрывается D (парный тест любого слоя).
-//   F — отсутствует или невалиден блок <edge-cases>.
-//   G — npm run lint / ruff / golangci-lint / cargo clippy exit ≠ 0.
-//   H — public surface изменён без обновления *.md / docs/* в этой же сессии.
-//   J — нет валидного <self-review> блока (code+security ревью своими силами).
-//   K — <review-triage> отсутствует / невалиден / содержит slop-only обоснования.
-//   L — manifest dep добавлен/изменён без version-lookup в реестре в этой сессии.
-//   M — frontend-правка без render-класса прогона после неё (headless browser /
-//       curl|wget localhost / активный браузер-MCP; unit-раннеры не считаются).
-//   N — нетривиальная правка (порог как у J) без премортем-блока <premortem>
-//       (≥3 конкретных гипотез «что сломается»; в идеале — до первой правки).
-//
-// Опт-ауты:
-//   MAIN_SKILL_VERIFY_CHANGES=0   — все триггеры выкл.
-//   MAIN_SKILL_VERIFY_LINT=0      — выкл только G.
-//   MAIN_SKILL_VERIFY_REVIEW=0    — выкл J/K (N НЕ трогает — у него своя ручка).
-//   MAIN_SKILL_VERIFY_REVIEW=code — требовать только code-review секцию.
-//   MAIN_SKILL_VERIFY_REVIEW=security — требовать только security-review секцию.
-//   MAIN_SKILL_VERIFY_DEPS=0      — выкл только L.
-//   MAIN_SKILL_VERIFY_RENDER=0    — выкл только M.
-//   MAIN_SKILL_VERIFY_PREMORTEM=0 — выкл N (и edge-секцию в J).
-// Старое имя переменной тоже уважается: MAIN_SKILL_VERIFY_FRONTEND=0.
-
 const fs = require("fs");
 const path = require("path");
 const checks = require("./lib/checks");
 const { isDisabled } = require("./lib/session-disabled");
 
-// Cap для чтения transcript: ~50 MB. Real transcripts < 5 MB; большие чаще
-// признак подделки или сессии с image-вложениями. Над лимитом — silent exit.
+// Не менять, потому что без капа сессия с image-вложениями съедает память
+// Node-процесса хука.
 const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024;
 
-// Strip ANSI/control-chars из строк, которые приходят из transcript и идут
-// в stdout/stderr. Защита от terminal-injection через имена файлов.
-// - C0 controls + DEL: [\x00-\x1f\x7f]
-// - C1 controls (8-bit ESC esc.): [\x80-\x9f] — U+009B = CSI в 8-bit режиме,
-//   xterm/gnome-terminal интерпретируют как ESC [ → cursor-up / line-erase.
-// - BiDi overrides (U+202A-202E, U+2066-2069) — не control-chars, но позволяют
-//   спуфить расширения файлов: `package.json‮gnp.exe` рендерится как `package.jsonexe.png`.
+// Не менять, потому что это канонический набор для всего репо (остальные хуки
+// копируют его): C0 + DEL + C1 (U+009B — 8-bit CSI, xterm читает как ESC[ →
+// cursor-up/line-erase) и BiDi-overrides (U+202A-202E, U+2066-2069, спуфинг
+// порядка символов). Меньший набор = terminal-injection через имя файла.
 function sanitize(s) {
   return String(s == null ? "" : s)
     .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
     .replace(/[‪-‮⁦-⁩]/g, "");
 }
 
-// Обрезка недоверенной строки перед эхо в reason: запись транскрипта может
-// быть мегабайтной — без капа reason раздувается в десятки MB (амплификация
-// инжектированного контента в терминал юзера и контекст Claude).
+// Не менять, потому что запись транскрипта бывает мегабайтной: без капа reason
+// раздувается в десятки MB прямо в терминал юзера.
 function trunc(s, n = 200) {
   const t = String(s == null ? "" : s);
   return t.length > n ? t.slice(0, n) + "…" : t;
@@ -73,7 +36,7 @@ process.stdin.on("end", () => {
 });
 
 function main(p) {
-  if (isDisabled()) return; // /main-skill:off или MAIN_SKILL_OFF=1 — плагин выкл на сессию.
+  if (isDisabled()) return;
   if (
     process.env.MAIN_SKILL_VERIFY_CHANGES === "0" ||
     process.env.MAIN_SKILL_VERIFY_FRONTEND === "0"
@@ -84,8 +47,8 @@ function main(p) {
   const tp = p.transcript_path;
   if (!tp || !fs.existsSync(tp)) return;
 
-  // Защита от слепого чтения произвольного файла: resolve symlinks, требуем
-  // регулярный файл, размер в пределах cap-а. Любая аномалия — silent exit.
+  // Не менять, потому что без realpath+isFile симлинк `~/.claude/x.jsonl → /etc/passwd`
+  // подсунет хуку произвольный файл, а FIFO подвесит чтение.
   let resolvedTp;
   try {
     resolvedTp = fs.realpathSync(tp);
@@ -127,10 +90,8 @@ function main(p) {
 
   if (!hasSuccess && !hasDisclaimer && !hasDelegation) return;
 
-  // Классификация правок по типам. Не вся правка триггерит хук — только observable.
   const classify = (fp = "") => {
     const f = String(fp);
-    // Явно не observable: docs, config, lockfiles, assets.
     if (
       /(^|\/)(README|CHANGELOG|LICENSE|CONTRIBUTING|CODE_OF_CONDUCT)(\.\w+)?$/i.test(
         f,
@@ -150,7 +111,8 @@ function main(p) {
     )
       return "asset";
 
-    // Plugin behaviour-files — приоритет над docs, потому что .md в skills/ это runtime.
+    // Не менять, потому что ветка обязана идти до docs: .md в skills/ — это runtime
+    // поведение, а не документация.
     if (/(^|\/)\.claude-plugin\//.test(f)) return "plugin";
     if (/(^|\/)\.claude\/(settings|hooks|commands)/.test(f)) return "plugin";
     if (
@@ -160,10 +122,8 @@ function main(p) {
     )
       return "plugin";
 
-    // Docs — после plugin.
     if (/\.(md|mdx|txt|rst|adoc)$/i.test(f)) return "docs";
 
-    // Observable
     if (/\.(tsx|jsx|vue|svelte|astro|html|htm)$/i.test(f)) return "frontend";
     if (/\.(css|scss|sass|less|styl|stylus)$/i.test(f)) return "frontend";
     if (
@@ -172,7 +132,7 @@ function main(p) {
       )
     )
       return "backend";
-    if (/\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(f)) return "backend"; // JS/TS по умолчанию backend (frontend уже поймали выше)
+    if (/\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(f)) return "backend";
     if (/(^|\/)(bin|scripts|cli)\//i.test(f)) return "cli";
     if (
       /(^|\/)(Dockerfile|docker-compose[\w.-]*\.ya?ml|Makefile|justfile|Procfile)$/i.test(
@@ -189,11 +149,11 @@ function main(p) {
   let lastEditIdx = -1;
   let lastEditKind = null;
   let lastVerifyIdx = -1;
-  let lastRenderIdx = -1; // триггер M: render-класс верификация (browser/curl localhost/MCP)
+  let lastRenderIdx = -1;
   let lastAttemptIdx = -1;
   let lastBlockIdx = -1;
-  let lastDelegableBashIdx = -1; // последний Bash запуск самого Claude — доказывает наличие Bash-доступа
-  const frontendEdits = []; // триггер M: {idx, fp} фронт-правок (без тест/док-файлов)
+  let lastDelegableBashIdx = -1;
+  const frontendEdits = [];
 
   lines.forEach((e, idx) => {
     if (e.type !== "assistant") return;
@@ -210,8 +170,8 @@ function main(p) {
           lastEditIdx = idx;
           lastEditKind = kind;
         }
-        // Триггер M: тест/док-файлы не считаются фронт-правкой — иначе правка
-        // Card.test.tsx ПОСЛЕ рендера ложно ре-триггерит M на неизменённый компонент.
+        // Не менять, потому что без фильтра правка Card.test.tsx после рендера ложно
+        // ре-триггерит M на неизменённый компонент.
         if (
           kind === "frontend" &&
           !checks.isTestFile(fp) &&
@@ -225,20 +185,15 @@ function main(p) {
         const cmd = String(inp.command || "");
         lastDelegableBashIdx = idx;
 
-        // Триггер M: render-класс (browser / curl|wget localhost) — общий
-        // детект в checks.isRenderVerifyCmd, здесь же засчитывается и как verify.
-        // Вычисляется один раз: bounded, но всё равно не гонять дважды на команду.
         const isRenderCmd = checks.isRenderVerifyCmd(cmd);
         if (isRenderCmd) lastRenderIdx = idx;
 
-        // Реальная верификация: запустил реальную проверку после правки.
-        // Квантификаторы ограничены ({0,300}) — unbounded даёт квадратичный
-        // backtracking на adversarial-команде из множества curl-токенов.
+        // Не менять, потому что квантификаторы обязаны быть ограничены ({0,300}):
+        // unbounded даёт квадратичный backtracking на команде из множества curl-токенов.
         if (
           isRenderCmd ||
           /\bcurl\b[^|;&\n]{0,300}https?:\/\//i.test(cmd) ||
           /\bwget\b[^|;&\n]{0,300}https?:\/\//i.test(cmd) ||
-          // Backend / CLI verification
           /\b(pytest|python\s+-m\s+pytest)\b/i.test(cmd) ||
           /\b(go\s+test|cargo\s+test|mvn\s+test|gradle\s+test|bundle\s+exec\s+rspec|rspec|phpunit|dotnet\s+test)\b/i.test(
             cmd,
@@ -248,17 +203,13 @@ function main(p) {
           /\byarn\s+(test|run\s+test|run\s+e2e)\b/i.test(cmd) ||
           /\bvitest\b/i.test(cmd) ||
           /\bjest\b/i.test(cmd) ||
-          // Docker compose
           /\bdocker[- ]compose\s+(up|run|exec)/i.test(cmd) ||
           /\bdocker\s+(run|exec|build)/i.test(cmd) ||
-          // MCP plugin verification
           /\bclaude\s+-p\b/i.test(cmd) ||
           /\bclaude\s+--print\b/i.test(cmd) ||
-          // Python/Node CLI direct invoke
           /\b(python3?|node|deno|bun|ruby|go\s+run|cargo\s+run|dotnet\s+run)\s+[^\n]*\.(py|js|mjs|ts|rb|go|rs)\b/i.test(
             cmd,
           ) ||
-          // Shell script invoke: bash/sh <file>, ./scripts/x, /abs/path.sh, make/just targets
           /\b(bash|sh|zsh|ksh|fish)\s+[^|;&\n]*\.(sh|bash)\b/i.test(cmd) ||
           /(^|[\s;&|])\.?\/?(scripts?|bin)\/[\w.-]+/i.test(cmd) ||
           /(^|[\s;&|])(\.\/|\/|~\/)[\w\/.-]+\.(sh|bash|py|js|ts|rb)(\s|$|\s+-)/i.test(
@@ -268,7 +219,6 @@ function main(p) {
         ) {
           lastVerifyIdx = idx;
         }
-        // Любой намёк, что Claude пытался разведать окружение
         if (
           /\b(lsof|ss|netstat|pgrep|ps\s+-|nc\s+-z)\b/i.test(cmd) ||
           /\bwhich\s+\w+/i.test(cmd) ||
@@ -299,7 +249,7 @@ function main(p) {
         ]);
         if (!passive.has(name)) {
           lastVerifyIdx = idx;
-          lastRenderIdx = idx; // активный браузер-MCP = render-класс (триггер M)
+          lastRenderIdx = idx;
           lastAttemptIdx = idx;
         } else {
           lastAttemptIdx = idx;
@@ -308,7 +258,6 @@ function main(p) {
     }
   });
 
-  // Детект предыдущего своего блокирующего сообщения — anti-loop.
   const blockRe = /main-skill:verify-(frontend|changes)/;
   lines.forEach((e, idx) => {
     if (e.type !== "user") return;
@@ -337,10 +286,6 @@ function main(p) {
     }
   });
 
-  // Триггер C (делегация) работает независимо от правок — его логика отдельная.
-  // Триггеры A/B требуют наличия observable-правки.
-  // Триггеры D/E/F/G/H — мехчеки на дисциплину тестов/доков/лайнта; срабатывают при hasSuccess.
-
   let trigger = null;
   let triggerData = null;
 
@@ -355,7 +300,8 @@ function main(p) {
   const allEdits = checks.collectFileEdits(lines);
 
   if (!trigger && lastEditIdx >= 0) {
-    // Уже блокировали после этой правки — даём слово пользователю.
+    // Не менять, потому что без этого выхода хук блокирует Stop бесконечно, когда
+    // Claude не может выполнить требование: одно слово юзеру — by design.
     if (lastBlockIdx > lastEditIdx) return;
 
     const verifiedAfterEdit = lastVerifyIdx > lastEditIdx;
@@ -364,9 +310,8 @@ function main(p) {
     if (hasDisclaimer && !attemptedAfterEdit) {
       trigger = "B";
     } else if (hasSuccess) {
-      // Мехчеки. Порядок: G (lint) → D (src↔test) → E (critical endpoint) → M (render)
-      // → H (docs) → F (edge-cases) → N (premortem) → J/K (self-review + triage)
-      // → A (no verify). L — отдельно, вне observable-ветки (manifest = config).
+      // Не менять, потому что порядок определяет, какое требование Claude увидит
+      // первым: дешёвые мехчеки (lint, парный тест) идут раньше дорогих ритуалов.
       const repoRoot = checks.resolveRepoRoot(
         process.env.CLAUDE_PROJECT_DIR,
         allEdits,
@@ -377,13 +322,12 @@ function main(p) {
         .filter((e) => !checks.isTestFile(e.file_path))
         .filter((e) => !checks.isDocFile(e.file_path))
         .filter((e) => checks.isCodeFile(e.file_path))
-        // вне repoRoot (/tmp-скрипты) или уже удалён → тест не требуется
+
         .filter((e) => checks.existsInsideRepo(e.file_path, repoRoot));
       const observableSrcFiles = [
         ...new Set(observableSrcEdits.map((e) => e.file_path)),
       ];
 
-      // G: auto-lint (опт-аут MAIN_SKILL_VERIFY_LINT=0).
       if (!trigger && process.env.MAIN_SKILL_VERIFY_LINT !== "0") {
         const lintRes = checks.runLint(repoRoot);
         if (lintRes && lintRes.ran && lintRes.ok === false) {
@@ -392,10 +336,6 @@ function main(p) {
         }
       }
 
-      // D: src без парного test-файла.
-      // Фильтруем файлы, для которых unit-тест объективно не имеет смысла
-      // (миграции, типы, generated, configs, wiring), плюс поддерживаем
-      // user-override через MAIN_SKILL_VERIFY_IGNORE_GLOBS (POSIX globs, через `:`).
       if (!trigger) {
         const userIgnoreGlobs = String(
           process.env.MAIN_SKILL_VERIFY_IGNORE_GLOBS || "",
@@ -404,16 +344,14 @@ function main(p) {
           .map((s) => s.trim())
           .filter(Boolean);
         const missingTests = [];
-        const truncatedScans = []; // скан оборван бюджетом → покрытие не опровергнуто
-        const importScanCache = {}; // один скан центральных спеков на прогон
+        const truncatedScans = [];
+        const importScanCache = {};
         for (const fp of observableSrcFiles) {
           const rel = path.isAbsolute(fp) ? path.relative(repoRoot, fp) : fp;
           if (checks.shouldSkipForTestPairing(fp, repoRoot)) continue;
           if (checks.matchAnyGlob(rel, userIgnoreGlobs)) continue;
           const paired = checks.findPairedTestFile(fp, repoRoot, sessionFiles);
           if (paired) continue;
-          // Fallback: централизованный спек, именованный по фиче (ERP-кейс),
-          // засчитывается если импортирует источник (findTestByImportScan).
           if (checks.findTestByImportScan(fp, repoRoot, importScanCache))
             continue;
           if (importScanCache.lastTruncated) truncatedScans.push(fp);
@@ -425,12 +363,6 @@ function main(p) {
         }
       }
 
-      // E: критичный endpoint без endpoint-level теста. Критичность — по имени
-      // пути (isCriticalEndpoint: auth/деньги/доступ) ИЛИ по контент-сигналу
-      // мутирующего хендлера (hasMutatingHandler: POST/PUT/PATCH/DELETE,
-      // destroy/store/update) — CAVEAT бэклога: одно имя пути пропускает
-      // неназванные мутации. Рядовой read-only controller/route покрыт
-      // триггером D; e2e-форс на каждый роут = e2e-пролиферация.
       if (!trigger) {
         const missingE2e = [];
         for (const fp of observableSrcFiles) {
@@ -449,15 +381,9 @@ function main(p) {
         }
       }
 
-      // M: фронт-правка без render-проверки после неё (опт-аут MAIN_SKILL_VERIFY_RENDER=0).
-      // Unit-раннеры (vitest/jest в jsdom) рендер НЕ покрывают — нет layout-движка:
-      // «не отрисовалось», «текст за полем», «окна внахлёст» ловит только реальный рендер.
       if (!trigger && process.env.MAIN_SKILL_VERIFY_RENDER !== "0") {
-        // Cap 50: каждый кандидат стоит statSync+readFileSync (≤200KB) в
-        // isRenderExemptFrontendFile — без капа poisoned-транскрипт с тысячами
-        // уникальных фронт-путей превращает Stop в I/O-DoS. Для блока M
-        // достаточно ЛЮБОГО не-exempt файла; связка «>50 unrendered — все
-        // exempt» нереалистична, недосписок в reason приемлем.
+        // Не менять, потому что без капа транскрипт с тысячами фронт-путей превращает
+        // Stop в I/O-DoS: каждый кандидат стоит statSync+readFileSync до 200KB.
         const unrendered = [
           ...new Set(
             frontendEdits.filter((e) => e.idx > lastRenderIdx).map((e) => e.fp),
@@ -471,7 +397,6 @@ function main(p) {
         }
       }
 
-      // H: public surface tронут И docs не тронуты в сессии.
       if (!trigger) {
         const publicEdits = allEdits.filter((e) =>
           checks.isPublicSurface(e.file_path),
@@ -485,7 +410,6 @@ function main(p) {
         }
       }
 
-      // F: декларация edge-cases.
       if (!trigger) {
         const parsed = checks.parseEdgeCasesBlock(lastText);
         if (!parsed || parsed.entries.length === 0) {
@@ -501,13 +425,9 @@ function main(p) {
         }
       }
 
-      // Общий порог нетривиальности для N (премортем) и J (self-review):
-      // ≥20 ДОБАВЛЕННЫХ нетривиальных observable-строк ИЛИ security-sensitive
-      // путь. Добавленных = multiset-дельта new_string − old_string (Edit/
-      // MultiEdit; Write — целиком): широкий контекстный якорь rename/extract
-      // не надувает счётчик (backlog #5).
-      // Считаем только observable-src правки (не docs / configs / tests). Иначе правка
-      // README на 50 строк ложно активирует J/N. Cap на 20 — раннее завершение.
+      // Не менять, потому что счёт идёт по ДОБАВЛЕННЫМ строкам (дельта new−old):
+      // от полного new_string широкий контекстный якорь rename требовал бы ритуалов
+      // на пустом месте.
       const securityPath = checks.hasSecuritySensitivePath(observableSrcEdits);
       const observableSrcSet = new Set(observableSrcFiles);
       const isObservableSrc = (fp) => observableSrcSet.has(fp);
@@ -518,12 +438,8 @@ function main(p) {
       const isTrivial = !securityPath && addedNonTrivialLines < 20;
       const premortemEnabled = process.env.MAIN_SKILL_VERIFY_PREMORTEM !== "0";
 
-      // N: премортем-ритуал — где-то в сессии есть блок <premortem> с ≥3
-      // конкретными гипотезами «что сломается» (в идеале — до первой
-      // observable-правки; позиция механически не форсится: блокировка не
-      // отматывает время, ретро-премортем лучше отсутствия ритуала).
-      // Блок засчитывается, только если ВСЕ записи валидны и их ≥ минимума —
-      // частично-мусорный блок не закрывает ритуал.
+      // Не менять, потому что позиция блока не проверяется намеренно: блокировка не
+      // отматывает время, ретро-премортем — единственное, что зуб может потребовать.
       if (
         !trigger &&
         premortemEnabled &&
@@ -535,8 +451,8 @@ function main(p) {
           trigger = "N";
           triggerData = { kind: "missing", securityPath, addedNonTrivialLines };
         } else {
-          // Один проход: valid → выходим; иначе lastValidation — разбор
-          // ПОСЛЕДНЕГО блока (самый свежий, его Claude и будет чинить).
+          // Не менять, потому что чинить Claude будет ПОСЛЕДНИЙ блок — его разбор и
+          // должен попасть в reason.
           let anyValid = false;
           let lastValidation = [];
           for (const b of blocks) {
@@ -563,9 +479,6 @@ function main(p) {
         }
       }
 
-      // J / K: self-review + триаж замечаний ревьюеров.
-      // Опт-аут: MAIN_SKILL_VERIFY_REVIEW=0 (полностью), =code (только code-review),
-      // =security (только security-review), =both (default).
       const VALID_REVIEW_MODES = new Set(["both", "code", "security", "0"]);
       const rawReviewMode = (
         process.env.MAIN_SKILL_VERIFY_REVIEW || "both"
@@ -575,9 +488,8 @@ function main(p) {
         : "both";
       const reviewWantCode = reviewMode === "both" || reviewMode === "code";
       const reviewWantSec = reviewMode === "both" || reviewMode === "security";
-      // edge-секция (premortem-линза) требуется только в полном режиме both и
-      // при включённом премортем-слое: суженные =code/=security — кастомизация
-      // юзера, туда третью линзу не навязываем.
+      // Не менять, потому что в суженных режимах =code/=security третья линза не
+      // навязывается: это осознанная кастомизация юзера.
       const reviewWantEdge = premortemEnabled && reviewMode === "both";
       const reviewEnabled =
         reviewMode !== "0" && (reviewWantCode || reviewWantSec);
@@ -585,8 +497,8 @@ function main(p) {
       if (!trigger && reviewEnabled && observableSrcEdits.length > 0) {
         const selfReview = checks.parseSelfReview(lastText);
 
-        // Тривиальный diff — self-review необязателен; но если объявлен `skipped:trivial`
-        // в нетривиальной правке — это анти-фейк, блокируем.
+        // Не менять, потому что `skipped:trivial` в нетривиальной правке обязан
+        // блокировать: иначе строка-заглушка закрывает весь триггер J.
         if (!isTrivial) {
           if (!selfReview) {
             trigger = "J";
@@ -605,7 +517,6 @@ function main(p) {
               reviewMode,
             };
           } else {
-            // Проверяем, что нужные секции присутствуют согласно reviewMode.
             const missingSections = [];
             if (reviewWantCode && !selfReview.code)
               missingSections.push("code");
@@ -621,11 +532,8 @@ function main(p) {
                 reviewMode,
               };
             } else {
-              // Анти-фейк: если секция объявлена со статусом != skipped, в transcript должен быть
-              // соответствующий Task-вызов. `none-found` тоже требует реального запуска.
-              // Аномалия обхода транскрипта не должна ронять хук в silent exit —
-              // это погасило бы все триггеры разом. Fail toward требования:
-              // вызовов не видно → секции считаются незапущенными (fake-decl).
+              // Не менять, потому что аномалия разбора транскрипта обязана считаться
+              // «сабагент не запускался»: silent-exit здесь снимает весь триггер J.
               let calls;
               try {
                 calls = checks.findReviewAgentCalls(lines);
@@ -671,16 +579,14 @@ function main(p) {
                 calls.edge &&
                 checks.isWeakPremortemModel(calls.edgeModel)
               ) {
-                // premortem-линза запущена на haiku вопреки SKILL.md — специфичность
-                // гипотез и есть её ценность. Модель берётся из последнего вызова,
-                // поэтому переанонс на sonnet снимает блок.
+                // Не менять, потому что модель берётся из ПОСЛЕДНЕГО premortem-вызова: именно
+                // его находки уходят в триаж.
                 trigger = "J";
                 triggerData = {
                   kind: "weak-edge-model",
                   model: calls.edgeModel,
                 };
               } else {
-                // K: триаж требуется, если хоть в одной активной секции есть applied/rejected/deferred.
                 const needsTriage =
                   (reviewWantCode &&
                     selfReview.code &&
@@ -709,10 +615,8 @@ function main(p) {
                       trigger = "K";
                       triggerData = { kind: "invalid", failed };
                     } else {
-                      // Все записи в триаже должны принадлежать активной секции.
-                      // edge тоже гейтится (reviewWantEdge): иначе в суженном
-                      // режиме =code/=security триаж из одних edge-записей
-                      // закрывал бы K без единой записи активной секции.
+                      // Не менять, потому что edge гейтится наравне с остальными: иначе в режиме
+                      // =code/=security триаж из одних edge-записей закрывает K впустую.
                       const wrongSource = triage.entries.filter(
                         (e) =>
                           e.valid &&
@@ -737,22 +641,17 @@ function main(p) {
         }
       }
 
-      // A: нет реальной verify-команды после правки (последняя сетка).
       if (!trigger && !verifiedAfterEdit) {
         trigger = "A";
       }
     }
   }
 
-  // L: manifest dep добавлен без version-lookup. Работает независимо от observable-правок
-  // — package.json / .github/workflows/*.yml classify-ятся как 'config', т.е. lastEditIdx
-  // на них может быть -1, но dep всё равно нужен lookup. Условия: hasSuccess + есть
-  // manifest-edits в сессии + есть deps без lookup. Anti-loop: если был блок после
-  // последней manifest-правки — даём слово пользователю.
+  // Не менять, потому что L живёт вне observable-ветки: manifest-файлы
+  // classify-ятся как config, и внутри ветки lastEditIdx для них -1.
   if (!trigger && hasSuccess && process.env.MAIN_SKILL_VERIFY_DEPS !== "0") {
     const addedDeps = checks.collectManifestDepsFromEdits(lines);
     if (addedDeps.length > 0) {
-      // Найдём idx последней правки manifest-файла для anti-loop guard.
       let lastManifestEditIdx = -1;
       const MANIFEST_RE =
         /(^|\/)(package\.json|requirements[\w-]*\.txt|constraints\.txt|pyproject\.toml|Cargo\.toml|go\.mod|Dockerfile(\.[\w-]+)?|\.nvmrc|\.python-version|\.tool-versions)$|(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/;
@@ -854,13 +753,9 @@ function main(p) {
     "Опт-аут (редко): export MAIN_SKILL_VERIFY_CHANGES=0",
   ].join("\n");
 
-  // Скан оборван бюджетом → «теста нет» не доказано: даём Клоду дешёвый
-  // детерминированный рецепт (grep без лимита) вместо расследования вслепую,
-  // дубль-тестов и широких глобов. grep-имя из НЕДОВЕРЕННОГО basename
-  // (транскрипт) — reason подталкивает Клода ВЫПОЛНИТЬ команду, поэтому
-  // sanitize мало: злое имя `bil$(id)ling.ts` пронесло бы $(id) в шелл.
-  // Allowlist [A-Za-z0-9._-] + grep -F (fixed string, не ERE) закрывают и
-  // shell-, и regex-инъекцию; экзотика вычищается в literal-подстроку.
+  // Не менять, потому что имя для grep приходит из недоверенного транскрипта:
+  // sanitize стрипует controls/BiDi, но не шелл-метасимволы — нужны allowlist
+  // [A-Za-z0-9._-] и -F.
   const grepPat = (() => {
     if (!triggerData?.truncatedScans?.length) return "";
     const f0 = String(triggerData.truncatedScans[0]);
@@ -1190,7 +1085,6 @@ function main(p) {
         "Опт-аут: MAIN_SKILL_VERIFY_PREMORTEM=0 (снимает edge-секцию и триггер N целиком).",
       ].join("\n");
     }
-    // missing
     return [
       baseHead,
       "",
@@ -1272,7 +1166,6 @@ function main(p) {
           .map((e) => `  • ${sanitize(trunc(e.raw))}`),
       ].join("\n");
     }
-    // missing
     return [
       baseHead,
       "",
@@ -1435,11 +1328,9 @@ function main(p) {
   process.stdout.write(JSON.stringify({ decision: "block", reason }));
 }
 
-// Терминальное сообщение хода — последнее assistant-text, ПОСЛЕ которого нет
-// tool_use. Промежуточный нарратив (текст, за которым идёт ещё tool_use в том же
-// ходе) — не «готово»-claim, оценивать его нельзя: иначе success-слово в нём даёт
-// ложный F/A, а при flush-гонке (финал ещё не на диске) хук блокирует по устаревшему
-// сообщению. Нет терминального текста (ход ещё не завершён / финал не сброшен) → "".
+// Не менять, потому что оценивать можно только текст, после которого нет
+// tool_use: промежуточный нарратив даёт ложный success-триггер, а при
+// flush-гонке — блок по устаревшему сообщению.
 function findLastAssistantText(lines) {
   let sawToolUseAfter = false;
   for (let i = lines.length - 1; i >= 0; i--) {

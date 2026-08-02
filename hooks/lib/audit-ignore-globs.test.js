@@ -1,10 +1,3 @@
-// Unit-тесты для audit-ignore-globs.js. Запуск: node hooks/lib/audit-ignore-globs.test.js
-//
-// Скрипт — аудит MAIN_SKILL_VERIFY_IGNORE_GLOBS в проекте: скан carrier-файлов
-// (.env / .claude/settings*.json / .mcp.json / *.sh), home-конфигов и окружения,
-// классификация каждого глоба узкий/широкий через ту же isBroadIgnoreGlob, что
-// и PreToolUse-гард. Отчёт со списком широких + узких.
-
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
@@ -17,8 +10,6 @@ const VAR = "MAIN_SKILL_VERIFY_IGNORE_GLOBS";
 function tmpProject() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "aig-"));
 }
-
-// ─── describeBroad ────────────────────────────────────────────────────────────
 
 test("describeBroad: каталог-глоб → упоминает папку", () => {
   assert.match(a.describeBroad("src/**"), /src\//);
@@ -34,8 +25,6 @@ test("describeBroad: язык-глоб → упоминает расширени
   assert.match(a.describeBroad("*.py"), /\.py/);
 });
 
-// ─── classifySources ──────────────────────────────────────────────────────────
-
 test("classifySources: разносит по isBroadIgnoreGlob", () => {
   const sources = [
     { label: ".env", globs: ["src/**", "**/*.gen.ts", "*.ts", "schema.ts"] },
@@ -49,20 +38,16 @@ test("classifySources: разносит по isBroadIgnoreGlob", () => {
     narrow.map((n) => n.glob),
     ["**/*.gen.ts", "schema.ts"],
   );
-  // broad-элементы несут label и why
   assert.equal(broad[0].label, ".env");
   assert.ok(broad[0].why);
 });
 
 test("classifySources: sanitize применяется к отображаемому глобу", () => {
-  // control-char в dir-части, хвост `**` чист → глоб остаётся широким.
   const sources = [{ label: ".env", globs: ["dir\x1b[2K/**"] }];
   const { broad } = a.classifySources(sources, a.sanitizeGlob);
   assert.equal(broad.length, 1);
   assert.doesNotMatch(broad[0].glob, /\x1b/);
 });
-
-// ─── walkCarrierFiles ─────────────────────────────────────────────────────────
 
 test("walkCarrierFiles: находит carrier, пропускает node_modules/.git", () => {
   const root = tmpProject();
@@ -81,13 +66,11 @@ test("walkCarrierFiles: находит carrier, пропускает node_module
     assert.ok(found.includes(path.join(".claude", "settings.json")));
     assert.ok(!found.some((f) => f.includes("node_modules")));
     assert.ok(!found.some((f) => f.includes(".git")));
-    assert.ok(!found.includes("README.md")); // не carrier
+    assert.ok(!found.includes("README.md"));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
-
-// ─── collectSources ───────────────────────────────────────────────────────────
 
 test("collectSources: env + project-файлы + home", () => {
   const root = tmpProject();
@@ -135,10 +118,10 @@ test("collectSources: нет присваиваний → пустой спис�
 });
 
 test("collectSources: отсутствующие home-carrier-файлы → пропуск (external-failure)", () => {
-  const home = tmpProject(); // пустой home, ни одного из HOME_CARRIERS нет
+  const home = tmpProject();
   try {
     const sources = a.collectSources({ rootDir: null, env: {}, homeDir: home });
-    assert.deepEqual(sources, []); // safeRead на missing → "" → нет источников
+    assert.deepEqual(sources, []);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
@@ -147,7 +130,6 @@ test("collectSources: отсутствующие home-carrier-файлы → п�
 test("safeRead-путь: директория вместо файла → '' (не читаем не-файл)", () => {
   const root = tmpProject();
   try {
-    // .env как ДИРЕКТОРИЯ — statSync.isFile()=false → "" → источник не появится.
     fs.mkdirSync(path.join(root, ".env"));
     const sources = a.collectSources({ rootDir: root, env: {}, homeDir: null });
     assert.deepEqual(sources, []);
@@ -155,8 +137,6 @@ test("safeRead-путь: директория вместо файла → '' (н
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
-
-// ─── boundary / malformed ─────────────────────────────────────────────────────
 
 test("walkCarrierFiles: maxDepth ограничивает глубину (boundary)", () => {
   const root = tmpProject();
@@ -175,24 +155,21 @@ test("classifySources: пустые/мусорные глобы не роняю�
   const sources = [{ label: ".env", globs: ["", "   ", "***", "/", "a b"] }];
   assert.doesNotThrow(() => a.classifySources(sources, a.sanitizeGlob));
   const { broad, narrow } = a.classifySources(sources, a.sanitizeGlob);
-  assert.equal(broad.length + narrow.length, 5); // каждый куда-то попал, без throw
+  assert.equal(broad.length + narrow.length, 5);
 });
-
-// ─── formatReport ─────────────────────────────────────────────────────────────
 
 test("formatReport: широкие → раздел ⚠ + summary про VERIFY_CHANGES", () => {
   const sources = [{ label: ".env", globs: ["src/**", "**/*.gen.ts"] }];
   const out = a.formatReport(sources, "/repo", a.sanitizeGlob);
   assert.match(out, /ШИРОК/i);
   assert.match(out, /src\/\*\*/);
-  assert.match(out, /\*\*\/\*\.gen\.ts/); // узкий тоже показан
+  assert.match(out, /\*\*\/\*\.gen\.ts/);
   assert.match(out, /VERIFY_CHANGES=0/);
 });
 
 test("formatReport: только узкие → нет раздела ШИРОКИЕ", () => {
   const sources = [{ label: ".env", globs: ["**/*.gen.ts", "schema.ts"] }];
   const out = a.formatReport(sources, "/repo", a.sanitizeGlob);
-  // summary всегда содержит «N широких», поэтому проверяем отсутствие ЗАГОЛОВКА раздела.
   assert.doesNotMatch(out, /ШИРОКИЕ глобы/);
   assert.match(out, /узк/i);
 });
@@ -203,7 +180,6 @@ test("formatReport: пусто → 'нигде не задан'", () => {
 });
 
 test("formatReport: ESC в dir-части широкого глоба НЕ протекает в why (terminal-injection)", () => {
-  // dir-часть эхо-ится через describeBroad('весь каталог <dir>/') — должна быть sanitized.
   const sources = [{ label: ".env", globs: ["evil\x1b[2K/**"] }];
   const out = a.formatReport(sources, "/repo", a.sanitizeGlob);
   assert.match(out, /ШИРОК/i);
@@ -215,8 +191,6 @@ test("formatReport: ESC в label (имя файла) НЕ протекает (te
   const out = a.formatReport(sources, "/repo", a.sanitizeGlob);
   assert.doesNotMatch(out, /\x1b/);
 });
-
-// ─── run (integration) ────────────────────────────────────────────────────────
 
 test("run: несуществующий путь → 'путь не найден' (usability, не молчит)", () => {
   const out = a.run(["node", "audit", "/no/such/dir/xyz123"], {}, null);
@@ -246,7 +220,7 @@ test("run: интеграция — temp-проект с широким глоб
     const out = a.run(["node", "audit", root], {}, null);
     assert.match(out, /ШИРОК/i);
     assert.match(out, /src\/\*\*/);
-    assert.match(out, /\*\.d\.ts/); // узкий (составное расширение)
+    assert.match(out, /\*\.d\.ts/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

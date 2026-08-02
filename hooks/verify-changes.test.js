@@ -1,7 +1,3 @@
-// Self-tests для verify-changes.js + lib/checks.js.
-// Запуск: node hooks/verify-changes.test.js
-// Использует встроенный node:test (Node ≥ 18).
-
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
@@ -12,10 +8,6 @@ const { spawnSync } = require("child_process");
 const checks = require("./lib/checks");
 
 const HOOK = path.join(__dirname, "verify-changes.js");
-
-// ────────────────────────────────────────────────────────────────────────────
-// helpers
-// ────────────────────────────────────────────────────────────────────────────
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "msv-"));
@@ -40,10 +32,10 @@ function runHook(transcript_path, env = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
-      MAIN_SKILL_VERIFY_LINT: "0", // лайнт отдельно тестируем; в общем потоке отключаем.
-      MAIN_SKILL_VERIFY_REVIEW: "0", // J/K тестируем отдельно; иначе старые тесты сломаются.
-      MAIN_SKILL_VERIFY_DEPS: "0", // L тестируется отдельно; в общем потоке отключён.
-      MAIN_SKILL_VERIFY_PREMORTEM: "0", // N тестируется отдельно; в общем потоке отключён.
+      MAIN_SKILL_VERIFY_LINT: "0",
+      MAIN_SKILL_VERIFY_REVIEW: "0",
+      MAIN_SKILL_VERIFY_DEPS: "0",
+      MAIN_SKILL_VERIFY_PREMORTEM: "0",
       CLAUDE_PROJECT_DIR:
         env.CLAUDE_PROJECT_DIR || path.dirname(transcript_path),
       ...env,
@@ -119,7 +111,6 @@ function asstAgent(subagent_type, description, prompt) {
   };
 }
 
-// Edit с реальным new_string — для тестов на nonTrivialDiffLines.
 function asstEditWith(file_path, new_string) {
   return {
     type: "assistant",
@@ -135,7 +126,6 @@ function asstEditWith(file_path, new_string) {
   };
 }
 
-// Edit с old_string И new_string — для тестов дельта-подсчёта (backlog #5).
 function asstEditDelta(file_path, old_string, new_string) {
   return {
     type: "assistant",
@@ -156,19 +146,14 @@ const BIG_DIFF = Array.from(
   (_, i) => `const x${i} = ${i};`,
 ).join("\n");
 
-// Механический rename в широком контекстном якоре: 25 строк old/new, реально
-// изменена одна — по дельте это тривиальная правка (< 20), не форсит J/N.
+// Не менять, потому что фикстура держит дельту < 20: rename в широком якоре
+// не должен форсить J/N.
 const RENAME_OLD = BIG_DIFF;
 const RENAME_NEW = BIG_DIFF.replace("const x3 = 3;", "const renamed3 = 3;");
 
 const SUCCESS = "готово, всё работает";
 const EDGE_CASES_BLOCK = (file, name) =>
   `<edge-cases>empty:${file}:${name}; race:${file}:${name}</edge-cases>`;
-
-// ────────────────────────────────────────────────────────────────────────────
-// integration tests на verify-changes.js
-// (unit-тесты на lib/checks.js — в hooks/lib/checks.test.js)
-// ────────────────────────────────────────────────────────────────────────────
 
 test("triggerC: делегирование shell блокируется", () => {
   const dir = tmp();
@@ -208,8 +193,8 @@ test("triggerD: централизованный спек по фиче с им�
   const dir = tmp();
   writeFile(dir, "package.json", "{}");
   writeFile(dir, "app/services/billing.ts", "export const calc = () => 1;");
-  // Имя спека НЕ зеркалит источник (checkout_flow ≠ billing) — прямой
-  // findPairedTestFile его не видит; засчитаться должен через import-scan.
+  // Не менять, потому что имя спека НЕ зеркалит источник: засчитаться он обязан
+  // через import-scan, а не findPairedTestFile.
   writeFile(
     dir,
     "tests/unit/checkout_flow.spec.ts",
@@ -258,8 +243,8 @@ test("triggerD: хвостовой релевантный спек за кэпо
     "app/validators/auth_validator.ts",
     "export const v = () => 1;",
   );
-  // 205 алфавитно-ранних наполнителей → покрывающий спек в validators/ был бы
-  // за бюджетом при алфавитном порядке (баг-репорт)
+  // Не менять, потому что 205 алфавитно-ранних наполнителей и есть суть кейса:
+  // при алфавитном порядке покрывающий спек уходит за бюджет.
   for (let i = 0; i < 205; i++) {
     const n = String(i).padStart(3, "0");
     writeFile(
@@ -290,7 +275,6 @@ test("triggerD: обрыв скана бюджетом → reason содержи
   const dir = tmp();
   writeFile(dir, "package.json", "{}");
   writeFile(dir, "app/services/billing.ts", "export const calc = () => 1;");
-  // 210 нерелевантных спеков: бюджет исчерпается без матча
   for (let i = 0; i < 210; i++) {
     writeFile(
       dir,
@@ -314,7 +298,6 @@ test("triggerD: обрыв скана бюджетом → reason содержи
 test("triggerD: злой basename не инжектится в grep-рецепт ⚠-блока", () => {
   const dir = tmp();
   writeFile(dir, "package.json", "{}");
-  // имя с shell-метасимволами — легально в ext4, приходит из недоверенного транскрипта
   writeFile(dir, "app/services/bil$(id)ling.ts", "export const c = () => 1;");
   for (let i = 0; i < 210; i++) {
     writeFile(
@@ -331,17 +314,16 @@ test("triggerD: злой basename не инжектится в grep-рецепт
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
   expectBlock(r.stdout, "D");
   const reason = JSON.parse(r.stdout).reason;
-  // сам рецепт есть, но метасимволы вычищены allowlist-ом: bil$(id)ling → bilidling
   assert.match(reason, /grep -rlF "bilidling"/);
   const grepLine = reason.split("\n").find((l) => l.includes("grep -rlF"));
   assert.ok(!/[$`();|]/.test(grepLine), `метасимвол в рецепте: ${grepLine}`);
 });
 
 test("triggerD: файл вне repoRoot (throwaway-скрипт в /tmp) не требует теста", () => {
-  // dogfooding-кейс v1.9.11: репро-скрипты в os.tmpdir() вне проекта ложно
-  // требовали парный тест — им нечего покрывать в этом репо
+  // Не менять, потому что путь обязан быть вне проекта: репро-скрипт в /tmp
+  // покрывать нечем.
   const dir = tmp();
-  const outside = tmp(); // другой корень, вне repoRoot
+  const outside = tmp();
   writeFile(dir, "src/covered.ts", "export const a = 1;");
   writeFile(dir, "src/covered.test.ts", "it('a', () => {});");
   writeFile(outside, "scratch.js", "console.log(1);");
@@ -360,7 +342,7 @@ test("triggerD: удалённый в ходе сессии файл не тре
   writeFile(dir, "src/covered.ts", "export const a = 1;");
   writeFile(dir, "src/covered.test.ts", "it('a', () => {});");
   const gone = writeFile(dir, "src/tmp_probe.js", "console.log(1);");
-  fs.rmSync(gone); // к моменту Stop файла уже нет — тест ему не нужен
+  fs.rmSync(gone);
   const tp = writeTranscript(dir, [
     asstEdit(path.join(dir, "src/covered.ts")),
     asstEdit(gone),
@@ -390,7 +372,6 @@ test("triggerD: без обрыва скана ⚠-блока в reason нет",
 test("triggerE: критичный endpoint (auth) без endpoint-теста блокируется", () => {
   const dir = tmp();
   writeFile(dir, "app/controllers/auth_controller.ts", "x");
-  // парный unit-тест есть, чтобы D не сработал раньше.
   writeFile(
     dir,
     "app/controllers/auth_controller.test.ts",
@@ -412,7 +393,6 @@ test("triggerE: критичный endpoint (auth) без endpoint-теста б
 test("triggerE: рядовой controller с парным unit-тестом НЕ требует endpoint-теста", () => {
   const dir = tmp();
   writeFile(dir, "app/controllers/posts_controller.ts", "x");
-  // Парный same-dir тест закрывает D; E рядовой роут не трогает.
   writeFile(
     dir,
     "app/controllers/posts_controller.test.ts",
@@ -434,7 +414,6 @@ test("triggerE: рядовой controller с парным unit-тестом НЕ
 test("triggerE: критичный endpoint с tests/integration-тестом проходит", () => {
   const dir = tmp();
   writeFile(dir, "app/controllers/auth_controller.ts", "x");
-  // integration-тест закрывает и D (SHARED_LOGIC_TEST_DIRS), и E (findE2eFile).
   writeFile(
     dir,
     "tests/integration/auth_controller.test.ts",
@@ -455,8 +434,8 @@ test("triggerE: критичный endpoint с tests/integration-тестом п
 
 test("triggerE: рядовой по имени controller с мутирующим handler-ом блокируется", () => {
   const dir = tmp();
-  // users_controller не матчит CRITICAL_ENDPOINT_RE, но destroy() — мутация
-  // (CAVEAT бэклога: неназванные мутации не должны миновать E).
+  // Не менять, потому что имя намеренно НЕ критичное: кейс проверяет,
+  // что мутация ловится по контенту, а не по пути.
   writeFile(
     dir,
     "app/controllers/users_controller.ts",
@@ -466,7 +445,7 @@ test("triggerE: рядовой по имени controller с мутирующи�
     dir,
     "app/controllers/users_controller.test.ts",
     `it('empty', () => {});`,
-  ); // D закрыт — падать должен именно E
+  );
   const tp = writeTranscript(dir, [
     asstEdit(path.join(dir, "app/controllers/users_controller.ts")),
     asstBash("curl -s http://localhost:3000/users"),
@@ -480,10 +459,6 @@ test("triggerE: рядовой по имени controller с мутирующи�
   expectBlock(r.stdout, "E");
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер M: фронт-правка без render-проверки
-// ────────────────────────────────────────────────────────────────────────────
-
 const CARD_TSX = "export function Card() { return <div data-x>hi</div>; }\n";
 
 function asstMcp(name, input = {}) {
@@ -496,10 +471,10 @@ function asstMcp(name, input = {}) {
 test("triggerM: фронт-правка с unit-прогоном, но без рендера — блокируется", () => {
   const dir = tmp();
   writeFile(dir, "src/Card.tsx", CARD_TSX);
-  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`); // D закрыт
+  writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
   const tp = writeTranscript(dir, [
     asstEdit(path.join(dir, "src/Card.tsx")),
-    asstBash("npx vitest run"), // verify есть (A молчит), render — нет
+    asstBash("npx vitest run"),
     asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
   ]);
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
@@ -540,9 +515,9 @@ test("triggerM: правка тест-файла ПОСЛЕ рендера не 
   writeFile(dir, "src/Card.test.tsx", `it('empty', () => {});`);
   const tp = writeTranscript(dir, [
     asstEdit(path.join(dir, "src/Card.tsx")),
-    asstBash("curl -s http://localhost:3000/cards"), // render
-    asstEdit(path.join(dir, "src/Card.test.tsx")), // тест-файл — не фронт-правка для M
-    asstBash("npx vitest run"), // verify после правки теста (A молчит)
+    asstBash("curl -s http://localhost:3000/cards"),
+    asstEdit(path.join(dir, "src/Card.test.tsx")),
+    asstBash("npx vitest run"),
     asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/Card.test.tsx", "empty")),
   ]);
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
@@ -673,11 +648,8 @@ test("triggerF: sh-декларация с несуществующим лейб
 });
 
 test("lastText: промежуточный success-нарратив, за которым идёт tool_use, НЕ считается финальным claim", () => {
-  // Регресс: моё «Marking docs task done» сообщение (за ним TaskUpdate) ложно
-  // принималось за финальный claim → F-блок, хотя реальный финал (с блоком
-  // edge-cases) шёл позже / ещё не сброшен на диск (flush-гонка). Терминальное
-  // сообщение хода — то, после которого НЕТ tool_use. Если такого нет (только
-  // промежуточный текст + tool_use) — claim'а нет, блокировать нечего.
+  // Не менять, потому что кейс закрывает регресс: промежуточный нарратив, за
+  // которым идёт tool_use, принимался за финальный claim.
   const dir = tmp();
   writeFile(dir, "src/foo.ts", "x");
   writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
@@ -692,8 +664,8 @@ test("lastText: промежуточный success-нарратив, за кот
 });
 
 test("lastText: терминальный текст после tool_use оценивается нормально (claim есть → F блокирует)", () => {
-  // Контр-проверка: легитимный финал (текст без tool_use после него) по-прежнему
-  // оценивается — детект не ослаблен предыдущим фиксом.
+  // Не менять, потому что это контр-проверка к предыдущему кейсу: детект финала
+  // не должен ослабнуть.
   const dir = tmp();
   writeFile(dir, "src/foo.ts", "x");
   writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
@@ -710,12 +682,8 @@ test("lastText: терминальный текст после tool_use оцен
 test("triggerH: public surface (config) без doc edits блокируется", () => {
   const dir = tmp();
   writeFile(dir, ".claude-plugin/plugin.json", '{"name":"x"}');
-  // plugin.json — config, D/E на него не действуют (isCodeFile=false).
-  // Doc edits в сессии нет → должен сработать H. F (edge-cases) должен пройти, потому что
-  // observableSrcFiles пуст → блок <edge-cases> можно опустить (не пуст — но валидируется,
-  // если есть). Чтобы F не загорелся, добавим валидную декларацию (хотя observableSrcFiles
-  // пуст, hook всё равно спросит про edge-cases — но не сработает приоритетно над H).
-  // Точнее: H проверяется ДО F.
+  // Не менять, потому что кейс держит observableSrcFiles пустым: только так
+  // проверяется, что H срабатывает, а F при этом не требует блока.
   const tp = writeTranscript(dir, [
     asstEdit(path.join(dir, ".claude-plugin/plugin.json")),
     asstBash("curl -s http://localhost:3000/api/foo"),
@@ -733,7 +701,7 @@ test("happy path: edits + verify + tests + edge-cases → НЕ блокируе�
     "src/foo.test.ts",
     `it('empty', () => {});\nit('race_concurrent', () => {});`,
   );
-  writeFile(dir, "README.md", "# foo"); // public surface не тронут — H не должен сработать
+  writeFile(dir, "README.md", "# foo");
   const tp = writeTranscript(dir, [
     asstEdit(path.join(dir, "src/foo.ts")),
     asstEdit(path.join(dir, "src/foo.test.ts")),
@@ -804,7 +772,6 @@ test("triggerD НЕ срабатывает на миграции (timestamp file
     "backend/database/migrations/1777287343989_create_users_table.ts",
     "export class CreateUsers {}",
   );
-  // Парный «logic»-файл с тестом — чтобы не падать на E (controller) и F (no edge-cases).
   writeFile(dir, "backend/app/services/foo.ts", "export class Foo {}");
   writeFile(dir, "backend/tests/unit/foo.spec.ts", `it('empty', () => {});`);
   const tp = writeTranscript(dir, [
@@ -928,7 +895,6 @@ test("MAIN_SKILL_VERIFY_IGNORE_GLOBS пропускает указанный п�
   const dir = tmp();
   writeFile(dir, "package.json", "{}");
   writeFile(dir, "legacy/old_module.ts", "export class Old {}");
-  // Дополнительная редактируемая пара чтобы edge-cases имел валидный test_file.
   writeFile(dir, "src/util.ts", "export class Util {}");
   writeFile(dir, "src/util.spec.ts", `it('empty', () => {});`);
   const tp = writeTranscript(dir, [
@@ -937,13 +903,10 @@ test("MAIN_SKILL_VERIFY_IGNORE_GLOBS пропускает указанный п�
     asstBash("npm test"),
     asstText(SUCCESS + " " + EDGE_CASES_BLOCK("src/util.spec.ts", "empty")),
   ]);
-  // Без override — D-триггер сработает на legacy/old_module.ts.
   const blocked = runHook(tp, { CLAUDE_PROJECT_DIR: dir });
   expectBlock(blocked.stdout, "D");
-  // reasonD стероит к УЗКОМУ глобу, не каталогу целиком, и упоминает guard.
   const reasonD = JSON.parse(blocked.stdout).reason;
   assert.match(reasonD, /узкий глоб|ignore-glob-guard/);
-  // С override — НЕ блокируется.
   const allowed = runHook(tp, {
     CLAUDE_PROJECT_DIR: dir,
     MAIN_SKILL_VERIFY_IGNORE_GLOBS: "**/legacy/**",
@@ -952,7 +915,6 @@ test("MAIN_SKILL_VERIFY_IGNORE_GLOBS пропускает указанный п�
 });
 
 test("triggerD срабатывает в monorepo, когда тест в backend/tests/unit/ есть и не находится без фикса", () => {
-  // Это reverse-test: подтверждаем, что workspace-aware lookup НАХОДИТ тест.
   const dir = tmp();
   writeFile(dir, "package.json", "{}");
   writeFile(dir, "backend/package.json", "{}");
@@ -982,11 +944,6 @@ test("triggerD срабатывает в monorepo, когда тест в backen
   expectNoBlock(r.stdout);
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггеры J / K: self-review + review-triage
-// ────────────────────────────────────────────────────────────────────────────
-
-// Сетап минимально-валидного okay-кейса для J/K — все остальные триггеры пройдены.
 function setupReviewBase(
   dir,
   srcPath = "src/foo.ts",
@@ -1022,8 +979,8 @@ test("triggerJ: значительный diff без self-review блока → 
     MAIN_SKILL_VERIFY_REVIEW: "both",
   });
   expectBlock(r.stdout, "J");
-  // контр-авторизация серверного AgentTool-гейта — модель не должна пропускать
-  // запуск ревью-сабагентов со ссылкой на «Do not call the AgentTool…»
+  // Не менять, потому что кейс сторожит контр-авторизацию AgentTool-гейта в
+  // тексте reasonJ.
   const reason = JSON.parse(r.stdout).reason;
   assert.match(reason, /unless the user requested it/);
   assert.match(reason, /запуск трёх ревью-сабагентов авторизован/);
@@ -1198,7 +1155,7 @@ test("triggerJ + K: applied без обоснования / короткое —
         " " +
         EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
         " <self-review>code:applied:fixed\nsecurity:none-found</self-review>" +
-        " <review-triage>code:1:applied:fixed</review-triage>", // applied слишком короткий reason
+        " <review-triage>code:1:applied:fixed</review-triage>",
     ),
   ]);
   const r = runHook(tp, {
@@ -1287,10 +1244,8 @@ test("triggerK: none-found в обеих секциях → триаж не тр
 });
 
 test("triggerJ: fallback — code-review через general-purpose (без superpowers:code-reviewer) засчитывается", () => {
-  // Регресс: SKILL.md шаг 4 разрешает fallback на встроенный general-purpose,
-  // когда subagent_type superpowers:code-reviewer недоступен в среде
-  // (агент удалён из superpowers 5.1.0). Хук обязан засчитывать code-review
-  // по тексту промпта, а не по конкретному subagent_type.
+  // Не менять, потому что кейс закрывает регресс: general-purpose как fallback
+  // обязан засчитываться, когда superpowers:code-reviewer недоступен.
   const dir = tmp();
   const base = setupReviewBase(dir);
   const tp = writeTranscript(dir, [
@@ -1321,8 +1276,8 @@ test("triggerJ: fallback — code-review через general-purpose (без supe
 });
 
 test("triggerJ: ревью через инструмент Agent (Task недоступен в окружении) засчитывается", () => {
-  // Регресс bug-1: в сборках Claude Code сабагент-инструмент экспонирован как
-  // Agent, а Task отсутствует. Хук обязан распознавать review-вызовы и по Agent.
+  // Не менять, потому что кейс закрывает регресс: в части сборок сабагент зовётся
+  // Agent, а Task отсутствует.
   const dir = tmp();
   const base = setupReviewBase(dir);
   const tp = writeTranscript(dir, [
@@ -1424,7 +1379,6 @@ test("triggerK: русское tech-обоснование с «потому ч�
 });
 
 test('triggerJ: невалидный MAIN_SKILL_VERIFY_REVIEW="off" → fallback на both (regression)', () => {
-  // "off" не в allowlist → откатываемся на both → значит требуется self-review.
   const dir = tmp();
   const base = setupReviewBase(dir);
   const tp = writeTranscript(dir, [
@@ -1442,7 +1396,6 @@ test("triggerJ: правка docs не учитывается в порог 20 �
   const dir = tmp();
   writeFile(dir, "src/foo.ts", "x");
   writeFile(dir, "src/foo.test.ts", `it('empty', () => {});`);
-  // 1 строка observable, 50 строк docs — должно быть trivial.
   const tp = writeTranscript(dir, [
     asstEditWith(path.join(dir, "src/foo.ts"), "const x = 1;"),
     asstEditWith(
@@ -1463,7 +1416,6 @@ test("triggerJ: правка docs не учитывается в порог 20 �
 test("triggerK: ReDoS-защита — длинный buggy reason не подвешивает hook (regression)", () => {
   const dir = tmp();
   const base = setupReviewBase(dir);
-  // 200K char строка из 'a' — worst-case для регекса /[a-z][a-zA-Z]{3,}[A-Z]\w+/
   const evil = "a".repeat(200_000);
   const tp = writeTranscript(dir, [
     ...base,
@@ -1483,11 +1435,9 @@ test("triggerK: ReDoS-защита — длинный buggy reason не подв
     MAIN_SKILL_VERIFY_REVIEW: "both",
   });
   const elapsed = Date.now() - start;
-  // Должно завершиться в разумное время (< 5 сек). Раньше зависало > 30 сек.
   assert.ok(elapsed < 5000, `hook took ${elapsed}ms, ReDoS не защищён`);
-  // 200K of 'a' — slop по тексту нет, но и tech-signal'а нет (только weak _WEAK_SIGNALS — единичный),
-  // поэтому слоп-детектор не блокирует, просто длинный reason без сигналов проходит. Это OK для
-  // теста — проверяем именно скорость, не семантику.
+  // Не менять, потому что кейс проверяет только отсутствие катастрофического
+  // backtracking, а не вердикт слоп-детектора.
   assert.ok(r.status === 0 || r.stdout.length >= 0);
 });
 
@@ -1545,10 +1495,6 @@ test("triggerK: applied + полный валидный triage → НЕ блок
   });
   expectNoBlock(r.stdout);
 });
-
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер N: премортем-блок (+ edge-секция в J)
-// ────────────────────────────────────────────────────────────────────────────
 
 const PREMORTEM_OK = [
   "<premortem>",
@@ -1927,7 +1873,7 @@ test("triggerN: ReDoS-регрессия — 30k незакрытых <premortem
     MAIN_SKILL_VERIFY_PREMORTEM: "1",
   });
   const elapsed = Date.now() - t0;
-  expectBlock(r.stdout, "N"); // незакрытые теги не образуют блоков → missing
+  expectBlock(r.stdout, "N");
   assert.ok(elapsed < 10_000, `hook занял ${elapsed}ms на adversarial-входе`);
 });
 
@@ -2090,8 +2036,8 @@ test("triggerJ: edge-декларация без premortem-агента → bloc
 });
 
 test("triggerJ: отравленный tool_use не роняет хук в silent exit", () => {
-  // {toString: 1} ломает String(v) TypeError-ом. До safeInputStr одна такая
-  // запись в транскрипте гасила ВСЕ триггеры (silent exit), т.е. отключала хук.
+  // Не менять, потому что кейс закрывает класс «одна запись в транскрипте гасит
+  // все триггеры»: String({toString: 1}) бросает TypeError.
   const dir = tmp();
   const base = setupReviewBase(dir);
   const poisoned = {
@@ -2134,7 +2080,6 @@ test("triggerJ: отравленный tool_use не роняет хук в sile
     MAIN_SKILL_VERIFY_REVIEW: "both",
     MAIN_SKILL_VERIFY_PREMORTEM: "1",
   });
-  // edge-секция объявлена, premortem-агента нет → fake-decl. Главное — блок ЕСТЬ.
   expectBlock(r.stdout, "J");
 });
 
@@ -2301,7 +2246,6 @@ test("triggerJ: ANSI в имени модели санитизируется в 
     MAIN_SKILL_VERIFY_PREMORTEM: "1",
   });
   expectBlock(r.stdout, "J");
-  // stdout — JSON, ESC там экранирован: проверяем распарсенный reason.
   const parsed = JSON.parse(r.stdout);
   assert.ok(
     !parsed.reason.includes("\x1b"),
@@ -2367,10 +2311,6 @@ test("triggerK: edge-источник в review-triage валиден", () => {
   expectNoBlock(r.stdout);
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// hardening (v1.6.9): transcript size cap, isFile guard, ANSI strip
-// ────────────────────────────────────────────────────────────────────────────
-
 test("hardening: transcript_path не существует → silent exit", () => {
   const dir = tmp();
   const r = runHook(path.join(dir, "no-such.jsonl"), {
@@ -2381,7 +2321,6 @@ test("hardening: transcript_path не существует → silent exit", () 
 
 test("hardening: transcript_path указывает на директорию → silent exit", () => {
   const dir = tmp();
-  // dir сам — не файл; isFile()=false → silent exit
   const r = runHook(dir, { CLAUDE_PROJECT_DIR: dir });
   expectNoBlock(r.stdout);
 });
@@ -2389,7 +2328,6 @@ test("hardening: transcript_path указывает на директорию �
 test("hardening: transcript > MAX_TRANSCRIPT_BYTES → silent exit", () => {
   const dir = tmp();
   const tp = path.join(dir, "big.jsonl");
-  // 51 MB — над cap-ом 50 MB. Без stat-guard хук бы прочитал всё в память.
   const fd = fs.openSync(tp, "w");
   const chunk = Buffer.alloc(1024 * 1024, "x");
   for (let i = 0; i < 51; i++) fs.writeSync(fd, chunk);
@@ -2400,10 +2338,8 @@ test("hardening: transcript > MAX_TRANSCRIPT_BYTES → silent exit", () => {
 
 test("hardening: ANSI escapes в file_path strip-аются из reason", () => {
   const dir = tmp();
-  // Контрольные символы в имени файла: ESC[2K (clear line), ESC[1A (cursor up).
-  // Без strip эти байты дошли бы до терминала юзера. Файл создаётся реально
-  // (ext4 разрешает ESC в имени): несуществующий путь existsInsideRepo теперь
-  // отсекает до reason — сам вектор ANSI-эха жив только для файлов на диске.
+  // Не менять, потому что файл создаётся реально: несуществующий путь отсеётся
+  // в existsInsideRepo раньше, и кейс перестанет проверять strip.
   const malicious = "src/\x1b[2K\x1b[1Aevil.ts";
   writeFile(dir, malicious, "x");
   const tp = writeTranscript(dir, [
@@ -2417,7 +2353,6 @@ test("hardening: ANSI escapes в file_path strip-аются из reason", () => 
     !parsed.reason.includes("\x1b"),
     "reason содержит ESC после sanitize",
   );
-  // \n остаётся легитимно (line breaks reason). Остальные control-chars — нет.
   const sanitizedCheck = parsed.reason.replace(/\n/g, "");
   assert.ok(
     !/[\x00-\x1f\x7f]/.test(sanitizedCheck),
@@ -2425,11 +2360,6 @@ test("hardening: ANSI escapes в file_path strip-аются из reason", () => 
   );
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер L: dep version-lookup enforcement
-// ────────────────────────────────────────────────────────────────────────────
-
-// Helper: симулирует "Edit на manifest-файл" с конкретным new_string.
 function asstEditWith(file_path, new_string) {
   return {
     type: "assistant",
@@ -2460,7 +2390,6 @@ function asstWriteWith(file_path, content) {
   };
 }
 
-// runHookWithDeps: тот же helper что runHook, но без MAIN_SKILL_VERIFY_DEPS=0.
 function runHookWithDeps(transcript_path, env = {}) {
   const r = spawnSync("node", [HOOK], {
     input: JSON.stringify({ transcript_path }),
@@ -2469,7 +2398,6 @@ function runHookWithDeps(transcript_path, env = {}) {
       ...process.env,
       MAIN_SKILL_VERIFY_LINT: "0",
       MAIN_SKILL_VERIFY_REVIEW: "0",
-      // MAIN_SKILL_VERIFY_DEPS НЕ выставлен — по умолчанию active.
       CLAUDE_PROJECT_DIR:
         env.CLAUDE_PROJECT_DIR || path.dirname(transcript_path),
       ...env,
@@ -2481,16 +2409,14 @@ function runHookWithDeps(transcript_path, env = {}) {
 
 test("L: блок при добавлении npm dep без lookup", () => {
   const dir = tmp();
-  // Имитируем сценарий: Claude добавил react в package.json без вызова npm view.
   const pkgPath = path.join(dir, "package.json");
-  // Файл существует, чтобы пара test-файла не валила D раньше.
   fs.writeFileSync(
     pkgPath,
     JSON.stringify({ name: "x", version: "1.0.0" }, null, 2),
   );
   const tp = writeTranscript(dir, [
     asstEditWith(pkgPath, `"react": "^18.0.0"`),
-    asstBash("curl http://localhost:3000/"), // верификация для A
+    asstBash("curl http://localhost:3000/"),
     asstText(
       "готово.\n\n<edge-cases>\nempty:N/A:текстовая правка\nboundary:N/A:n/a\nconcurrency:N/A:n/a\nexternal_failure:N/A:n/a\npermission:N/A:n/a\nmalformed_input:N/A:n/a\ndeleted_resource:N/A:n/a\n</edge-cases>",
     ),
@@ -2524,7 +2450,7 @@ test("L: пропускает при наличии npm view <pkg>", () => {
 test("L: блок при FROM node:18 в Dockerfile без lookup", () => {
   const dir = tmp();
   const dockerPath = path.join(dir, "Dockerfile");
-  fs.writeFileSync(dockerPath, "FROM scratch\n"); // pre-existing
+  fs.writeFileSync(dockerPath, "FROM scratch\n");
   const tp = writeTranscript(dir, [
     asstWriteWith(dockerPath, "FROM node:18-alpine\nWORKDIR /app\n"),
     asstBash("docker build ."),
@@ -2623,7 +2549,6 @@ test("L: opt-out MAIN_SKILL_VERIFY_DEPS=0 пропускает", () => {
 
 test("L: не активируется без manifest-правки", () => {
   const dir = tmp();
-  // Только src-правка с парным тестом, никаких manifest-edit.
   writeFile(dir, "src/foo.ts", "x");
   writeFile(dir, "src/foo.test.ts", "test('x', ()=>{});");
   const tp = writeTranscript(dir, [
@@ -2636,12 +2561,6 @@ test("L: не активируется без manifest-правки", () => {
   const r = runHookWithDeps(tp, { CLAUDE_PROJECT_DIR: dir });
   expectNoBlock(r.stdout);
 });
-
-// ────────────────────────────────────────────────────────────────────────────
-// session-disabled: /main-skill:off (сентинел) и env MAIN_SKILL_OFF=1 → no-op.
-// Базовый блокирующий сценарий — как triggerD, но при выключенном плагине Stop
-// не должен блокироваться (хук ведёт себя так, будто не установлен).
-// ────────────────────────────────────────────────────────────────────────────
 
 function blockingDscenario() {
   const dir = tmp();
@@ -2658,9 +2577,7 @@ function blockingDscenario() {
 
 test("session-disabled: env MAIN_SKILL_OFF=1 → Stop не блокирует", () => {
   const { dir, tp } = blockingDscenario();
-  // sanity: без выключения этот сценарий блокирует (триггер D).
   expectBlock(runHook(tp, { CLAUDE_PROJECT_DIR: dir }).stdout, "D");
-  // с выключением — тишина.
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, MAIN_SKILL_OFF: "1" });
   expectNoBlock(r.stdout);
 });
@@ -2676,13 +2593,6 @@ test("session-disabled: сентинел-файл под HOME → Stop не бл
   const r = runHook(tp, { CLAUDE_PROJECT_DIR: dir, HOME: home });
   expectNoBlock(r.stdout);
 });
-
-// ────────────────────────────────────────────────────────────────────────────
-// reason-статика: цитаты SKILL.md в reason-текстах не дрейфуют от самого SKILL.md
-// (редактура 1.11.0 переименовала секцию «happy path is NOT enough» и удалила
-// чеклист с «Linters + formatters green» — reason-тексты обязаны цитировать
-// живые формулировки, иначе блок-сообщение отсылает к несуществующему тексту).
-// ────────────────────────────────────────────────────────────────────────────
 
 test("reason-статика: reasonD/reasonG цитируют актуальные формулировки SKILL.md", () => {
   const src = fs.readFileSync(HOOK, "utf8");

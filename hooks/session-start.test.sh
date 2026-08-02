@@ -44,8 +44,8 @@ OUT=$(HOME="$H" MAIN_SKILL_AUTO_UPDATE=0 sh "$HOOK")
 rm -rf "$H"
 assert_contains "$OUT" "$BANNER_MARKER" "empty enabledPlugins → баннер"
 assert_contains "$OUT" "$SKILL_MARKER" "empty enabledPlugins → skill-инструкция"
-# Формулировка инструкции: чёткий императив без CAPS-нажима (5-gen стиль,
-# см. CLAUDE.md «Как писать правила»). Регресс тона ловится обеими проверками.
+# Не менять, потому что пара проверок держит тон инструкции: императив есть,
+# CAPS-нажима нет (стиль правил из CLAUDE.md → «Процесс правки»).
 assert_contains "$OUT" "$SKILL_PHRASE" "инструкция начинается с императива «Перед первым ответом»"
 assert_not_contains "$OUT" "$CAPS_PRESSURE" "инструкция без CAPS-нажима (ОБЯЗАТЕЛЬНО)"
 # Контр-авторизация серверного AgentTool-гейта — ревью-сабагенты = standing-запрос.

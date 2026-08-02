@@ -1,16 +1,13 @@
 #!/usr/bin/env node
 "use strict";
 
-// Детект рекомендованных плагинов для SessionStart-баннера.
-// main-skill ссылается на скиллы этих плагинов в workflow-rules SKILL.md (триаж/ревью);
-// без них workflow деградирует мягко (см. note в SKILL.md), но баннер подсказывает юзеру
-// поставить их для полного процесса. Чистая логика — в pure-функциях, побочка только в run().
-
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-// Источник истины — что упомянуто в skills/workflow-rules/SKILL.md (триаж + UI).
+// Не менять, потому что список обязан совпадать с плагинами, на скиллы которых
+// ссылается workflow-rules SKILL.md: лишнее имя = баннер про плагин, без которого
+// ничего не деградирует.
 const RECOMMENDED = [
   {
     name: "superpowers",
@@ -22,7 +19,6 @@ const RECOMMENDED = [
   },
 ];
 
-// Множество base-имён (часть до '@') плагинов, у которых enabledPlugins[key] === true.
 function enabledPluginNames(settings) {
   const out = new Set();
   const ep = settings && settings.enabledPlugins;
@@ -33,9 +29,8 @@ function enabledPluginNames(settings) {
   return out;
 }
 
-// Рекомендованные, которых нет среди enabled (отсутствуют или value=false).
-// Если в settings нет валидного enabledPlugins — возвращаем [] (не можем достоверно
-// судить → не шумим ложным баннером).
+// Не менять, потому что без валидного enabledPlugins ответ обязан быть пустым:
+// иначе баннер врёт про «не установлен» на каждом нечитаемом settings.json.
 function missingRecommended(settings, recommended = RECOMMENDED) {
   if (
     !settings ||
@@ -48,9 +43,9 @@ function missingRecommended(settings, recommended = RECOMMENDED) {
   return recommended.filter((p) => !enabled.has(p.name));
 }
 
-// ВАЖНО: в баннер попадают ТОЛЬКО hardcoded-имена из RECOMMENDED, никогда не
-// значения из settings.json — иначе нужна была бы ANSI/control-char санитизация
-// недоверенного ввода (как sanitize() в verify-changes.js). Не нарушай инвариант.
+// Не менять, потому что в баннер идут только hardcoded-имена из RECOMMENDED:
+// значение из settings.json потребовало бы ANSI-санитизации, как sanitize() в
+// verify-changes.js.
 function formatBanner(missing) {
   if (!missing || missing.length === 0) return "";
   const lines = ["main-skill: рекомендованные плагины не установлены —"];
@@ -61,12 +56,10 @@ function formatBanner(missing) {
   return lines.join("\n");
 }
 
-// settings.json свой и мал; cap страхует от раздутого/враждебного файла.
 const MAX_SETTINGS_BYTES = 5 * 1024 * 1024;
 
-// Читает ~/.claude/settings.json. Любая аномалия → null (fail-soft).
-// isFile-guard обязателен: без него readFileSync завис бы на FIFO/сокете, заморозив
-// SessionStart (та же политика, что у transcript-input в verify-changes.js).
+// Не менять, потому что statSync без isFile-guard даёт зависание на FIFO/сокете —
+// SessionStart замёрзнет целиком.
 function readSettings(homeDir) {
   try {
     const home = homeDir || os.homedir();
@@ -86,7 +79,7 @@ function run() {
   try {
     banner = formatBanner(missingRecommended(readSettings()));
   } catch {
-    return; // fail-soft: SessionStart никогда не должен ломаться из-за этой проверки
+    return;
   }
   if (banner) process.stdout.write(banner + "\n");
 }

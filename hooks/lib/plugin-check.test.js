@@ -1,5 +1,3 @@
-// Unit-tests для lib/plugin-check.js. Запуск: node --test hooks/lib/plugin-check.test.js
-
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
@@ -55,8 +53,8 @@ test("missingRecommended: value=false считается как missing (уст�
   );
 });
 
-// malformed / отсутствующий enabledPlugins → НЕ можем судить → пустой результат
-// (избегаем ложного баннера). Это граничный кейс «нет данных».
+// Не менять, потому что пустой результат тут — требование: баннер не должен
+// врать про «не установлен» на нечитаемом settings.json.
 test("missingRecommended: нет ключа enabledPlugins → [] (no false positive)", () => {
   assert.deepStrictEqual(pc.missingRecommended({}, REC), []);
   assert.deepStrictEqual(pc.missingRecommended(null, REC), []);
@@ -116,9 +114,7 @@ test("formatBanner: два плагина → оба bullet'а присутст�
 
 test("readSettings: битый JSON / отсутствующий файл → null (fail-soft)", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pc-"));
-  // нет файла вовсе
   assert.strictEqual(pc.readSettings(dir), null);
-  // битый JSON
   fs.mkdirSync(path.join(dir, ".claude"), { recursive: true });
   fs.writeFileSync(path.join(dir, ".claude", "settings.json"), "{not json");
   assert.strictEqual(pc.readSettings(dir), null);
@@ -126,7 +122,6 @@ test("readSettings: битый JSON / отсутствующий файл → nu
 
 test("readSettings: путь — директория, не файл → null (isFile-guard от зависания)", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pc-"));
-  // создаём settings.json КАК ДИРЕКТОРИЮ — readFileSync без guard завис бы/кинул
   fs.mkdirSync(path.join(dir, ".claude", "settings.json"), { recursive: true });
   assert.strictEqual(pc.readSettings(dir), null);
 });

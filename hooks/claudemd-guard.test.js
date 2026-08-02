@@ -1,17 +1,9 @@
-// Unit-тесты для claudemd-guard.js. Запуск: node hooks/claudemd-guard.test.js
-//
-// Хук — PreToolUse-гард на CLAUDE.md: на крупное дописывание в существующий файл
-// возвращает permissionDecision:deny с дистиллятом правил claude-md-management.
-// Создание-с-нуля и мелкие правки пропускаются молча.
-
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const g = require("./claudemd-guard");
-
-// ─── countLines ──────────────────────────────────────────────────────────────
 
 test("countLines: пустая строка = 0", () => {
   assert.equal(g.countLines(""), 0);
@@ -22,10 +14,8 @@ test("countLines: пустая строка = 0", () => {
 test("countLines: считает строки по \\n", () => {
   assert.equal(g.countLines("a"), 1);
   assert.equal(g.countLines("a\nb\nc"), 3);
-  assert.equal(g.countLines("a\nb\n"), 3); // trailing newline → последняя пустая строка считается
+  assert.equal(g.countLines("a\nb\n"), 3);
 });
-
-// ─── netAddedLines: Write ────────────────────────────────────────────────────
 
 test("netAddedLines Write: создание-с-нуля (файла нет) → isCreation", () => {
   const r = g.netAddedLines(
@@ -76,8 +66,6 @@ test("netAddedLines Write: content не строка → null", () => {
   );
 });
 
-// ─── netAddedLines: Edit ─────────────────────────────────────────────────────
-
 test("netAddedLines Edit: net = строки(new) - строки(old), не creation", () => {
   const r = g.netAddedLines(
     "Edit",
@@ -112,16 +100,14 @@ test("netAddedLines Edit: new_string не строка → null", () => {
   );
 });
 
-// ─── netAddedLines: MultiEdit ────────────────────────────────────────────────
-
 test("netAddedLines MultiEdit: суммирует net по всем edits", () => {
   const r = g.netAddedLines(
     "MultiEdit",
     {
       file_path: "/x/CLAUDE.md",
       edits: [
-        { old_string: "a", new_string: "a\nb\nc" }, // +2
-        { old_string: "x", new_string: "x\ny\nz\nw" }, // +3
+        { old_string: "a", new_string: "a\nb\nc" },
+        { old_string: "x", new_string: "x\ny\nz\nw" },
       ],
     },
     () => "f",
@@ -151,8 +137,6 @@ test("netAddedLines MultiEdit: пустой массив → net 0, не creatio
   assert.equal(r.isCreation, false);
 });
 
-// ─── decide ──────────────────────────────────────────────────────────────────
-
 test("decide: creation никогда не гардим", () => {
   assert.equal(g.decide({ netAdded: 999, isCreation: true }, 20).guard, false);
 });
@@ -170,8 +154,6 @@ test("decide: null-метрики (malformed) → не гардим", () => {
   assert.equal(g.decide(null, 20).guard, false);
 });
 
-// ─── resolveThreshold ────────────────────────────────────────────────────────
-
 test("resolveThreshold: дефолт 20", () => {
   assert.equal(g.resolveThreshold({}), 20);
 });
@@ -186,8 +168,6 @@ test("resolveThreshold: мусор/ноль/отрицательное → де�
   assert.equal(g.resolveThreshold({ MAIN_SKILL_CLAUDEMD_MAXADD: "-5" }), 20);
 });
 
-// ─── isClaudeMd ──────────────────────────────────────────────────────────────
-
 test("isClaudeMd: матч по basename, в т.ч. вложенный", () => {
   assert.equal(g.isClaudeMd("/repo/CLAUDE.md"), true);
   assert.equal(g.isClaudeMd("/repo/packages/foo/CLAUDE.md"), true);
@@ -199,8 +179,6 @@ test("isClaudeMd: не матчит прочее и регистр", () => {
   assert.equal(g.isClaudeMd("/repo/claude.md"), false);
   assert.equal(g.isClaudeMd(null), false);
 });
-
-// ─── evaluate (интеграция pure-ядра) ─────────────────────────────────────────
 
 const denyDeps = (overrides = {}) => ({
   env: {},
@@ -301,8 +279,6 @@ test("evaluate: reason упоминает improver когда плагин вк�
   assert.doesNotMatch(without.reason, /claude-md-improver/);
 });
 
-// ─── buildReason ─────────────────────────────────────────────────────────────
-
 test("buildReason: содержит число прироста, порог и анти-паттерны", () => {
   const r = g.buildReason(30, 20, false);
   assert.match(r, /30/);
@@ -328,8 +304,6 @@ test("evaluate: improverAvailable бросает → deny всё равно вы
   assert.equal(out.decision, "deny");
 });
 
-// ─── main: контракт stdout ───────────────────────────────────────────────────
-
 test("main: на крупной правке пишет PreToolUse с ключом permissionDecision=deny", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "msgrd-"));
   const fp = path.join(dir, "CLAUDE.md");
@@ -354,7 +328,6 @@ test("main: на крупной правке пишет PreToolUse с ключо
     fs.rmSync(dir, { recursive: true, force: true });
   }
   const o = JSON.parse(captured);
-  // hooks.json зависит от точного ключа permissionDecision (НЕ decision).
   assert.equal(o.hookSpecificOutput.hookEventName, "PreToolUse");
   assert.equal(o.hookSpecificOutput.permissionDecision, "deny");
   assert.match(o.hookSpecificOutput.permissionDecisionReason, /CLAUDE\.md/);
@@ -382,7 +355,136 @@ test("main: мелкая правка → ничего не пишет в stdout
   assert.equal(captured, "");
 });
 
-// ─── session-disabled (/main-skill:off, MAIN_SKILL_OFF=1) ─────────────────────
+const RU = "правило про хук и триггер\n";
+const RU_BYTES = Buffer.byteLength(RU, "utf8");
+const ruText = (bytes) => RU.repeat(Math.ceil(bytes / RU_BYTES));
+
+test("resolveMaxBytes: дефолт 40KB, env переопределяет, мусор → дефолт", () => {
+  assert.equal(g.resolveMaxBytes({}), 40 * 1024);
+  assert.equal(
+    g.resolveMaxBytes({ MAIN_SKILL_CLAUDEMD_MAXBYTES: "8192" }),
+    8192,
+  );
+  assert.equal(
+    g.resolveMaxBytes({ MAIN_SKILL_CLAUDEMD_MAXBYTES: "0" }),
+    40 * 1024,
+  );
+  assert.equal(
+    g.resolveMaxBytes({ MAIN_SKILL_CLAUDEMD_MAXBYTES: "ы" }),
+    40 * 1024,
+  );
+});
+
+test("projectedBytes: кириллица считается в байтах, а не символах", () => {
+  const s = "привет";
+  assert.equal(
+    g.projectedBytes(
+      "Write",
+      { file_path: "/x/CLAUDE.md", content: s },
+      () => null,
+    ),
+    12,
+  );
+});
+
+test("projectedBytes: Edit/MultiEdit = размер на диске - old + new", () => {
+  const disk = () => "x".repeat(1000);
+  assert.equal(
+    g.projectedBytes(
+      "Edit",
+      { file_path: "/x/CLAUDE.md", old_string: "xx", new_string: "yyyyy" },
+      disk,
+    ),
+    1003,
+  );
+  assert.equal(
+    g.projectedBytes(
+      "MultiEdit",
+      {
+        file_path: "/x/CLAUDE.md",
+        edits: [
+          { old_string: "x", new_string: "yy" },
+          { old_string: "xxx", new_string: "" },
+        ],
+      },
+      disk,
+    ),
+    998,
+  );
+  assert.equal(g.projectedBytes("Edit", { new_string: 1 }, disk), null);
+  assert.equal(g.projectedBytes("Edit", null, disk), null);
+});
+
+test("evaluate: правка, уводящая файл за кап → deny про размер", () => {
+  const p = {
+    tool_name: "Edit",
+    tool_input: {
+      file_path: "/x/CLAUDE.md",
+      old_string: "",
+      new_string: "новая секция\n",
+    },
+  };
+  const out = g.evaluate(p, denyDeps({ readFile: () => ruText(41 * 1024) }));
+  assert.equal(out.decision, "deny");
+  assert.match(out.reason, /при капе 40KB/);
+  assert.match(out.reason, /Не менять, потому что/);
+});
+
+test("evaluate: под капом крупная правка гардится порогом, а не размером", () => {
+  const p = {
+    tool_name: "Edit",
+    tool_input: {
+      file_path: "/x/CLAUDE.md",
+      old_string: "a",
+      new_string: Array.from({ length: 30 }, () => "x").join("\n"),
+    },
+  };
+  const out = g.evaluate(p, denyDeps({ readFile: () => "small\n" }));
+  assert.equal(out.decision, "deny");
+  assert.match(out.reason, /порог 20/);
+});
+
+test("evaluate: кап бьёт и по созданию-с-нуля (в отличие от порога)", () => {
+  const p = {
+    tool_name: "Write",
+    tool_input: { file_path: "/x/CLAUDE.md", content: ruText(41 * 1024) },
+  };
+  const out = g.evaluate(p, denyDeps({ readFile: () => null }));
+  assert.equal(out.decision, "deny");
+  assert.match(out.reason, /весит ~4[12]KB/);
+});
+
+test("evaluate: правка, СОКРАЩАЮЩАЯ раздутый файл ниже капа → пропускаем", () => {
+  const p = {
+    tool_name: "Edit",
+    tool_input: {
+      file_path: "/x/CLAUDE.md",
+      old_string: ruText(30 * 1024),
+      new_string: "коротко\n",
+    },
+  };
+  assert.equal(
+    g.evaluate(p, denyDeps({ readFile: () => ruText(45 * 1024) })),
+    null,
+  );
+});
+
+test("evaluate: кап переопределяется env", () => {
+  const p = {
+    tool_name: "Write",
+    tool_input: { file_path: "/x/CLAUDE.md", content: ruText(41 * 1024) },
+  };
+  assert.equal(
+    g.evaluate(
+      p,
+      denyDeps({
+        env: { MAIN_SKILL_CLAUDEMD_MAXBYTES: String(100 * 1024) },
+        readFile: () => null,
+      }),
+    ),
+    null,
+  );
+});
 
 test("evaluate: session-disabled (env + сентинел) → null, хотя иначе был бы deny", () => {
   const p = {
@@ -393,11 +495,8 @@ test("evaluate: session-disabled (env + сентинел) → null, хотя и�
       new_string: Array.from({ length: 30 }, () => "x").join("\n"),
     },
   };
-  // sanity: без выключения этот payload даёт deny.
   assert.ok(g.evaluate(p, denyDeps()));
-  // env-выключение.
   assert.equal(g.evaluate(p, denyDeps({ env: { MAIN_SKILL_OFF: "1" } })), null);
-  // сентинел-файл под HOME.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "msg-home-"));
   fs.mkdirSync(path.join(home, ".claude", "plugins"), { recursive: true });
   fs.writeFileSync(
@@ -405,4 +504,42 @@ test("evaluate: session-disabled (env + сентинел) → null, хотя и�
     "",
   );
   assert.equal(g.evaluate(p, denyDeps({ env: { HOME: home } })), null);
+});
+
+test("evaluate: над капом уменьшающая правка проходит, растущая — нет", () => {
+  const disk = ruText(45 * 1024);
+  const shrink = {
+    tool_name: "Edit",
+    tool_input: {
+      file_path: "/x/CLAUDE.md",
+      old_string: RU.repeat(50),
+      new_string: RU.repeat(20),
+    },
+  };
+  assert.equal(g.evaluate(shrink, denyDeps({ readFile: () => disk })), null);
+
+  const grow = {
+    tool_name: "Edit",
+    tool_input: {
+      file_path: "/x/CLAUDE.md",
+      old_string: RU.repeat(20),
+      new_string: RU.repeat(50),
+    },
+  };
+  const out = g.evaluate(grow, denyDeps({ readFile: () => disk }));
+  assert.equal(out.decision, "deny");
+  assert.match(out.reason, /УМЕНЬШАЕТ/);
+});
+
+test("evaluate: над капом правка того же размера не проходит", () => {
+  const disk = ruText(45 * 1024);
+  const same = {
+    tool_name: "Edit",
+    tool_input: {
+      file_path: "/x/CLAUDE.md",
+      old_string: RU.repeat(20),
+      new_string: "я".repeat(Buffer.byteLength(RU.repeat(20), "utf8") / 2),
+    },
+  };
+  assert.ok(g.evaluate(same, denyDeps({ readFile: () => disk })));
 });

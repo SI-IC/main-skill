@@ -39,7 +39,7 @@ Opt out of the update check with `export MAIN_SKILL_AUTO_UPDATE=0`.
 
 ## Disabling for a single session
 
-Run **`/main-skill:off`** mid-session (e.g. right after `/clear`) to turn the plugin off for the rest of that session — no restart needed. It drops a sentinel (`~/.claude/plugins/.main-skill-off`) that all hooks (`verify-changes`, `claudemd-guard`, `ignore-glob-guard`, `auto-format`) read at runtime and no-op on, and tells Claude to stop applying the workflow rules. **`/main-skill:on`** re-enables it. The sentinel is cleared automatically on the next `startup`/`resume`/`clear`, so a fresh session always starts with the plugin on.
+Run **`/main-skill:off`** mid-session (e.g. right after `/clear`) to turn the plugin off for the rest of that session — no restart needed. It drops a sentinel (`~/.claude/plugins/.main-skill-off`) that all hooks (`verify-changes`, `claudemd-guard`, `ignore-glob-guard`, `comment-guard`, `auto-format`) read at runtime and no-op on, and tells Claude to stop applying the workflow rules. **`/main-skill:on`** re-enables it. The sentinel is cleared automatically on the next `startup`/`resume`/`clear`, so a fresh session always starts with the plugin on.
 
 Launch-time equivalent for a whole session: `MAIN_SKILL_OFF=1 claude`. Note the sentinel is user-level, not session-scoped — while active it also silences other open Claude Code windows.
 
@@ -73,6 +73,14 @@ A repo with centralized tests (all tests under `tests/`, spec names by feature r
 
 To audit ignore-globs already configured in a project (e.g. broad ones set before the guard existed), run **`/main-skill:check-ignore-globs`**. It scans the project's carrier files (`.env*`, `.claude/settings*.json`, `.mcp.json`, `*.sh`), home-level configs (`~/.claude/settings.json`, shell rc) and the environment, flags any broad `dir/**` / `**/*.ext` glob via the same `isBroadIgnoreGlob` the guard uses, and helps you narrow each one. Standalone (no Claude): `node hooks/lib/audit-ignore-globs.js <dir>`.
 
+## Comments and CLAUDE.md (PreToolUse guards)
+
+Two guards keep prose out of places where it rots. Both deny the pending edit and ask Claude to re-issue it — nothing is written behind your back.
+
+`comment-guard.js` rejects code comments Claude adds. A comment survives only where its absence risks a regression on the next edit, and then it must start with **`Не менять, потому что …`** (`Do not change because …` also accepted) — the rest belongs in the code itself: a function name instead of a section header, a named constant instead of a note about a magic number. Not treated as comments: functional directives (`eslint-disable`, `# type: ignore`, `# noqa`, shebang), license / `@generated` headers, and JSDoc blocks carrying tags (`@param`, `@returns`, …). Only comments the edit _adds_ count — re-quoting an existing one in `old_string` is free. Opt out with `MAIN_SKILL_COMMENT_CHECK=0`.
+
+`claudemd-guard.js` keeps CLAUDE.md small: it denies an edit that appends ≥ `MAIN_SKILL_CLAUDEMD_MAXADD` net lines (default 20), and — regardless of the increment, creation included — any edit leaving the file above `MAIN_SKILL_CLAUDEMD_MAXBYTES` (default 40960, measured in UTF-8 bytes, so non-Latin docs are counted honestly). The block reason names the criterion: keep only what is derivable from neither code, nor tests, nor hooks; anything a test could assert or a hook could enforce belongs there instead. Opt out with `MAIN_SKILL_CLAUDEMD_CHECK=0`.
+
 Hard opt-outs:
 
 - `MAIN_SKILL_VERIFY_CHANGES=0` — disable all hook triggers.
@@ -85,6 +93,8 @@ Hard opt-outs:
 - `MAIN_SKILL_VERIFY_DEPS=0` — disable L (dep version-lookup enforcement). Useful for projects with a frozen lockfile where dep upgrades are batched manually.
 - `MAIN_SKILL_IMPORT_SCAN_MAX_FILES=<n>` — raise trigger D's import-scan read budget (default 200, cap 10000) for monorepos with hundreds of centralized specs per package.
 - `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — disable the `ignore-glob-guard` PreToolUse hook (allow writing broad `dir/**` ignore-globs).
+- `MAIN_SKILL_COMMENT_CHECK=0` — disable the `comment-guard` PreToolUse hook (projects whose convention mandates code comments).
+- `MAIN_SKILL_CLAUDEMD_CHECK=0` / `MAIN_SKILL_CLAUDEMD_MAXADD=<n>` / `MAIN_SKILL_CLAUDEMD_MAXBYTES=<bytes>` — `claudemd-guard`: disable entirely / net added-lines threshold (default 20) / hard file-size cap (default 40960).
 
 ## Editing the rules
 
@@ -107,6 +117,10 @@ main-skill/
 │   ├── session-start.sh    # remote-SHA check + plugin update + skill-invocation prompt
 │   ├── ignore-glob-guard.js     # PreToolUse hook: deny writing broad MAIN_SKILL_VERIFY_IGNORE_GLOBS (dir/**)
 │   ├── ignore-glob-guard.test.js # unit tests for ignore-glob-guard.js
+│   ├── comment-guard.js    # PreToolUse hook: deny code comments other than "Не менять, потому что …"
+│   ├── comment-guard.test.js # unit tests for comment-guard.js
+│   ├── claudemd-guard.js   # PreToolUse hook: deny CLAUDE.md bloat (net added lines + 40 KB cap)
+│   ├── claudemd-guard.test.js # unit tests for claudemd-guard.js
 │   ├── auto-format.js      # PostToolUse hook: formats edited file via prettier / ruff / gofmt / rustfmt / clang-format
 │   ├── auto-format.test.js # unit tests for auto-format.js
 │   ├── verify-changes.js   # Stop hook: blocks "done" until tests, docs, lint, edge-cases declaration are in place

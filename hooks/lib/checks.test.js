@@ -1,5 +1,3 @@
-// Unit-tests для lib/checks.js. Запуск: node --test hooks/lib/checks.test.js
-
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
@@ -38,8 +36,6 @@ test("isCodeFile отсеивает конфиги/ассеты/стили", () 
   assert.ok(!checks.isCodeFile("config.yaml"));
   assert.ok(!checks.isCodeFile("Dockerfile"));
   assert.ok(!checks.isCodeFile("logo.png"));
-  // Стили / разметка — не code-файлы для триггера D (визуальная верификация,
-  // не unit-тест на сам файл стиля).
   assert.ok(!checks.isCodeFile("app/styles.css"));
   assert.ok(!checks.isCodeFile("src/theme.scss"));
   assert.ok(!checks.isCodeFile("src/legacy.sass"));
@@ -61,31 +57,25 @@ test("isControllerOrRoute распознаёт endpoints", () => {
 });
 
 test("isCriticalEndpoint: доступ/деньги критичны, рядовые CRUD — нет", () => {
-  // критичные: auth / доступ
   assert.ok(checks.isCriticalEndpoint("app/controllers/auth_controller.ts"));
   assert.ok(checks.isCriticalEndpoint("pages/api/login.ts"));
   assert.ok(checks.isCriticalEndpoint("src/routes/admin.ts"));
   assert.ok(checks.isCriticalEndpoint("app/api/session/route.ts"));
-  // критичные: деньги
   assert.ok(checks.isCriticalEndpoint("app/api/checkout/route.ts"));
   assert.ok(
     checks.isCriticalEndpoint("app/controllers/payments_controller.rb"),
   );
   assert.ok(checks.isCriticalEndpoint("src/routes/transfer.ts"));
-  // рядовые — не критичны (покрываются триггером D)
   assert.ok(!checks.isCriticalEndpoint("app/controllers/posts_controller.ts"));
   assert.ok(!checks.isCriticalEndpoint("app/api/articles/route.ts"));
   assert.ok(!checks.isCriticalEndpoint("src/routes/health.ts"));
-  // generic `api` в пути сам по себе критичности не даёт
   assert.ok(!checks.isCriticalEndpoint("app/api/comments/route.ts"));
-  // короткие токены (acl/sso/...) — с границами: substring внутри слова не матчит
   assert.ok(!checks.isCriticalEndpoint("app/controllers/oracle_controller.ts"));
   assert.ok(
     !checks.isCriticalEndpoint("app/controllers/associate_controller.ts"),
   );
   assert.ok(checks.isCriticalEndpoint("src/routes/sso.ts"));
   assert.ok(checks.isCriticalEndpoint("app/controllers/acl_controller.ts"));
-  // пустое / null — не критичны (fail-soft)
   assert.ok(!checks.isCriticalEndpoint(""));
   assert.ok(!checks.isCriticalEndpoint(null));
 });
@@ -188,7 +178,6 @@ test("findPairedTestFile: .tsx ↔ .test.ts (логика без JSX в тест
 test("findPairedTestFile: .vue без парного теста → null", () => {
   const dir = tmp();
   writeFile(dir, "src/App.vue", "x");
-  // Голый src/App.ts рядом — это не тест (helper-файл), не должен матчиться.
   writeFile(dir, "src/App.ts", "x");
   assert.strictEqual(checks.findPairedTestFile("src/App.vue", dir), null);
 });
@@ -203,7 +192,6 @@ test("findPairedTestFile: .vue session-edit App.spec.ts валидный пар�
 
 test("findPairedTestFile: pnpm workspace — backend/tests/unit/foo.spec.ts от repoRoot", () => {
   const dir = tmp();
-  // monorepo структура
   writeFile(
     dir,
     "package.json",
@@ -278,12 +266,10 @@ test("findPairedTestFile: Python monorepo — pyproject.toml + pkg/tests/test_fo
 });
 
 test("findPairedTestFile: Cargo workspace — crate/tests/foo.rs не подходит, but src/foo.rs c #[test] не паттерн → null", () => {
-  // Sanity-check: Rust не имеет конвенции «<base>_test.rs» рядом, кладём фолбек на module-test → null.
   const dir = tmp();
   writeFile(dir, "Cargo.toml", '[workspace]\nmembers=["crate"]');
   writeFile(dir, "crate/Cargo.toml", '[package]\nname="crate"');
   writeFile(dir, "crate/src/foo.rs", "pub fn foo(){}");
-  // Никакого парного файла не пишем
   assert.strictEqual(checks.findPairedTestFile("crate/src/foo.rs", dir), null);
 });
 
@@ -297,8 +283,6 @@ test("findPairedTestFile: nested go module — module/tests/unit/foo.go не н�
   assert.ok(found);
   assert.match(found, /svc[\\/]internal[\\/]foo_test\.go/);
 });
-
-// ─── Mirror src↔test/tests/__tests__/spec на любой глубине ─────────────────
 
 test("findPairedTestFile: mirror src/.../foo.ts ↔ tests/.../foo.spec.ts", () => {
   const dir = tmp();
@@ -443,8 +427,6 @@ test("findPairedTestFile: суффикс <Base>Test.ts (Java-style тоже ва
   const dir = tmp();
   writeFile(dir, "src/foo.ts", "x");
   writeFile(dir, "src/fooTest.ts", "x");
-  // fooTest.ts ловится через TEST_FILE_RE? нет — там нужен .test/.spec/test_/_test
-  // Но как mirror-пара по конвенции <Base>Test — да, должно матчиться.
   const found = checks.findPairedTestFile("src/foo.ts", dir);
   assert.ok(found, `<base>Test convention should match, got ${found}`);
 });
@@ -548,8 +530,6 @@ test("findPairedTestFile: app/services/X.ts без теста нигде → nul
   );
 });
 
-// ─── findReviewAgentCalls ─────────────────────────────────────────────────
-
 function asstTool(name, input) {
   return {
     type: "assistant",
@@ -630,7 +610,6 @@ test("findReviewAgentCalls: edgeModel — модель последнего prem
     }),
   ]);
   assert.strictEqual(pinned.edgeModel, "sonnet");
-  // Перезапуск: побеждает последний вызов — его находки и идут в <review-triage>.
   const rerun = checks.findReviewAgentCalls([
     asstTool("Task", {
       subagent_type: "general-purpose",
@@ -647,8 +626,8 @@ test("findReviewAgentCalls: edgeModel — модель последнего prem
 });
 
 test("findReviewAgentCalls: объект без callable toString не роняет обход", () => {
-  // String({toString: 1}) бросает TypeError → необёрнутый throw увёл бы весь
-  // Stop-хук в silent exit и погасил все триггеры разом.
+  // Не менять, потому что кейс закрывает класс «одна запись гасит все триггеры»:
+  // необёрнутый throw уводит Stop-хук в silent exit.
   const r = checks.findReviewAgentCalls([
     asstTool("Task", {
       subagent_type: { toString: 1 },
@@ -685,18 +664,15 @@ test("isWeakPremortemModel: алиас и полный ID haiku — да, ост
   );
   assert.strictEqual(checks.isWeakPremortemModel("sonnet"), false);
   assert.strictEqual(checks.isWeakPremortemModel("claude-opus-4-8"), false);
-  // Кастомное имя деплоя у не-Anthropic провайдера: подстрока haiku, но модель
-  // за ней может быть любого класса — подстрочный матч дал бы ложный блок.
+  // Не менять, потому что кейс сторожит отказ от подстрочного матча: за именем
+  // prod-haiku-router может стоять модель любого класса.
   assert.strictEqual(checks.isWeakPremortemModel("prod-haiku-router"), false);
   assert.strictEqual(checks.isWeakPremortemModel("haiku-legacy-alias"), false);
   assert.strictEqual(checks.isWeakPremortemModel("  haiku  "), true);
-  // Не передан → наследование модели сессии, нарушением не считается.
   assert.strictEqual(checks.isWeakPremortemModel(""), false);
   assert.strictEqual(checks.isWeakPremortemModel(undefined), false);
   assert.strictEqual(checks.isWeakPremortemModel(null), false);
 });
-
-// ─── премортем: parsePremortemBlock / validatePremortem / findPremortemBlocks ─
 
 test("parsePremortemBlock: валидные записи с → и ->", () => {
   const p = checks.parsePremortemBlock(
@@ -738,7 +714,6 @@ test("validatePremortem: generic без числа/идентификатора/
 test("validatePremortem: кириллическая гипотеза с термином механизма — сигнал", () => {
   const ok = (s) =>
     checks.validatePremortem(checks.parsePremortemBlock(s))[0].ok;
-  // кейс премортем-ревьюера: специфично, но ни латиницы, ни цифр
   assert.ok(
     ok(
       "вебхук приходит повторно при ретрае поставщика → повторная запись начисления → обеспечить идемпотентность по внешнему идентификатору",
@@ -856,8 +831,6 @@ test("parseReviewTriage: edge-источник валиден", () => {
   assert.strictEqual(r.entries[0].source, "edge");
 });
 
-// ─── shouldSkipForTestPairing ─────────────────────────────────────────────
-
 test("shouldSkipForTestPairing: миграции (Knex/Adonis/Django/Rails)", () => {
   assert.ok(
     checks.shouldSkipForTestPairing(
@@ -872,7 +845,6 @@ test("shouldSkipForTestPairing: миграции (Knex/Adonis/Django/Rails)", ()
 });
 
 test("shouldSkipForTestPairing: timestamped filenames без папки migrations", () => {
-  // Knex/Adonis иногда кладёт файлы прямо в корень с timestamp
   assert.ok(
     checks.shouldSkipForTestPairing("1777287343989_create_users_table.ts"),
   );
@@ -916,7 +888,6 @@ test("shouldSkipForTestPairing: framework configs", () => {
   assert.ok(checks.shouldSkipForTestPairing("playwright.config.mjs"));
   assert.ok(checks.shouldSkipForTestPairing("/workspace/playwright.config.ts"));
   assert.ok(checks.shouldSkipForTestPairing("apps/web/playwright.config.ts"));
-  // boundary: не путать с произвольным префиксом
   assert.ok(!checks.shouldSkipForTestPairing("src/myplaywright.config.ts"));
 });
 
@@ -938,10 +909,9 @@ test("shouldSkipForTestPairing: infra/ infrastructure/ — IaC/operational ка�
   assert.ok(
     checks.shouldSkipForTestPairing("infrastructure/k8s/manifests.yaml"),
   );
-  // boundary: не путать с произвольным префиксом
   assert.ok(!checks.shouldSkipForTestPairing("src/myinfra/foo.ts"));
-  // config/ и deploy/ намеренно НЕ skip-ятся (могут содержать логику);
-  // юзер выключает их через MAIN_SKILL_VERIFY_IGNORE_GLOBS на уровне проекта.
+  // Не менять, потому что config/ и deploy/ обязаны требовать тест: логика там
+  // бывает, а глушит их проект своим ignore-глобом.
   assert.ok(!checks.shouldSkipForTestPairing("backend/config/database.ts"));
   assert.ok(!checks.shouldSkipForTestPairing("apps/web/config/env.ts"));
   assert.ok(!checks.shouldSkipForTestPairing("deploy/staging.sh"));
@@ -954,19 +924,17 @@ test("shouldSkipForTestPairing: Storybook stories", () => {
   assert.ok(checks.shouldSkipForTestPairing("src/Card.stories.jsx"));
   assert.ok(checks.shouldSkipForTestPairing("packages/ui/Modal.stories.ts"));
   assert.ok(checks.shouldSkipForTestPairing("Form.stories.js"));
-  // boundary: не путать с произвольным префиксом
-  assert.ok(!checks.shouldSkipForTestPairing("src/Button.story.tsx")); // singular
-  assert.ok(!checks.shouldSkipForTestPairing("src/MyStories.tsx")); // не суффикс
-  assert.ok(!checks.shouldSkipForTestPairing("src/userStories.ts")); // не суффикс
+  assert.ok(!checks.shouldSkipForTestPairing("src/Button.story.tsx"));
+  assert.ok(!checks.shouldSkipForTestPairing("src/MyStories.tsx"));
+  assert.ok(!checks.shouldSkipForTestPairing("src/userStories.ts"));
 });
 
 test("shouldSkipForTestPairing: __mocks__/ — Jest module mocks", () => {
   assert.ok(checks.shouldSkipForTestPairing("__mocks__/axios.ts"));
   assert.ok(checks.shouldSkipForTestPairing("src/__mocks__/api.ts"));
   assert.ok(checks.shouldSkipForTestPairing("packages/ui/__mocks__/theme.ts"));
-  // boundary: не путать с произвольным префиксом
-  assert.ok(!checks.shouldSkipForTestPairing("src/mocks/foo.ts")); // без подчёркиваний
-  assert.ok(!checks.shouldSkipForTestPairing("src/_mocks_/foo.ts")); // одинарные
+  assert.ok(!checks.shouldSkipForTestPairing("src/mocks/foo.ts"));
+  assert.ok(!checks.shouldSkipForTestPairing("src/_mocks_/foo.ts"));
   assert.ok(!checks.shouldSkipForTestPairing("src/mymocks/foo.ts"));
 });
 
@@ -981,28 +949,24 @@ test("shouldSkipForTestPairing: операционные shell-скрипты п
   assert.ok(checks.shouldSkipForTestPairing("sync_config.sh"));
   assert.ok(checks.shouldSkipForTestPairing("scripts/install.sh"));
   assert.ok(checks.shouldSkipForTestPairing("/workspace/deploy.sh"));
-  // ops-имя + [-_]суффикс — тоже операционный скрипт (кейс ERP_NEW).
   assert.ok(checks.shouldSkipForTestPairing("deploy-server.sh"));
   assert.ok(checks.shouldSkipForTestPairing("setup-test-db.sh"));
   assert.ok(checks.shouldSkipForTestPairing("install-deps.sh"));
   assert.ok(checks.shouldSkipForTestPairing("provision_node.sh"));
   assert.ok(checks.shouldSkipForTestPairing("sync-config-prod.sh"));
   assert.ok(checks.shouldSkipForTestPairing("scripts/deploy_staging.sh"));
-  // boundary: суффикс bounded ({1,40}) — сверхдлинный хвост не матчится
   assert.ok(!checks.shouldSkipForTestPairing(`deploy-${"x".repeat(41)}.sh`));
-  // boundary: не путать с произвольным префиксом / приросшим словом
   assert.ok(!checks.shouldSkipForTestPairing("my-deploy.sh"));
   assert.ok(!checks.shouldSkipForTestPairing("installer.sh"));
   assert.ok(!checks.shouldSkipForTestPairing("reinstall.sh"));
   assert.ok(!checks.shouldSkipForTestPairing("deployment.sh"));
-  // generic ops-имена намеренно НЕ skip-ятся — могут содержать логику.
+  // Не менять, потому что generic ops-имена обязаны требовать тест.
   assert.ok(!checks.shouldSkipForTestPairing("entrypoint.sh"));
   assert.ok(!checks.shouldSkipForTestPairing("healthcheck.sh"));
   assert.ok(!checks.shouldSkipForTestPairing("run.sh"));
 });
 
 test("shouldSkipForTestPairing: AdonisJS wiring — providers/, bin/-entrypoints, adonisrc", () => {
-  // providers/*_provider.(ts|js) — Adonis-конвенция имени, не каталог целиком.
   assert.ok(checks.shouldSkipForTestPairing("providers/app_provider.ts"));
   assert.ok(
     checks.shouldSkipForTestPairing(
@@ -1010,8 +974,8 @@ test("shouldSkipForTestPairing: AdonisJS wiring — providers/, bin/-entrypoints
     ),
   );
   assert.ok(checks.shouldSkipForTestPairing("providers/queue_provider.js"));
-  // cross-stack providers/ с реальной логикой — НЕ skip:
-  // NestJS-сервисы (dot-case), React-контексты (PascalCase), Flutter (.dart).
+  // Не менять, потому что providers/ вне Adonis-конвенции обязан требовать тест:
+  // там живут NestJS-сервисы, React-контексты, Flutter.
   assert.ok(
     !checks.shouldSkipForTestPairing("src/providers/payment.service.ts"),
   );
@@ -1021,34 +985,26 @@ test("shouldSkipForTestPairing: AdonisJS wiring — providers/, bin/-entrypoints
   assert.ok(
     !checks.shouldSkipForTestPairing("lib/providers/cart_provider.dart"),
   );
-  // не прямой потомок providers/ — НЕ skip
   assert.ok(
     !checks.shouldSkipForTestPairing("providers/http/server_provider.ts"),
   );
-  // bin/-entrypoints — ТОЧЕЧНО три Adonis-имени, не bin/**.
   assert.ok(checks.shouldSkipForTestPairing("bin/server.ts"));
   assert.ok(checks.shouldSkipForTestPairing("bin/console.ts"));
   assert.ok(checks.shouldSkipForTestPairing("bin/test.ts"));
   assert.ok(checks.shouldSkipForTestPairing("bin/server.js"));
   assert.ok(checks.shouldSkipForTestPairing("apps/api/bin/server.ts"));
-  // только прямой потомок bin/ (контракт паттерна)
   assert.ok(!checks.shouldSkipForTestPairing("bin/nested/server.ts"));
-  // adonisrc — framework-config (Adonis 6), оба расширения.
   assert.ok(checks.shouldSkipForTestPairing("adonisrc.ts"));
   assert.ok(checks.shouldSkipForTestPairing("adonisrc.js"));
   assert.ok(checks.shouldSkipForTestPairing("apps/api/adonisrc.ts"));
-  // ace.js — корневая JIT-обёртка Adonis 6; только .js.
   assert.ok(checks.shouldSkipForTestPairing("ace.js"));
   assert.ok(checks.shouldSkipForTestPairing("apps/api/ace.js"));
   assert.ok(!checks.shouldSkipForTestPairing("myace.js"));
   assert.ok(!checks.shouldSkipForTestPairing("src/ace.ts"));
-  // boundary: произвольный префикс не считается
   assert.ok(!checks.shouldSkipForTestPairing("src/myproviders/x_provider.ts"));
   assert.ok(!checks.shouldSkipForTestPairing("myadonisrc.ts"));
-  // bin/ с CLI-логикой — НЕ skip (точечность паттерна).
   assert.ok(!checks.shouldSkipForTestPairing("bin/report_logic.ts"));
   assert.ok(!checks.shouldSkipForTestPairing("bin/cleanup.sh"));
-  // ace-команды (commands/) — бывает реальная логика, НЕ skip каталогом.
   assert.ok(!checks.shouldSkipForTestPairing("commands/korp_migrate.ts"));
 });
 
@@ -1100,9 +1056,6 @@ test("shouldSkipForTestPairing: обычный сервисный файл — f
   assert.ok(!checks.shouldSkipForTestPairing("src/components/Button.tsx"));
 });
 
-// ─── isDeclarativeModelFile (Lucid/TypeORM content heuristic) ──────────────
-
-// Реалистичная голая Lucid-модель (кейс ERP_NEW: ai_conversation.ts).
 const LUCID_BARE = `import { DateTime } from 'luxon'
 import { BaseModel, column, hasMany, belongsTo } from '@adonisjs/lucid/orm'
 import type { HasMany, BelongsTo } from '@adonisjs/lucid/types/relations'
@@ -1270,13 +1223,11 @@ test("isDeclarativeModelFile: get/set accessor без @computed → НЕ skip", 
 });
 
 test("isDeclarativeModelFile: стрелка как значение (static / serialize / onQuery) → НЕ skip", () => {
-  // static-инициализатор со стрелкой — логика, аргументная позиция не при чём.
   assert.ok(
     !checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
   static active = () => AiConversation.query()
 }`),
   );
-  // serialize/prepare-трансформы в опциях колонки — логика.
   assert.ok(
     !checks.isDeclarativeModelFile(`import { BaseModel, column } from '@adonisjs/lucid/orm'
 export default class Doc extends BaseModel {
@@ -1284,7 +1235,6 @@ export default class Doc extends BaseModel {
   declare publishedAt: DateTime | null
 }`),
   );
-  // onQuery-скоуп в опциях relation — логика (стрелка после двоеточия).
   assert.ok(
     !checks.isDeclarativeModelFile(`import { BaseModel, hasMany } from '@adonisjs/lucid/orm'
 export default class Doc extends BaseModel {
@@ -1308,7 +1258,6 @@ test("isDeclarativeModelFile: Lucid scope / serializeExtras / static-вызов 
   serializeExtras = true
 }`),
   );
-  // Присваивание результата вызова (компутед-статик через хелпер).
   assert.ok(
     !checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
   static sorted = orderBy((m) => m.rank)
@@ -1317,13 +1266,11 @@ test("isDeclarativeModelFile: Lucid scope / serializeExtras / static-вызов 
 });
 
 test("isDeclarativeModelFile: гейт — не-модель / compose-mixin / пустота → НЕ skip", () => {
-  // Обычный сервис — нет extends BaseModel / @Entity.
   assert.ok(
     !checks.isDeclarativeModelFile(
       `export class AuthService {\n  login(u: string) { return u.length > 0 }\n}`,
     ),
   );
-  // Mixin через compose() — поведение из миксина, консервативно НЕ skip.
   assert.ok(
     !checks.isDeclarativeModelFile(`import { compose } from '@adonisjs/core/helpers'
 import { BaseModel, column } from '@adonisjs/lucid/orm'
@@ -1333,7 +1280,6 @@ export default class User extends compose(BaseModel, AuthFinder) {
   declare id: number
 }`),
   );
-  // Класс extends BaseModel, но БЕЗ единого column/relation/declare-поля.
   assert.ok(
     !checks.isDeclarativeModelFile(
       `import { BaseModel } from '@adonisjs/lucid/orm'\nexport default class Stub extends BaseModel {}`,
@@ -1344,7 +1290,6 @@ export default class User extends compose(BaseModel, AuthFinder) {
 });
 
 test("isDeclarativeModelFile: многострочная сигнатура метода → НЕ skip (ревью-HIGH)", () => {
-  // Prettier-перенос параметров; тело без this/return-маркеров — ловится по `){`.
   const src = `${LUCID_BARE.slice(0, -1)}
   static seedDefaults(
     trx: TransactionClientContract,
@@ -1361,7 +1306,6 @@ test("isDeclarativeModelFile: static initialization block → НЕ skip", () => 
   }
 }`;
   assert.ok(!checks.isDeclarativeModelFile(src));
-  // static-КОНСТАНТА с объектным литералом — по-прежнему skip (не block).
   assert.ok(
     checks.isDeclarativeModelFile(`${LUCID_BARE.slice(0, -1)}
   static metaDefaults = { pinned: false }
@@ -1399,7 +1343,6 @@ export default class Invoice extends AppBaseModel {
   declare total: number
 }`;
   assert.ok(checks.isDeclarativeModelFile(src));
-  // Не-суффиксная база (BaseModelWithSoftDeletes) — гейт НЕ проходит.
   assert.ok(
     !checks.isDeclarativeModelFile(
       src.replace("AppBaseModel {", "BaseModelWithSoftDeletes {"),
@@ -1426,17 +1369,14 @@ export function normalizeTitle(t: string) {
 test("isDeclarativeModelFile: ReDoS-guard — adversarial ~200KB линеен", () => {
   const gate =
     "export default class X extends BaseModel {\n@column()\ndeclare id: number\n";
-  // Незакрытые relation-вызовы: гоняют thunk-нейтрализацию и method-body regex.
   const advA = gate + "@hasMany(() => M, ".repeat(8000) + "\n}";
-  // Скобочно-знаковый мусор без сигналов + реальная логика в хвосте:
-  // независимо от мусора детектор обязан дойти и вернуть false.
   const advB = gate + "=((".repeat(60000) + "\nmarkAsRead() { return 1 }\n}";
   const t = Date.now();
   const rA = checks.isDeclarativeModelFile(advA);
   const rB = checks.isDeclarativeModelFile(advB);
   const ms = Date.now() - t;
-  assert.strictEqual(rA, true); // мусор без валидной логики — сигналов нет
-  assert.strictEqual(rB, false); // логика в хвосте найдена за мусором
+  assert.strictEqual(rA, true);
+  assert.strictEqual(rB, false);
   assert.ok(
     ms < 1000,
     `ожидал < 1000ms, получил ${ms}ms (catastrophic backtracking?)`,
@@ -1484,8 +1424,6 @@ test("shouldSkipForTestPairing: модель С логикой (@computed/мет
     !checks.shouldSkipForTestPairing("apps/api/app/models/user.ts", dir),
   );
 });
-
-// ─── isPresentationalSFC (Vue/Svelte/Astro content heuristic) ─────────────
 
 test("isPresentationalSFC: template-only (нет <script>) → презентационный", () => {
   assert.ok(checks.isPresentationalSFC("<template><div>hi</div></template>"));
@@ -1644,7 +1582,6 @@ test("isPresentationalSFC: Svelte 5 руна $state → логика", () => {
 });
 
 test("isPresentationalSFC: многострочная сигнатура (arrow-значение / method shorthand) → логика", () => {
-  // Prettier-перенос параметров arrow-значения — раньше [^)\n] в _ARG пропускал.
   assert.ok(
     !checks.isPresentationalSFC(`<script setup>
 const fmt = (
@@ -1652,7 +1589,6 @@ const fmt = (
 ) => value.toLocaleString()
 </script>`),
   );
-  // Многострочный object-method shorthand (defineExpose).
   assert.ok(
     !checks.isPresentationalSFC(`<script setup>
 defineExpose({
@@ -1662,7 +1598,6 @@ defineExpose({
 })
 </script>`),
   );
-  // static initialization block внутри class в script — исполняемая логика.
   assert.ok(
     !checks.isPresentationalSFC(
       `<script>\nclass Registry { static { register() } }\n</script>`,
@@ -1671,14 +1606,12 @@ defineExpose({
 });
 
 test("isPresentationalSFC: withDefaults / object-return-type аннотация НЕ ложно-логика", () => {
-  // `withDefaults(defineProps<Props>(), {...})` — `),` и `} )` без `){`.
   assert.ok(
     checks.isPresentationalSFC(`<script setup lang="ts">
 import type { Props } from './types'
 withDefaults(defineProps<Props>(), { size: 'md' })
 </script>`),
   );
-  // Тип-аннотация с объектным return-type: `) => {` режется стрелкой, не `){`.
   assert.ok(
     checks.isPresentationalSFC(`<script setup lang="ts">
 defineProps<{ handler: (e: Event) => { ok: boolean } }>()
@@ -1687,11 +1620,11 @@ defineProps<{ handler: (e: Event) => { ok: boolean } }>()
 });
 
 test("isPresentationalSFC: ReDoS-guard — adversarial 200KB ввод линеен", () => {
-  const big = "<script>" + "f((".repeat(66000) + "</script>"; // ~200KB
+  const big = "<script>" + "f((".repeat(66000) + "</script>";
   const t = Date.now();
   const res = checks.isPresentationalSFC(big);
   const ms = Date.now() - t;
-  assert.strictEqual(res, true); // нет валидной логики — презентационный
+  assert.strictEqual(res, true);
   assert.ok(
     ms < 1000,
     `ожидал < 1000ms, получил ${ms}ms (catastrophic backtracking?)`,
@@ -1730,8 +1663,6 @@ const { title } = Astro.props
 <h1>{title}</h1>`;
   assert.ok(checks.isPresentationalSFC(src));
 });
-
-// ─── shouldSkipForTestPairing: презентационные SFC по содержимому ──────────
 
 test("shouldSkipForTestPairing: презентационный .vue → skip", () => {
   const dir = tmp();
@@ -1794,8 +1725,6 @@ test("shouldSkipForTestPairing: презентационный .astro → skip",
   assert.ok(checks.shouldSkipForTestPairing("src/Hero.astro", dir));
 });
 
-// ─── matchAnyGlob (env override helper) ───────────────────────────────────
-
 test("matchAnyGlob: базовые glob-паттерны", () => {
   assert.ok(checks.matchAnyGlob("src/foo.ts", ["**/*.ts"]));
   assert.ok(
@@ -1811,8 +1740,6 @@ test("matchAnyGlob: пустой/falsy глоб-список → false", () => {
   assert.ok(!checks.matchAnyGlob("src/foo.ts", null));
 });
 
-// ─── isBroadIgnoreGlob (breadth-классификатор для ignore-glob-guard) ────────
-
 test("isBroadIgnoreGlob: каталог-глоб (последний сегмент — голый wildcard) = broad", () => {
   assert.ok(checks.isBroadIgnoreGlob("**"));
   assert.ok(checks.isBroadIgnoreGlob("*"));
@@ -1820,11 +1747,10 @@ test("isBroadIgnoreGlob: каталог-глоб (последний сегме�
   assert.ok(checks.isBroadIgnoreGlob("src/services/**"));
   assert.ok(checks.isBroadIgnoreGlob("dir/*"));
   assert.ok(checks.isBroadIgnoreGlob("packages/*/src/**"));
-  assert.ok(checks.isBroadIgnoreGlob("legacy/**/")); // trailing slash не мешает
+  assert.ok(checks.isBroadIgnoreGlob("legacy/**/"));
 });
 
 test("isBroadIgnoreGlob: голое расширение по всему дереву = broad (не обойти *.ts)", () => {
-  // Освобождает от D весь язык целиком — по эффекту шире, чем dir/**.
   assert.ok(checks.isBroadIgnoreGlob("**/*.ts"));
   assert.ok(checks.isBroadIgnoreGlob("**/*.js"));
   assert.ok(checks.isBroadIgnoreGlob("**/*.py"));
@@ -1835,7 +1761,7 @@ test("isBroadIgnoreGlob: голое расширение по всему дер�
 });
 
 test("isBroadIgnoreGlob: якорь по имени/составному расширению = narrow", () => {
-  assert.ok(!checks.isBroadIgnoreGlob("**/*.gen.ts")); // .gen — анкер
+  assert.ok(!checks.isBroadIgnoreGlob("**/*.gen.ts"));
   assert.ok(!checks.isBroadIgnoreGlob("**/*.pb.go"));
   assert.ok(!checks.isBroadIgnoreGlob("**/*.d.ts"));
   assert.ok(!checks.isBroadIgnoreGlob("**/*.config.ts"));
@@ -1906,7 +1832,6 @@ test("findE2eFile: directory-based роутинг (Next.js App Router route.ts)"
   const found = checks.findE2eFile("app/api/auth/login/route.ts", dir);
   assert.ok(found, `route.ts должен искаться по имени родительской директории`);
   assert.match(found, /login\.test\.ts/);
-  // без теста — null (basename `route` сам по себе бесполезен)
   writeFile(dir, "app/api/posts/comments/route.ts", "x");
   assert.strictEqual(
     checks.findE2eFile("app/api/posts/comments/route.ts", dir),
@@ -1966,8 +1891,8 @@ test("validateEdgeCases — test_file не существует → не ok", ()
 });
 
 test("parseEdgeCasesBlock: test_name с двоеточием не теряет хвост", () => {
-  // Регрессия: старый парсер (rest.pop()) терял всё кроме последнего сегмента
-  // и склеивал test_file с куском test_name.
+  // Не менять, потому что кейс закрывает регресс: старый парсер склеивал
+  // test_file с куском test_name.
   const t =
     "<edge-cases>empty:hooks/auto-format.test.ts:main: empty stdin → no-op</edge-cases>";
   const r = checks.parseEdgeCasesBlock(t);
@@ -1991,7 +1916,6 @@ test("validateEdgeCases: test_name с двоеточием находится в
 });
 
 test("validateEdgeCases: N/A test_file — допустим, требует непустую причину", () => {
-  // SKILL.md: «Если конкретный кейс реально N/A — пиши явно: name:N/A:<причина>».
   const dir = tmp();
   const parsed = checks.parseEdgeCasesBlock(
     "<edge-cases>concurrency:N/A:сериализуется хук-протоколом</edge-cases>",
@@ -2006,7 +1930,6 @@ test("validateEdgeCases: N/A с пустой причиной — не ok", () =
   const parsed = checks.parseEdgeCasesBlock(
     "<edge-cases>concurrency:N/A:</edge-cases>",
   );
-  // У парсера на segs.length<3 валится — это уже покрыто. Здесь — N/A с whitespace.
   const parsed2 = checks.parseEdgeCasesBlock(
     "<edge-cases>concurrency:N/A:   </edge-cases>",
   );
@@ -2072,7 +1995,6 @@ test("validateEdgeCases: sh-тест без матча → не ok", () => {
 });
 
 test("validateEdgeCases: sh-fallback НЕ применяется к не-.sh файлам", () => {
-  // Комментарий `# test_empty` в py-файле не должен засчитывать несуществующий тест.
   const dir = tmp();
   writeFile(
     dir,
@@ -2117,8 +2039,8 @@ test("validateEdgeCases: sh — regex-спецсимволы в test_name не �
 });
 
 test("validateEdgeCases: sh — лейбл в аргументе assert-хелпера засчитывается", () => {
-  // Реальный стиль session-start.test.sh: литерал `ok - $3` в хелпере,
-  // текст лейбла живёт только как кавычный аргумент assert_contains.
+  // Не менять, потому что фикстура повторяет реальный стиль sh-тестов: текст
+  // лейбла живёт только кавычным аргументом assert_contains.
   const dir = tmp();
   writeFile(
     dir,
@@ -2133,7 +2055,6 @@ test("validateEdgeCases: sh — лейбл в аргументе assert-хелп
 });
 
 test("validateEdgeCases: sh-fallback НЕ применяется к продакшн-.sh (не тест-именованному)", () => {
-  // Иначе комментарий в самом правленом скрипте «доказывал» бы несуществующий тест.
   const dir = tmp();
   writeFile(
     dir,
@@ -2168,7 +2089,6 @@ test("validateEdgeCases: sh — test_name короче 3 символов не �
 });
 
 test("validateEdgeCases: гигантский test_name не роняет хук (кап до RegExp)", () => {
-  // Без капа «Regular expression too large» → exception → fail-open всего хука.
   const dir = tmp();
   writeFile(dir, "tests/auth.test.ts", `it('happy', () => {});`);
   const huge = "x".repeat(300_000);
@@ -2199,10 +2119,6 @@ test("runLint возвращает null если ничего не настро�
   assert.strictEqual(r, null);
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер L: парсеры manifest-форматов + поиск version-lookup-ов в transcript
-// ────────────────────────────────────────────────────────────────────────────
-
 test("parseManifestDeps: package.json фрагмент в Edit", () => {
   const content = `"react": "^18.0.0",\n"next": "^13.4.0"`;
   const deps = checks.parseManifestDeps("package.json", content);
@@ -2225,7 +2141,6 @@ test("parseManifestDeps: package.json полный файл с dependencies/devD
 });
 
 test("parseManifestDeps: package.json — корневые поля name/version не в deps", () => {
-  // Когда пишется фрагмент `"name": "my-app"` он НЕ должен попасть как dep.
   const content = `"name": "my-app",\n"version": "1.0.0"`;
   const deps = checks.parseManifestDeps("package.json", content);
   assert.deepStrictEqual(deps, []);
@@ -2283,7 +2198,6 @@ test("parseManifestDeps: go.mod require block + single-line require", () => {
     "go.uber.org/zap",
     "golang.org/x/sync",
   ]);
-  // Также `go 1.21` должно попасть как runtime
   const goRuntime = deps.find((d) => d.type === "runtime" && d.name === "go");
   assert.ok(goRuntime);
   assert.strictEqual(goRuntime.version, "1.21");
@@ -2292,12 +2206,10 @@ test("parseManifestDeps: go.mod require block + single-line require", () => {
 test("parseManifestDeps: go.mod — 'go 1.21' не должен попасть как dep", () => {
   const content = `module my/app\ngo 1.21\n`;
   const deps = checks.parseManifestDeps("go.mod", content);
-  // Go runtime version — это runtime, должен попасть как runtime/go
   const goRuntime = deps.find(
     (d) => d.type === "runtime" && (d.name === "go" || d.name === "golang"),
   );
   assert.ok(goRuntime);
-  // Никаких "module my/app" как dep
   const namesNotRuntime = deps
     .filter((d) => d.type === "go")
     .map((d) => d.name);
@@ -2322,7 +2234,6 @@ test("parseManifestDeps: Dockerfile.dev / Dockerfile.prod", () => {
 test("parseManifestDeps: Dockerfile FROM scratch / FROM image:latest — skip (нет точной version)", () => {
   const content = `FROM scratch\nFROM node:latest\nFROM python\n`;
   const deps = checks.parseManifestDeps("Dockerfile", content);
-  // scratch — нет version. latest — placeholder, не version. Без tag — нет version.
   assert.deepStrictEqual(deps, []);
 });
 
@@ -2465,7 +2376,6 @@ test("findVersionLookups: WebFetch на endoflife.date / nodejs.org → runtime"
     },
   ];
   const map = checks.findVersionLookups(lines);
-  // 'nodejs' — нормализуется в 'node' для соответствия type='runtime', name='node'
   assert.ok(map.runtime.has("node") || map.runtime.has("nodejs"));
 });
 
@@ -2584,8 +2494,8 @@ test("getDepsWithoutLookup: case-insensitive matching", () => {
 });
 
 test("getDepsWithoutLookup: ReDoS-regression на _LOOSE_VERSION_RE (pathological version)", () => {
-  // Атака: `>=0` + `.0`*N + хвост заставляли regex `(\.0)*(\.0)*` уходить в
-  // catastrophic backtracking. Теперь `(?:\.0)*` (один star) — линейно.
+  // Не менять, потому что вход подобран под catastrophic backtracking старого
+  // `(\.0)*(\.0)*`.
   const pathological = ">=0" + ".0".repeat(10000) + "!";
   const deps = [{ type: "npm", name: "x", version: pathological }];
   const empty = {
@@ -2600,9 +2510,7 @@ test("getDepsWithoutLookup: ReDoS-regression на _LOOSE_VERSION_RE (pathologica
   const t0 = Date.now();
   const missing = checks.getDepsWithoutLookup(deps, empty);
   const elapsed = Date.now() - t0;
-  // Раньше при 10K точек уходило в десятки секунд. Cap ставлю с большим запасом.
   assert.ok(elapsed < 200, `_LOOSE_VERSION_RE снова медленный: ${elapsed}ms`);
-  // Pathological version НЕ должен скипаться (это не loose) — должен попасть в missing.
   assert.strictEqual(missing.length, 1);
 });
 
@@ -2676,10 +2584,6 @@ test("collectManifestDepsFromEdits: extracts deps только из Edit/Write/M
   assert.ok(names.includes("node"));
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер M: render-verify
-// ────────────────────────────────────────────────────────────────────────────
-
 test("isRenderVerifyCmd: render-класс — браузер и curl localhost", () => {
   assert.ok(checks.isRenderVerifyCmd("curl -s http://localhost:3000/app"));
   assert.ok(checks.isRenderVerifyCmd("curl http://127.0.0.1:8080/"));
@@ -2696,15 +2600,12 @@ test("isRenderVerifyCmd: render-класс — браузер и curl localhost"
       "chromium --headless --dump-dom http://localhost:3000",
     ),
   );
-  // cypress — реальный браузерный рендер (консистентность с триггером E)
   assert.ok(checks.isRenderVerifyCmd("npx cypress run --spec e2e/a.cy.ts"));
   assert.ok(checks.isRenderVerifyCmd("cypress open"));
-  // НЕ render: unit-раннеры и внешний https
   assert.ok(!checks.isRenderVerifyCmd("npx vitest run"));
   assert.ok(!checks.isRenderVerifyCmd("jest --findRelatedTests src/Card.tsx"));
   assert.ok(!checks.isRenderVerifyCmd("curl -s https://example.com/health"));
   assert.ok(!checks.isRenderVerifyCmd("npm test"));
-  // многострочная команда: «localhost» в ДРУГОЙ строке не засчитывается
   assert.ok(
     !checks.isRenderVerifyCmd(
       "curl -s https://staging.example.com/health\nnpm run build\n# works on localhost too",
@@ -2717,10 +2618,8 @@ test("isRenderVerifyCmd: render-класс — браузер и curl localhost"
 test("stripBlockComments: посимвольный O(n), безопасен на adversarial", () => {
   assert.strictEqual(checks.stripBlockComments("a /* b */ c"), "a  c");
   assert.strictEqual(checks.stripBlockComments("/* x */y/* z */"), "y");
-  // незакрытый блок-комментарий съедает до конца ФАЙЛА, без зависания
   assert.strictEqual(checks.stripBlockComments("a /* никогда не закрыт"), "a ");
   assert.strictEqual(checks.stripBlockComments("a /* x\nb"), "a ");
-  // adversarial: тысячи незакрытых `/*` — должен отработать мгновенно (O(n))
   const adversarial = "/*".repeat(50_000) + "x";
   const t0 = Date.now();
   checks.stripBlockComments(adversarial);
@@ -2729,23 +2628,98 @@ test("stripBlockComments: посимвольный O(n), безопасен на
 });
 
 test("stripBlockComments: state-machine — `/*` в line-comment/строке НЕ открывает блок", () => {
-  // `//`-комментарий с wildcard-путём не съедает код после него (обход type-only exempt)
   const src =
     "// note: paths like /api/* are wildcards\nexport function Card() { return 1; }\n";
   const out = checks.stripBlockComments(src);
   assert.ok(out.includes("export function Card()"), `съеден код: ${out}`);
-  // `/*` внутри строкового литерала — строка сохраняется как есть
   assert.strictEqual(
     checks.stripBlockComments('const g = "/*not a comment*/";'),
     'const g = "/*not a comment*/";',
   );
-  // line-comment стрипается, перенос строки сохраняется
   assert.strictEqual(checks.stripBlockComments("a // tail\nb"), "a \nb");
-  // escape внутри строки не ломает состояние
   assert.strictEqual(
     checks.stripBlockComments('s = "a\\"/*x"; y'),
     's = "a\\"/*x"; y',
   );
+});
+
+test("commentFamilyFor: расширение → синтаксис комментария, экзотика → null", () => {
+  assert.equal(checks.commentFamilyFor("/r/a.ts"), "slash");
+  assert.equal(checks.commentFamilyFor("/r/a.vue"), "slash");
+  assert.equal(checks.commentFamilyFor("/r/a.go"), "slash");
+  assert.equal(checks.commentFamilyFor("/r/a.py"), "hash");
+  assert.equal(checks.commentFamilyFor("/r/deploy.sh"), "hash");
+  assert.equal(checks.commentFamilyFor("/r/a.lua"), "dash");
+  assert.equal(checks.commentFamilyFor("/r/a.sql"), "dash");
+  assert.equal(checks.commentFamilyFor("/r/a.clj"), null);
+  assert.equal(checks.commentFamilyFor("/r/README.md"), null);
+  assert.equal(checks.commentFamilyFor(null), null);
+});
+
+test("scanComments: спаны line/block, литералы не комментарии", () => {
+  const spans = checks.scanComments("a // hi\nb /* x */ c", "slash");
+  assert.deepEqual(
+    spans.map((s) => s.text),
+    ["// hi", "/* x */"],
+  );
+  assert.deepEqual(checks.scanComments('u = "http://x";', "slash"), []);
+  assert.deepEqual(
+    checks.scanComments("t = `\n// in fixture\n`;", "slash"),
+    [],
+  );
+  assert.equal(checks.scanComments("a // hi\nb", "slash")[0].end, 7);
+});
+
+test("scanComments: hash/dash-семейства и python-тройные кавычки", () => {
+  assert.deepEqual(
+    checks.scanComments("x = 1  # почему\ny = 2", "hash").map((s) => s.text),
+    ["# почему"],
+  );
+  assert.deepEqual(checks.scanComments('"""\n# в докстринге\n"""', "hash"), []);
+  assert.deepEqual(checks.scanComments("s = '# в строке'", "hash"), []);
+  assert.deepEqual(
+    checks.scanComments("local a = 1 -- зачем", "dash").map((s) => s.text),
+    ["-- зачем"],
+  );
+  assert.deepEqual(checks.scanComments("n = a // b", "hash"), []);
+});
+
+test("scanComments: regex-литерал с кавычкой/бэктиком не сбивает состояние", () => {
+  const src = [
+    "const ok = /```[a-z]*\\s*\\n/m.test(t);",
+    "// настоящий комментарий",
+    "const q = /['\"]/.test(t);",
+    "const div = a / b / c;",
+    "const cls = /[/]/.test(t);",
+  ].join("\n");
+  assert.deepEqual(
+    checks.scanComments(src, "slash").map((s) => s.text),
+    ["// настоящий комментарий"],
+  );
+  assert.ok(checks.stripBlockComments(src).includes("const div = a / b / c;"));
+});
+
+test("scanComments: слэш после идентификатора — деление, не regex", () => {
+  assert.deepEqual(
+    checks
+      .scanComments("x = total / rate; // хвост", "slash")
+      .map((s) => s.text),
+    ["// хвост"],
+  );
+  assert.deepEqual(
+    checks.scanComments("y = f(a) / 2; // хвост", "slash").map((s) => s.text),
+    ["// хвост"],
+  );
+});
+
+test("scanComments: незакрытые токены завершают скан без зацикливания", () => {
+  const t0 = Date.now();
+  checks.scanComments("/*".repeat(30000), "slash");
+  checks.scanComments("`".repeat(30000), "slash");
+  checks.scanComments('"'.repeat(30000), "hash");
+  assert.ok(Date.now() - t0 < 1000, "scanComments квадратичен?");
+  assert.equal(checks.scanComments("a /* хвост", "slash").length, 1);
+  assert.deepEqual(checks.scanComments("", "slash"), []);
 });
 
 test("isRenderVerifyCmd: браузерные раннеры — render; jsdom — нет", () => {
@@ -2763,7 +2737,6 @@ test("isTokenOnlyCss: @media/@supports-обёртка и attr-селектор �
   assert.ok(
     checks.isTokenOnlyCss(':root, [data-theme="dark"] {\n--bg: #000;\n}\n'),
   );
-  // @media с реальными правилами — не exempt
   assert.ok(
     !checks.isTokenOnlyCss("@media print {\n.card { display: none; }\n}\n"),
   );
@@ -2773,11 +2746,9 @@ test("isRenderExemptFrontendFile: confinement — файл вне repoRoot не 
   const dir = tmp();
   const outside = tmp();
   writeFile(outside, "types.tsx", "export interface X { a: string }\n");
-  // абсолютный путь вне repoRoot → не exempt, даже если файл сам по себе type-only
   assert.ok(
     !checks.isRenderExemptFrontendFile(path.join(outside, "types.tsx"), dir),
   );
-  // тот же контент внутри repoRoot → exempt (санити, что дело именно в confinement)
   writeFile(dir, "types.tsx", "export interface X { a: string }\n");
   assert.ok(
     checks.isRenderExemptFrontendFile(path.join(dir, "types.tsx"), dir),
@@ -2787,28 +2758,24 @@ test("isRenderExemptFrontendFile: confinement — файл вне repoRoot не 
 test("hasMutatingHandler: мутирующие сигнатуры — да; read-only/отсутствующий — нет", () => {
   const dir = tmp();
   const w = (rel, body) => (writeFile(dir, rel, body), rel);
-  // Next.js app router
   assert.ok(
     checks.hasMutatingHandler(
       w("app/api/users/route.ts", "export async function DELETE(req) {}\n"),
       dir,
     ),
   );
-  // Express-стиль
   assert.ok(
     checks.hasMutatingHandler(
       w("src/routes/orders.ts", "router.post('/orders', createOrder);\n"),
       dir,
     ),
   );
-  // Rails destroy
   assert.ok(
     checks.hasMutatingHandler(
       w("app/controllers/users_controller.rb", "def destroy\nend\n"),
       dir,
     ),
   );
-  // AdonisJS resource-метод
   assert.ok(
     checks.hasMutatingHandler(
       w(
@@ -2818,7 +2785,6 @@ test("hasMutatingHandler: мутирующие сигнатуры — да; read
       dir,
     ),
   );
-  // read-only контроллер — нет сигнала
   assert.ok(
     !checks.hasMutatingHandler(
       w(
@@ -2828,7 +2794,6 @@ test("hasMutatingHandler: мутирующие сигнатуры — да; read
       dir,
     ),
   );
-  // мутирующая сигнатура в комментарии — стрипается, сигнала нет
   assert.ok(
     !checks.hasMutatingHandler(
       w(
@@ -2838,7 +2803,6 @@ test("hasMutatingHandler: мутирующие сигнатуры — да; read
       dir,
     ),
   );
-  // отсутствующий файл — нет сигнала (решает path-детект)
   assert.ok(!checks.hasMutatingHandler("app/controllers/nope.ts", dir));
 });
 
@@ -2852,17 +2816,13 @@ test("isTokenOnlyCss: только токены — exempt, любые прав�
   assert.ok(
     checks.isTokenOnlyCss('@import "./base.css";\n:root {\n--x: 1;\n}'),
   );
-  // однострочные комментарии (SCSS/LESS) и LESS-переменные — тоже токен-файл
   assert.ok(checks.isTokenOnlyCss("// Color tokens\n$brand: #f00;\n"));
   assert.ok(checks.isTokenOnlyCss("@brand-color: #f00;\n@gap: 8px;\n"));
-  // НЕ token-only: обычные правила / свойства / at-rule с блоком
   assert.ok(!checks.isTokenOnlyCss(".card { color: red; }"));
   assert.ok(!checks.isTokenOnlyCss(":root {\n  --x: 1;\n  color: red;\n}"));
   assert.ok(!checks.isTokenOnlyCss("@media (max-width: 600px) {\n}\n"));
-  // пустой / без единого токена — не exempt (нечего исключать)
   assert.ok(!checks.isTokenOnlyCss(""));
   assert.ok(!checks.isTokenOnlyCss(":root {\n}\n"));
-  // ReDoS-guard: adversarial длинная строка отклоняется мгновенно
   const evilLine = ":root" + " ".repeat(100_000) + "!";
   const t0css = Date.now();
   assert.ok(!checks.isTokenOnlyCss(evilLine));
@@ -2874,56 +2834,43 @@ test("isTokenOnlyCss: только токены — exempt, любые прав�
 
 test("isRenderExemptFrontendFile: type-only/token-only/@generated exempt, остальное — нет", () => {
   const dir = tmp();
-  // type-only .tsx
   const typesTsx = writeFile(
     dir,
     "src/types.tsx",
     "export interface CardProps { title: string }\n",
   );
   assert.ok(checks.isRenderExemptFrontendFile(typesTsx, dir));
-  // .tsx с рендерящей логикой
   const cardTsx = writeFile(
     dir,
     "src/Card.tsx",
     "export function Card() { return <div>hi</div>; }\n",
   );
   assert.ok(!checks.isRenderExemptFrontendFile(cardTsx, dir));
-  // token-only css
   const tokensCss = writeFile(
     dir,
     "src/tokens.css",
     ":root {\n--b: #fff;\n}\n",
   );
   assert.ok(checks.isRenderExemptFrontendFile(tokensCss, dir));
-  // css с правилами
   const cardCss = writeFile(dir, "src/card.css", ".card { color: red; }\n");
   assert.ok(!checks.isRenderExemptFrontendFile(cardCss, dir));
-  // @generated
   const genVue = writeFile(
     dir,
     "src/Gen.vue",
     "<!-- @generated -->\n<template><div/></template>\n",
   );
   assert.ok(checks.isRenderExemptFrontendFile(genVue, dir));
-  // презентационный SFC — НЕ exempt (визуал именно там)
   const plainVue = writeFile(
     dir,
     "src/Plain.vue",
     "<template><div>hi</div></template>\n",
   );
   assert.ok(!checks.isRenderExemptFrontendFile(plainVue, dir));
-  // несуществующий файл → fail toward требования (не exempt)
   assert.ok(
     !checks.isRenderExemptFrontendFile(path.join(dir, "nope.tsx"), dir),
   );
-  // директория → не exempt
   assert.ok(!checks.isRenderExemptFrontendFile(dir, dir));
 });
-
-// ────────────────────────────────────────────────────────────────────────────
-// findTestByImportScan: fallback триггера D — централизованные спеки,
-// именованные по фиче, засчитываются через grep импортов (кейс ERP_NEW)
-// ────────────────────────────────────────────────────────────────────────────
 
 test("findTestByImportScan: находит спек по Adonis-алиасу #controllers/...", () => {
   const dir = tmp();
@@ -3116,18 +3063,15 @@ test("existsInsideRepo: внутри+существует / удалён / вн�
   const dir = tmp();
   const inside = writeFile(dir, "src/a.ts", "x");
   assert.strictEqual(checks.existsInsideRepo(inside, dir), true);
-  assert.strictEqual(checks.existsInsideRepo("src/a.ts", dir), true); // относительный
+  assert.strictEqual(checks.existsInsideRepo("src/a.ts", dir), true);
   fs.rmSync(inside);
-  assert.strictEqual(checks.existsInsideRepo(inside, dir), false); // удалён
+  assert.strictEqual(checks.existsInsideRepo(inside, dir), false);
   const outside = writeFile(tmp(), "b.js", "x");
-  assert.strictEqual(checks.existsInsideRepo(outside, dir), false); // вне repoRoot
-  assert.strictEqual(checks.existsInsideRepo(dir, dir), false); // сам корень
+  assert.strictEqual(checks.existsInsideRepo(outside, dir), false);
+  assert.strictEqual(checks.existsInsideRepo(dir, dir), false);
   assert.strictEqual(checks.existsInsideRepo(null, dir), false);
   assert.strictEqual(checks.existsInsideRepo("src/a.ts", null), false);
 });
-
-// ── rankSpecCandidates: релевантностный порядок чтения (баг-репорт: кэп 200
-// отрезал алфавитно-хвостовой покрывающий спек → ложный D) ──────────────────
 
 test("rankSpecCandidates: спек с basename источника в имени — первым", () => {
   const ranked = checks.rankSpecCandidates(
@@ -3172,19 +3116,15 @@ test("rankSpecCandidates: generic basename (index) ранжирует по ро�
 });
 
 test("rankSpecCandidates: короткий base (db) не даёт шумного подстрочного сигнала", () => {
-  // 'db' ⊂ 'redblue' — без гейта длины redblue.spec.ts ложно поднялся бы
   const input = ["/r/tests/redblue.spec.ts", "/r/tests/aaa.spec.ts"];
   const ranked = checks.rankSpecCandidates(input, "app/billing/db.ts");
   assert.deepStrictEqual(ranked, input);
 });
 
-// ── регресс баг-репорта: покрывающий спек в алфавитном хвосте за кэпом ───────
-
 test("findTestByImportScan: хвостовой спек за кэпом находится благодаря ранжированию", () => {
   const dir = tmp();
   writeFile(dir, "package.json", "{}");
   writeFile(dir, "app/validators/auth_validator.ts", "export {}");
-  // 205 алфавитно-ранних наполнителей (controllers < validators)
   for (let i = 0; i < 205; i++) {
     const n = String(i).padStart(3, "0");
     writeFile(
@@ -3193,7 +3133,6 @@ test("findTestByImportScan: хвостовой спек за кэпом нахо
       `import { t } from '#controllers/thing${n}'\n`,
     );
   }
-  // покрывающий спек — имя по фиче (репро репорта), позиция в списке > 200
   writeFile(
     dir,
     "tests/unit/validators/auth_flow.spec.ts",
@@ -3209,11 +3148,8 @@ test("findTestByImportScan: хвостовой спек за кэпом нахо
     found,
     path.join("tests", "unit", "validators", "auth_flow.spec.ts"),
   );
-  // ранжирование обязано найти его задолго до кэпа
   assert.ok(cache.filesRead < 200, `filesRead=${cache.filesRead}`);
 });
-
-// ── cache.lastTruncated: обрыв по бюджету различим от «дочитал, матча нет» ───
 
 test("findTestByImportScan: lastTruncated=true при обрыве без матча", () => {
   const dir = tmp();
@@ -3246,8 +3182,6 @@ test("findTestByImportScan: lastTruncated=false когда список дочи
   );
   assert.strictEqual(cache.lastTruncated, false);
 });
-
-// ── env-ручка MAIN_SKILL_IMPORT_SCAN_MAX_FILES ───────────────────────────────
 
 test("importScanMaxFiles: дефолт 200, валидное значение, гейты мусора и капа", () => {
   const KEY = "MAIN_SKILL_IMPORT_SCAN_MAX_FILES";
@@ -3282,8 +3216,8 @@ test("findTestByImportScan: env-ручка поднимает лимит чте�
       "import { x } from '#other/thing'\n",
     );
   }
-  // имя и папка намеренно нерелевантны — ранжирование не спасает,
-  // спек алфавитно последний (z > f) → позиция 211
+  // Не менять, потому что имя и папка намеренно нерелевантны: кейс про алфавитный
+  // хвост, ранжирование тут не помогает.
   writeFile(
     dir,
     "tests/unit/zzz_flow.spec.ts",
@@ -3310,9 +3244,8 @@ test("findTestByImportScan: env-ручка поднимает лимит чте�
 });
 
 test("findTestByImportScan: lastTruncated=true когда кап СПИСКА обрезал кандидатов (cap≥400)", () => {
-  // Регресс ревью: при env-cap ≥ 400 maxList === cap → список кандидатов
-  // обрезан ровно до бюджета, цикл чтения дочитывает его целиком без break —
-  // обрыв должен репортиться флагом обрезания СПИСКА, не только бюджета чтений.
+  // Не менять, потому что кейс закрывает регресс: при env-cap ≥ 400 обрыв виден
+  // только по флагу обрезания СПИСКА, не бюджета чтений.
   const dir = tmp();
   writeFile(dir, "package.json", "{}");
   writeFile(dir, "app/services/billing.ts", "export {}");
@@ -3362,7 +3295,7 @@ test("findTestByImportScan: спек-симлинк наружу репо не �
   try {
     fs.symlinkSync(outside, path.join(dir, "tests", "evil.spec.ts"));
   } catch {
-    return; // среда без прав на symlink — тест неприменим
+    return;
   }
   assert.strictEqual(
     checks.findTestByImportScan("app/services/billing.ts", dir),
@@ -3375,7 +3308,6 @@ test("findTestByImportScan: одноимённый файл чужого мод�
   writeFile(dir, "package.json", "{}");
   writeFile(dir, "app/billing/db.ts", "export {}");
   writeFile(dir, "app/auth/db.ts", "export {}");
-  // Спек покрывает billing/db — auth/db не должен засчитаться по коллизии basename.
   writeFile(
     dir,
     "tests/unit/billing.spec.ts",
@@ -3404,7 +3336,6 @@ test("findTestByImportScan: ближайший package-root сканируетс
   writeFile(dir, "packages/foo/package.json", "{}");
   writeFile(dir, "packages/foo/sub/package.json", "{}");
   writeFile(dir, "packages/foo/sub/src/orders/utils.ts", "export {}");
-  // Оба спека импортируют orders/utils — вернуться должен спек ближайшего пакета.
   writeFile(
     dir,
     "packages/foo/tests/far.spec.ts",
@@ -3457,10 +3388,6 @@ test("findTestByImportScan: гигантский basename из транскри�
   assert.strictEqual(result, null);
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// countNonTrivialDiffLines — дельта new_string vs old_string (backlog #5)
-// ────────────────────────────────────────────────────────────────────────────
-
 function editLine(file_path, old_string, new_string) {
   return {
     type: "assistant",
@@ -3483,7 +3410,6 @@ function nLines(n, prefix = "const x") {
 }
 
 test("countNonTrivialDiffLines: rename с широким контекстом — считается только дельта", () => {
-  // 25 строк контекста, реально изменена одна: x3 → y3.
   const old25 = nLines(25);
   const new25 = old25.replace("const x3 = 3;", "const y3 = 3;");
   const lines = [editLine("src/foo.ts", old25, new25)];
@@ -3508,7 +3434,6 @@ test("countNonTrivialDiffLines: re-indent (extract) — не добавлени�
 });
 
 test("countNonTrivialDiffLines: дубликаты считаются как multiset, не Set", () => {
-  // В old одна `i++;`, в new три — добавлено 2, Set-difference дал бы 0.
   const old = "let i = 0;\ni++;";
   const neu = "let i = 0;\ni++;\ni++;\ni++;";
   const lines = [editLine("src/foo.ts", old, neu)];
@@ -3572,12 +3497,10 @@ test("countNonTrivialDiffLines: MultiEdit — дельта по каждому e
             input: {
               file_path: "src/foo.ts",
               edits: [
-                // rename в широком контексте → 1
                 {
                   old_string: ctx,
                   new_string: ctx.replace("const x2 = 2;", "const y2 = 2;"),
                 },
-                // чистая вставка 3 строк → 3
                 { old_string: "", new_string: nLines(3, "const z") },
               ],
             },
@@ -3617,8 +3540,7 @@ test("countNonTrivialDiffLines: filterFn отсекает не-observable фай
 });
 
 test("countNonTrivialDiffLines: гигантский old_string капится без зависания", () => {
-  // 2MB old_string — должен слайснуться капом 1MB, не съесть память/время.
-  const bigOld = "const line = 1;\n".repeat(130_000); // ~2.1MB
+  const bigOld = "const line = 1;\n".repeat(130_000);
   const started = Date.now();
   const lines = [editLine("src/foo.ts", bigOld, "const added = 2;")];
   assert.strictEqual(checks.countNonTrivialDiffLines(lines), 1);
@@ -3632,7 +3554,6 @@ test("countNonTrivialDiffLines: no-op edit (old === new) → 0", () => {
 });
 
 test("countNonTrivialDiffLines: внутристрочный whitespace-реформат — не добавление", () => {
-  // Выравнивание `=` и таб→пробел внутри строк — механический реформат.
   const old25 = nLines(25);
   const reformatted = old25
     .split("\n")
@@ -3654,7 +3575,6 @@ test("countNonTrivialDiffLines: CRLF old vs LF new — не добавление
 });
 
 test("countNonTrivialDiffLines: NFC vs NFD unicode — не добавление", () => {
-  // `café` в NFC (old) и NFD (new) — визуально идентичные строки.
   const nfc = 'const label = "café";';
   const nfd = 'const label = "café";';
   const lines = [editLine("src/foo.ts", nfc, nfd)];
@@ -3662,7 +3582,6 @@ test("countNonTrivialDiffLines: NFC vs NFD unicode — не добавление
 });
 
 test("countNonTrivialDiffLines: replace_all — пара считается один раз (known limitation)", () => {
-  // Множитель k сайтов неизвестен без чтения файла — фиксируем «однократно».
   const lines = [
     {
       type: "assistant",
@@ -3699,9 +3618,8 @@ test("countNonTrivialDiffLines: non-string old_string/new_string из malformed-
 });
 
 test("countNonTrivialDiffLines: boilerplate удалённого блока поглощает совпадающие строки нового (known gap, фиксация)", () => {
-  // Замена одной из двух похожих функций: тело нового блока построчно
-  // совпадает с удалённым → под порог уходит только сигнатура. FN-класс,
-  // документирован; фиксируем фактическое поведение.
+  // Не менять, потому что кейс фиксирует известный FN-класс, а не желаемое
+  // поведение: тело нового блока построчно совпадает с удалённым.
   const old = "function a() {\n  step1();\n  step2();\n}";
   const neu = "function b() {\n  step1();\n  step2();\n}";
   const lines = [editLine("src/foo.ts", old, neu)];
@@ -3709,12 +3627,12 @@ test("countNonTrivialDiffLines: boilerplate удалённого блока по
 });
 
 test("countNonTrivialDiffLines: new_string за 1MB-капом → fallback на полный счёт (анти-обход)", () => {
-  // Дельта на усечённом new занулила бы логику за границей капа: old — 1.1MB
-  // блок, new — тот же блок + 30 строк логики в хвосте (за капом).
+  // Не менять, потому что размеры подобраны вокруг 1MB-капа: логика лежит в
+  // хвосте new, за границей усечения.
   const filler = Array.from(
     { length: 66_000 },
     (_, i) => `const f${i} = ${i};`,
-  ).join("\n"); // ~1.1MB
+  ).join("\n");
   const added = Array.from(
     { length: 30 },
     (_, i) => `handleEvent${i}(payload);`,
@@ -3724,4 +3642,42 @@ test("countNonTrivialDiffLines: new_string за 1MB-капом → fallback на
   const r = checks.countNonTrivialDiffLines(lines);
   assert.ok(r >= 20, `дельта на усечённом new занулила добавленное: ${r}`);
   assert.ok(Date.now() - started < 3000, "слишком медленно на 1.1MB");
+});
+
+test("scanComments: свойство с именем-ключевым словом перед `/` — деление", () => {
+  for (const kw of ["do", "in", "of", "new", "await", "yield"]) {
+    assert.deepEqual(
+      checks
+        .scanComments(`let x = obj.${kw} / 2; // хвост`, "slash")
+        .map((s) => s.text),
+      ["// хвост"],
+      kw,
+    );
+  }
+  assert.deepEqual(
+    checks
+      .scanComments("let z = x?.of / 2; // хвост", "slash")
+      .map((s) => s.text),
+    ["// хвост"],
+  );
+  assert.deepEqual(
+    checks
+      .scanComments("return /ab+/.test(s); // хвост", "slash")
+      .map((s) => s.text),
+    ["// хвост"],
+  );
+});
+
+test("scanComments: бюджет regex-ветки держит скан линейным (adversarial `=/[`)", () => {
+  const t0 = Date.now();
+  checks.scanComments("=/[".repeat(60000), "slash");
+  checks.scanComments(";/[".repeat(30000), "slash");
+  const dt = Date.now() - t0;
+  assert.ok(dt < 1000, `scanComments квадратичен на regex-ветке: ${dt}ms`);
+  assert.deepEqual(
+    checks
+      .scanComments("const r = /a[b/]c/.test(s); // хвост", "slash")
+      .map((s) => s.text),
+    ["// хвост"],
+  );
 });

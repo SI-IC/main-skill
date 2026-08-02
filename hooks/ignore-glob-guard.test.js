@@ -1,9 +1,3 @@
-// Unit-тесты для ignore-glob-guard.js. Запуск: node hooks/ignore-glob-guard.test.js
-//
-// Хук — PreToolUse-гард: deny на запись ШИРОКОГО MAIN_SKILL_VERIFY_IGNORE_GLOBS
-// (каталог-глоб) в env-carrier-файл (.env / .claude/settings.json / *.sh) или в
-// Bash-команду. Узкие глобы, не-carrier-файлы и прочие инструменты — молчим.
-
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
@@ -12,8 +6,6 @@ const path = require("path");
 const g = require("./ignore-glob-guard");
 
 const VAR = "MAIN_SKILL_VERIFY_IGNORE_GLOBS";
-
-// ─── isEnvCarrierFile ─────────────────────────────────────────────────────────
 
 test("isEnvCarrierFile: .env / settings.json / .claude / *.sh — carrier", () => {
   assert.ok(g.isEnvCarrierFile("/repo/.env"));
@@ -27,7 +19,7 @@ test("isEnvCarrierFile: .env / settings.json / .claude / *.sh — carrier", () =
   assert.ok(g.isEnvCarrierFile("/home/u/.profile"));
   assert.ok(g.isEnvCarrierFile("/repo/scripts/setup.sh"));
   assert.ok(g.isEnvCarrierFile("/repo/.envrc"));
-  assert.ok(g.isEnvCarrierFile("/home/u/.zshenv")); // zsh env-файлы
+  assert.ok(g.isEnvCarrierFile("/home/u/.zshenv"));
   assert.ok(g.isEnvCarrierFile("/home/u/.zprofile"));
 });
 
@@ -36,13 +28,10 @@ test("isEnvCarrierFile: доки и исходники — НЕ carrier (нет 
   assert.ok(!g.isEnvCarrierFile("/repo/skills/x/references/stop-triggers.md"));
   assert.ok(!g.isEnvCarrierFile("/repo/hooks/verify-changes.js"));
   assert.ok(!g.isEnvCarrierFile("/repo/src/app.ts"));
-  // .md под .claude/ (напр. commands/off.md с примером VAR) — НЕ carrier.
   assert.ok(!g.isEnvCarrierFile("/repo/.claude/commands/off.md"));
   assert.ok(!g.isEnvCarrierFile("/repo/.claude/agents/reviewer.md"));
   assert.ok(!g.isEnvCarrierFile(null));
 });
-
-// ─── extractIgnoreGlobs ───────────────────────────────────────────────────────
 
 test("extractIgnoreGlobs: .env bare (без кавычек), сплит по ':'", () => {
   assert.deepEqual(g.extractIgnoreGlobs(`${VAR}=a/**:b/**`), ["a/**", "b/**"]);
@@ -92,8 +81,6 @@ test("extractIgnoreGlobs: нет переменной → []", () => {
   assert.deepEqual(g.extractIgnoreGlobs(null), []);
 });
 
-// ─── addedBroadGlobs (диф против old/on-disk) ──────────────────────────────────
-
 test("addedBroadGlobs Edit: широкий уже в old_string → НЕ ново → []", () => {
   const r = g.addedBroadGlobs(
     "Edit",
@@ -120,8 +107,6 @@ test("addedBroadGlobs Write: широкий уже на диске → НЕ но
   );
   assert.deepEqual(r, []);
 });
-
-// ─── evaluate ─────────────────────────────────────────────────────────────────
 
 const editPayload = (file_path, new_string) => ({
   tool_name: "Edit",
@@ -166,7 +151,6 @@ test("evaluate: смешанный список (узкий + широкий) �
     noDisable,
   );
   assert.ok(out);
-  // Широкий перечислен в списке-буллете; узкий из входа в буллеты не попал.
   assert.match(out.reason, /• src\/services\/\*\*/);
   assert.doesNotMatch(out.reason, /• \*\*\/\*\.gen\.ts/);
 });
@@ -215,11 +199,14 @@ test("evaluate: opt-out MAIN_SKILL_IGNORE_GLOB_CHECK=0 → null", () => {
 
 test("evaluate: session-disabled (env + сентинел) → null, хотя иначе был бы deny", () => {
   const p = editPayload("/repo/.env", `${VAR}="dir/**"`);
-  assert.ok(g.evaluate(p, noDisable)); // sanity
+  assert.ok(g.evaluate(p, noDisable));
   assert.equal(g.evaluate(p, { env: { MAIN_SKILL_OFF: "1" } }), null);
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "igg-home-"));
   fs.mkdirSync(path.join(home, ".claude", "plugins"), { recursive: true });
-  fs.writeFileSync(path.join(home, ".claude", "plugins", ".main-skill-off"), "");
+  fs.writeFileSync(
+    path.join(home, ".claude", "plugins", ".main-skill-off"),
+    "",
+  );
   assert.equal(g.evaluate(p, { env: { HOME: home } }), null);
   fs.rmSync(home, { recursive: true, force: true });
 });
@@ -229,8 +216,6 @@ test("evaluate: malformed input (нет tool_input) → null, не падаем"
   assert.equal(g.evaluate({}, noDisable), null);
   assert.equal(g.evaluate(null, noDisable), null);
 });
-
-// ─── sanitizeGlob (ANSI-инъекция) ─────────────────────────────────────────────
 
 test("sanitizeGlob: control-chars стрипаются", () => {
   assert.equal(g.sanitizeGlob("dir/\x1b[2K**"), "dir/[2K**");
@@ -245,8 +230,6 @@ test("evaluate: reason не содержит raw ESC из глоба", () => {
   assert.ok(out);
   assert.doesNotMatch(out.reason, /\x1b/);
 });
-
-// ─── main: контракт stdout ───────────────────────────────────────────────────
 
 test("main: широкий глоб → PreToolUse permissionDecision=deny в stdout", () => {
   let captured = "";

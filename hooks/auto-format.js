@@ -1,25 +1,4 @@
 #!/usr/bin/env node
-// PostToolUse hook: автоматически форматирует файл после Edit/Write/MultiEdit
-// нужным форматтером для языка проекта. Если форматтер не установлен —
-// возвращает Claude'у additionalContext с install-командой (детектит package
-// manager: pnpm/yarn/npm/bun, uv/poetry/pipenv/pip).
-//
-// Языки и форматтеры:
-//   prettier:     .js .jsx .ts .tsx .mjs .cjs
-//                 .css .scss .sass .less
-//                 .html .htm
-//                 .json .json5 .jsonc
-//                 .yaml .yml
-//                 .md .mdx
-//                 .vue .svelte
-//                 .graphql .gql
-//   ruff/black:   .py .pyi
-//   gofmt:        .go
-//   rustfmt:      .rs
-//   clang-format: .c .cpp .cc .cxx .h .hpp .hh .hxx .m .mm
-//
-// Приоритет поиска бинаря: project-local (node_modules/.bin, .venv/bin) →
-// global PATH. Если ни там, ни там — additionalContext с install-командой.
 
 const fs = require("fs");
 const path = require("path");
@@ -106,13 +85,12 @@ function languageFor(file) {
 }
 
 function main(p) {
-  if (isDisabled()) return; // /main-skill:off или MAIN_SKILL_OFF=1 — плагин выкл на сессию.
+  if (isDisabled()) return;
   const tool = p.tool_name || "";
   if (!/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(tool)) return;
 
   const filePath = p.tool_input?.file_path || p.tool_input?.notebook_path;
   if (!filePath || typeof filePath !== "string") return;
-  // Claude Code всегда шлёт абсолютные пути для Edit/Write; защита от деградации протокола.
   if (!path.isAbsolute(filePath)) return;
 
   const abs = filePath;
@@ -120,9 +98,10 @@ function main(p) {
   try {
     lstat = fs.lstatSync(abs);
   } catch {
-    return; // файл удалён или нет доступа
+    return;
   }
-  // Symlink не форматируем — иначе можно перезаписать таргет за пределами проекта.
+  // Не менять, потому что форматирование симлинка перезапишет его таргет за
+  // пределами проекта.
   if (lstat.isSymbolicLink()) return;
   if (!lstat.isFile()) return;
   if (EXCLUDE_DIR_RE.test(abs)) return;
@@ -255,8 +234,8 @@ function runFormatter({
   }
 }
 
-// Защита от prompt-injection через stderr форматтера: ANSI escape убираем,
-// control chars вырезаем, каждую строку обрезаем до 200 символов, всего ≤8 строк.
+// Не менять, потому что stderr форматтера уходит в контекст Claude: без стрипа
+// ANSI/control-chars и капов это канал prompt-injection.
 function sanitizeStderr(raw, maxLines = 8, maxLineChars = 200) {
   return String(raw || "")
     .trim()
@@ -290,13 +269,8 @@ function relPath(p) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Поиск локального бинаря / lockfile walk-up — ограничено project-root маркером
-// (.git, package.json, pyproject.toml, Cargo.toml, go.mod, Pipfile, Gemfile),
-// иначе атакующий может подсунуть `/tmp/node_modules/.bin/prettier` и
-// получить RCE на multi-user / CI-машине.
-// ─────────────────────────────────────────────────────────────────────────────
-
+// Не менять, потому что walk-up обязан упираться в project-root: без границы
+// подброшенный `/tmp/node_modules/.bin/prettier` даёт RCE на multi-user/CI-машине.
 const PROJECT_ROOT_MARKERS = [
   ".git",
   "package.json",
@@ -318,8 +292,6 @@ function findLocalBin(startDir, name) {
   return walkUp(startDir, (dir) => {
     const candidate = path.join(dir, "node_modules", ".bin", name);
     if (!fs.existsSync(candidate)) return null;
-    // symlink-бинарь не доверяем, если он указывает наружу (защита от
-    // подброшенного `/tmp/node_modules/.bin/prettier -> /bin/sh`)
     try {
       const lst = fs.lstatSync(candidate);
       if (lst.isSymbolicLink()) {
@@ -367,17 +339,12 @@ function walkUp(startDir, predicate) {
   while (true) {
     const hit = predicate(dir);
     if (hit) return hit;
-    // Достигли project-root → выше не идём (после проверки текущего уровня).
     if (isProjectRoot(dir)) return null;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Install-команды (детект пакет-менеджера от файла вверх)
-// ─────────────────────────────────────────────────────────────────────────────
 
 function prettierInstaller(file) {
   const dir = path.dirname(file);

@@ -7,4 +7,4 @@ allowed-tools: Bash(rm:*)
 
 !`rm -f ~/.claude/plugins/.main-skill-off && echo "main-skill: снова включён"`
 
-main-skill снова активен в текущей сессии. Применяй `main-skill:workflow-rules` как обычно; хуки `verify-changes` / `claudemd-guard` / `auto-format` снова работают.
+main-skill снова активен в текущей сессии. Применяй `main-skill:workflow-rules` как обычно; хуки `verify-changes` / `claudemd-guard` / `ignore-glob-guard` / `comment-guard` / `auto-format` снова работают.

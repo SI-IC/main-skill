@@ -1,16 +1,7 @@
-// Хелперы для verify-changes.js — новые триггеры D/E/F/G/H.
-// Все функции pure-ish: принимают данные/пути, возвращают результат, не пишут в stdout/exit.
-
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
-// ────────────────────────────────────────────────────────────────────────────
-// Сбор edits из транскрипта
-// ────────────────────────────────────────────────────────────────────────────
-
-// Собирает все Edit/Write/MultiEdit вызовы из транскрипта.
-// Возвращает массив { idx, file_path } в порядке появления.
 function collectFileEdits(lines) {
   const out = [];
   lines.forEach((e, idx) => {
@@ -26,10 +17,6 @@ function collectFileEdits(lines) {
   return out;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Классификаторы файлов
-// ────────────────────────────────────────────────────────────────────────────
-
 const TEST_FILE_RE =
   /(^|\/)(__tests__|tests?|spec)\/|(\.|_)(test|spec|e2e)\.[a-z]+$|(^|\/)test_[^/]+\.py$|_test\.(go|rb|exs?|ml|fs|fsx)$|_spec\.(rb|js|ts|tsx)$|(Test|Tests|Spec|Specs)\.(java|kt|kts|scala|swift|cs|fs|php|js|ts|tsx)$/i;
 
@@ -43,10 +30,8 @@ function isDocFile(fp) {
   return DOC_FILE_RE.test(String(fp || ""));
 }
 
-// Файлы с кодом, для которых имеет смысл искать парный unit-тест (триггер D).
-// Конфиги (.json/.yml/.toml), Docker/Make-файлы, ассеты, стили (.css/.scss/.html)
-// — не считаются. Стили проверяются визуально / через snapshot на уровне
-// компонентов, а не unit-тестами на сам файл стилей.
+// Не менять, потому что стили и разметка исключены осознанно: unit-тест на сам
+// .css/.html не пишут, там визуальная верификация (триггер M).
 const CODE_FILE_RE =
   /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|astro|py|go|rs|rb|java|kt|kts|scala|php|cs|fs|fsx|ex|exs|clj|cljs|erl|hs|ml|mli|swift|dart|lua|sh|bash|zsh|fish|ps1|sql)$/i;
 
@@ -54,13 +39,10 @@ function isCodeFile(fp) {
   return CODE_FILE_RE.test(String(fp || ""));
 }
 
-// Public-surface маркеры: то что обязано быть отражено в доках при изменении.
 function isPublicSurface(fp) {
   const f = String(fp || "");
-  // SKILL.md frontmatter / agents / commands / plugin manifest — поведенческий surface.
   if (/(^|\/)\.claude-plugin\/plugin\.json$/i.test(f)) return true;
   if (/(^|\/)(skills|agents|commands)\/[^/]+\/SKILL\.md$/i.test(f)) return true;
-  // Точки входа CLI / public API.
   if (/(^|\/)(bin|cli)\/[^/]+\.(js|ts|mjs|cjs|sh|py)$/i.test(f)) return true;
   if (
     /(^|\/)(src|lib|pkg)\/[^/]*(index|main|api|public|exports|cli)\.(js|ts|mjs|cjs|py|go|rs)$/i.test(
@@ -68,12 +50,10 @@ function isPublicSurface(fp) {
     )
   )
     return true;
-  // Конфиг-схемы.
   if (/(^|\/)(schema|config)\.(json|ya?ml|toml)$/i.test(f)) return true;
   return false;
 }
 
-// Controller / route handler / api-handler — кандидат на e2e/functional тест.
 function isControllerOrRoute(fp) {
   const f = String(fp || "");
   if (isTestFile(f)) return false;
@@ -83,25 +63,17 @@ function isControllerOrRoute(fp) {
     )
   )
     return true;
-  // Next.js / Nuxt / SvelteKit api routes.
   if (/(^|\/)app\/api\/.*\/route\.(ts|js|mjs)$/i.test(f)) return true;
   if (/(^|\/)pages\/api\/.*\.(ts|js|mjs)$/i.test(f)) return true;
   if (/(^|\/)server\/api\/.*\.(ts|js|mjs)$/i.test(f)) return true;
-  // AdonisJS / Laravel / Rails-like controllers.
   if (/_controller\.(ts|js|mjs|rb|php|py|go|cs)$/i.test(f)) return true;
   if (/Controller\.(ts|js|mjs|rb|php|py|go|cs|kt|java)$/i.test(f)) return true;
   return false;
 }
 
-// Критичный endpoint (доступ / деньги) — единственный класс роутов, для которого
-// триггер E требует endpoint-level тест. Рядовой controller/route покрывается
-// триггером D (парный тест любого слоя): e2e-форс на каждый роут раздувает suite
-// (e2e-пролиферация — причина получасовых прогонов). Substring-матч в стиле
-// SECURITY_SENSITIVE_RE; generic-маркеры security-КОДА (api|sql|crypto|hash|...)
-// сюда намеренно НЕ входят — иначе каждый app/api/**-роут считался бы критичным.
-// Короткие токены (acl/sso/otp/2fa/mfa) — с границами не-alnum, иначе substring
-// ложно матчит обычные слова: oracle→«acl», associate→«sso». Длинные — substring
-// (auth ловит и authenticate; FP вида authors_controller — принятый trade-off).
+// Не менять, потому что расширение набора включает e2e-форс на каждый роут:
+// generic-маркеры (api|sql|crypto|hash) исключены именно поэтому, а короткие
+// токены (acl|sso|otp) стоят с границами — иначе `oracle` матчится на `acl`.
 const CRITICAL_ENDPOINT_RE =
   /(auth|login|logout|signin|signup|session|password|token|oauth|saml|ldap|permission|role|access|admin|payment|billing|checkout|charge|payout|transfer|withdraw|refund|invoice|subscription|wallet)|(^|[^a-z0-9])(acl|sso|otp|2fa|mfa)(?![a-z0-9])/i;
 
@@ -109,12 +81,6 @@ function isCriticalEndpoint(fp) {
   return CRITICAL_ENDPOINT_RE.test(String(fp || ""));
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Workspace / package-root discovery
-// ────────────────────────────────────────────────────────────────────────────
-
-// Маркеры «корня пакета» — директорий, относительно которых принято раскладывать
-// tests/, tests/unit/, tests/functional/ и т.п. в monorepo-структурах.
 const PACKAGE_MARKERS = [
   "package.json",
   "pyproject.toml",
@@ -137,15 +103,12 @@ function existsSafe(p) {
   }
 }
 
-// Общий escape для вставки недоверенных строк в new RegExp (import-scan,
-// edge-cases matcher) — единственная копия, чтобы набор метасимволов не дрейфовал.
+// Не менять, потому что это единственная копия набора метасимволов: вторая
+// разъедется, и недоверенная строка попадёт в new RegExp неэкранированной.
 function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Возвращает массив абсолютных путей base-roots для поиска тестов:
-// repoRoot + любая директория с маркером пакета между srcPath и repoRoot.
-// Дедуплицирован, repoRoot всегда включён.
 function findPackageRoots(srcPath, repoRoot) {
   const roots = new Set([repoRoot]);
   const absSrcDir = path.isAbsolute(srcPath)
@@ -172,17 +135,12 @@ function findPackageRoots(srcPath, repoRoot) {
   return [...roots];
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Mini glob matcher (без зависимостей). Поддерживает **, *, ?.
-// ────────────────────────────────────────────────────────────────────────────
-
 function globToRegex(glob) {
   let re = "^";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
     if (c === "*") {
       if (glob[i + 1] === "*") {
-        // ** — любое количество сегментов (включая 0)
         re += ".*";
         i++;
         if (glob[i + 1] === "/") i++;
@@ -203,7 +161,6 @@ function globToRegex(glob) {
 
 function matchAnyGlob(filePath, globs) {
   if (!globs || !globs.length) return false;
-  // Нормализуем — пути в POSIX, без leading "./" и абсолютного префикса не делаем.
   const norm = String(filePath || "")
     .replace(/\\/g, "/")
     .replace(/^\.\//, "");
@@ -216,86 +173,57 @@ function matchAnyGlob(filePath, globs) {
   return false;
 }
 
-// Широкий ignore-глоб = матчит целый подкаталог/язык без узкого якоря. Смотрим
-// последний path-сегмент и снимаем ведущий wildcard-ран (`*`/`**`/`?`):
-//   • остаток пуст (`**`, `dir/*`, `config/*`) → broad (вся папка);
-//   • остаток — ОДНО расширение (`*.ts`, `*.*`, `**/*.py`, `src/**/*.*`) → broad
-//     (весь язык/все файлы по дереву — по эффекту шире каталог-глоба);
-//   • иначе есть литеральный якорь: имя (`schema.ts`, `Button.tsx`,
-//     `build-*.sh`) или СОСТАВНОЕ расширение (`*.gen.ts`, `*.pb.go`, `*.d.ts`,
-//     `*.config.ts`) → narrow.
-// Такой глоб глушит триггер D. Используется ignore-glob-guard (PreToolUse) для
-// deny широких глобов в момент записи MAIN_SKILL_VERIFY_IGNORE_GLOBS.
+// Не менять, потому что голое `**/*.ts` обязано считаться широким: разреши его —
+// и гард обходится дописыванием дефолтного расширения.
 function isBroadIgnoreGlob(glob) {
   const g = String(glob || "")
     .trim()
     .replace(/\/+$/, "");
   if (!g) return false;
   const last = g.split("/").pop();
-  const rest = last.replace(/^[*?]+/, ""); // снять ведущий wildcard-ран
-  if (rest === "") return true; // **, *, dir/* — вся папка
-  // одно расширение после wildcard (один dot-токен, без второго `.`) → broad
+  const rest = last.replace(/^[*?]+/, "");
+  if (rest === "") return true;
   if (/^\.[A-Za-z0-9_*?-]+$/.test(rest)) return true;
-  return false; // литеральное имя / составное расширение → narrow
+  return false;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Skip-rules: файлы, для которых требование «парный unit-тест» не имеет смысла
-// ────────────────────────────────────────────────────────────────────────────
-
-// Универсальные path-паттерны (любая глубина).
 const SKIP_PATH_PATTERNS = [
   /(^|\/)migrations?\//i,
   /(^|\/)migrate\//i,
-  /(^|\/)alembic\//i, // Python Alembic: alembic/versions/...
+  /(^|\/)alembic\//i,
   /(^|\/)seed(ers|s)?\//i,
   /(^|\/)fixtures?\//i,
   /(^|\/)(locales?|i18n|translations?)\//i,
   /(^|\/)(__generated__|\.generated)\//i,
   /(^|\/)(start|bootstrap)\//i,
-  // AdonisJS providers/ — IoC-wiring (аналог start/), но НЕ каталогом: голый
-  // providers/ скипал бы логику NestJS/React/Flutter. Только Adonis-конвенция
-  // snake_case *_provider.(ts|js) прямым потомком; commands/ (ace) намеренно
-  // не включён — там бывает логика. Остаточный FN: логика в boot()/ready().
+  // Не менять, потому что скип идёт по имени файла, а не по каталогу: голый
+  // providers/ спрятал бы логику NestJS/React/Flutter.
   /(^|\/)providers\/[\w-]{1,64}_provider\.(ts|js)$/i,
-  // Infra-as-code / operational scripts directory (almost универсально не
-  // покрывается unit-тестами). config/ и deploy/ намеренно НЕ включены —
-  // там бывает реальная логика; для них юзер ставит MAIN_SKILL_VERIFY_IGNORE_GLOBS.
+  // Не менять, потому что рядом стоящие config/ и deploy/ сюда намеренно НЕ
+  // добавлены: в них бывает реальная логика, проект глушит их ignore-глобом.
   /(^|\/)(infra|infrastructure)\//i,
-  // Jest module mocks — конвенция, не application-код.
   /(^|\/)__mocks__\//i,
 ];
 
-// Filename-паттерны.
 const SKIP_FILENAME_PATTERNS = [
-  // Timestamped migration filenames (Knex, Adonis, Django, Rails-ish).
   /^\d{10,17}_[\w-]+\.(ts|tsx|js|jsx|mjs|cjs|py|sql|rb)$/i,
-  // Type-only declarations.
   /\.d\.ts$/i,
-  // Codegen.
   /\.generated\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs)$/i,
   /\.gen\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs)$/i,
   /\.pb\.go$/i,
   /_pb2(_grpc)?\.py$/i,
   /\.sql\.go$/i,
-  // Framework configs (без логики, для них тестов не пишут).
   /(^|\/)(vite|next|nuxt|svelte|astro|tailwind|postcss|babel|jest|vitest|rollup|tsup|webpack|esbuild|drizzle|playwright)\.config\.(ts|tsx|js|jsx|mjs|cjs)$/i,
-  // AdonisJS 6 framework-config (не следует схеме <name>.config.<ext>;
-  // .adonisrc.json из v5 — JSON, до триггера D не доходит через isCodeFile).
   /(^|\/)adonisrc\.(ts|js)$/i,
-  // AdonisJS bin/-entrypoints — тонкие Ignitor-обёртки. ТОЧЕЧНО три имени,
-  // не bin/**: в generic-проектах bin/ может нести CLI-логику.
+  // Не менять, потому что перечислены ровно три имени, а не bin/**: в
+  // generic-проектах bin/ несёт CLI-логику.
   /(^|\/)bin\/(server|console|test)\.(ts|js)$/i,
-  // AdonisJS ace.js — корневая JIT-обёртка; v6-шаблоны генерят только .js.
   /(^|\/)ace\.js$/i,
-  // Operational shell-scripts по любому пути. Имена выбраны однозначные:
-  // run.sh / entrypoint.sh / healthcheck.sh намеренно НЕ включены — слишком
-  // generic, может содержать реальную логику. Опц. [-_]суффикс bounded
-  // {1,40} (deploy-server.sh).
+  // Не менять, потому что run.sh / entrypoint.sh / healthcheck.sh сюда не входят:
+  // слишком generic, за такими именами бывает реальная логика.
   /(^|\/)(install|deploy|bootstrap|setup|provision|teardown|sync[-_]config)([-_][\w-]{1,40})?\.sh$/i,
-  // Storybook stories — визуальные fixtures, не unit-тестируются как код.
-  // .mdx-stories здесь намеренно отсутствуют — они отфильтровываются раньше
-  // через DOC_FILE_RE / classify()='docs' до достижения triggera D.
+  // Не менять, потому что .mdx-stories отфильтровываются раньше (classify → docs)
+  // и здесь их быть не должно.
   /\.stories\.(tsx|jsx|ts|js)$/i,
 ];
 
@@ -306,8 +234,8 @@ function isTypeOnlyTsFile(content) {
   const stripped = String(content || "")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/\/\/[^\n]*/g, "");
-  // Должно быть хотя бы одно type-объявление, иначе не type-only
-  // (пустой файл / dump-данные / one-liner — НЕ type-only).
+  // Не менять, потому что без позитивного свидетельства типа пустой файл и dump
+  // данных прошли бы как type-only.
   const hasTypeDecl =
     /\b(type|interface|enum)\s+[A-Z_]\w*/.test(stripped) ||
     /\bexport\s+(type|interface|enum|\*|\{|const\s+enum)/.test(stripped) ||
@@ -317,49 +245,27 @@ function isTypeOnlyTsFile(content) {
   if (/=>/.test(stripped)) return false;
   if (/\bnew\s+[A-Z]\w*/.test(stripped)) return false;
   if (/\b(let|var)\s+\w/.test(stripped)) return false;
-  // const X = ... (но НЕ `const enum X`)
   if (/\bconst\s+(?!enum\b)\w+\s*[:=]/.test(stripped)) return false;
   return true;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Декларативная ORM-модель (Lucid / TypeORM): только колонки / relations /
-// declare-поля / static-константы — content-skip для триггера D (стоп-лист
-// testing-strategy: DTO/декларации не тестировать). Консервативен как
-// isPresentationalSFC: skip только при НУЛЕ сигналов логики; relation-thunk-и
-// (`() => Model`, `(x) => x.prop`) — единственные легальные стрелки, и только
-// в аргументной позиции (после `(`/`,`/`[`); всё остальное → логика → тест.
-// `extends compose(BaseModel, Mixin)` гейт НЕ проходит: миксин несёт поведение.
-// ────────────────────────────────────────────────────────────────────────────
-
-// Суффикс-конвенция `*BaseModel` пропускает кастомную базу (AppBaseModel);
-// сигналы всё равно сторожат логику. `@Entity` заякорен на начало строки —
-// иначе упоминание в строковом литерале («Use @Entity() to…») проходило гейт.
+// Не менять, потому что `@Entity` заякорен на начало строки: иначе упоминание
+// в строковом литерале («Use @Entity() to…») прошло бы как модель.
 const _LUCID_GATE_RE =
   /\bclass(?:\s+[A-Za-z_$][\w$]{0,80})?\s+extends\s+(?:[A-Za-z_$][\w$]{0,80})?BaseModel\b/;
 const _TYPEORM_GATE_RE = /(?:^|\n)\s{0,20}@Entity\s*\(/;
 
-// Позитивное свидетельство модели: хотя бы одно column/relation/declare-поле.
 const _MODEL_FIELD_RE =
   /@(?:column|hasOne|hasMany|belongsTo|manyToMany|hasManyThrough|Column|PrimaryColumn|PrimaryGeneratedColumn|ObjectIdColumn|CreateDateColumn|UpdateDateColumn|DeleteDateColumn|VersionColumn|OneToOne|OneToMany|ManyToOne|ManyToMany)\b|\bdeclare\s+[A-Za-z_$]/;
 
-// Декларативные thunk-формы в АРГУМЕНТНОЙ позиции (lookbehind `(`/`,`/`[`):
-// стрелка после `=` или `:` (значение/опция) остаётся и даёт сигнал логики.
-// Хвостовой lookahead ПОЗИТИВНЫЙ — после цепочки обязан идти разделитель
-// аргументной позиции (`)`, `,`, `]`, перенос): `() => User.query()` не
-// нейтрализуется (после цепочки `(`), и частичный ретрит идентификатора
-// (`query.whereNul` + остаток `l`) тоже не проходит — negative-blacklist
-// здесь пропускал бы word-остаток. Все квантификаторы bounded — ReDoS-грабли
-// репо (см. _SFC_LOGIC_SIGNALS).
+// Не менять, потому что нейтрализуются только стрелки в аргументной позиции:
+// стрелка после `=` или `:` — это значение/опция, то есть логика.
 const _THUNK_TAIL = "(?=\\s{0,10}[),\\]\\r\\n])";
-// `() => Model` / `() => Model.Sub` — lazy type-reference (Lucid + TypeORM).
 const _THUNK_TYPE_RE = new RegExp(
   "(?<=[(,\\[]\\s{0,20})\\(\\s{0,10}\\)\\s{0,10}=>\\s{0,10}[A-Za-z_$][\\w$]{0,80}(?:\\.[A-Za-z_$][\\w$]{0,80}){0,5}" +
     _THUNK_TAIL,
   "g",
 );
-// `(photo) => photo.user` / `photo => photo.user` / `(p: Photo) => p.user` —
-// inverse-side accessor (TypeORM): тело — чистая property-цепочка без вызова.
 const _THUNK_ACCESSOR_RE = new RegExp(
   "(?<=[(,\\[]\\s{0,20})\\(?\\s{0,10}[A-Za-z_$][\\w$]{0,60}(?:\\s{0,10}:\\s{0,10}[A-Za-z_$][\\w$.]{0,80}(?:<[\\w$,.\\s[\\]]{0,80}>)?)?\\s{0,10}\\)?\\s{0,10}=>\\s{0,10}[A-Za-z_$][\\w$]{0,60}(?:\\.[A-Za-z_$][\\w$]{0,60}){1,6}" +
     _THUNK_TAIL,
@@ -367,31 +273,26 @@ const _THUNK_ACCESSOR_RE = new RegExp(
 );
 
 const _MODEL_LOGIC_SIGNALS = [
-  /=>/, // любая не-нейтрализованная стрелка (значения, serialize/prepare/onQuery)
+  /=>/,
   /\bfunction\b/,
-  /\b(?:get|set)\s+[A-Za-z_$][\w$]{0,60}\s*\(/, // get fullName() / set locale()
+  /\b(?:get|set)\s+[A-Za-z_$][\w$]{0,60}\s*\(/,
   /@computed\b/,
-  // Lucid hooks (@beforeSave/@afterFetch/…) + TypeORM listeners (@BeforeInsert/@AfterLoad/…).
   /@(?:[bB]efore|[aA]fter)[A-Z][A-Za-z]{0,40}\b/,
   /\bserializeExtras\b/,
-  /\bscope\s*\(/, // Lucid query scope
+  /\bscope\s*\(/,
   /\b(?:if|for|while|switch)\s*\(/,
   /\btry\s*\{/,
   /\b(?:await|async|throw|yield|return)\b/,
   /\bthis\b/,
   /\bnew\s+[A-Za-z_$]/,
   /\b(?:let|var)\s+[A-Za-z_$]/,
-  /=\s{0,10}[A-Za-z_$][\w$.]{0,80}\s*\(/, // присваивание вызова: static x = f(…)
-  // Тело метода: `)` + `{` через любой whitespace (переносы включительно).
-  // Имя-агностично НАМЕРЕННО: ловит многострочные сигнатуры (Prettier-перенос
-  // параметров), computed/unicode/#private-имена — в отличие от
-  // `ident(args){`-формы (_SFC_LOGIC_SIGNALS), которую ревью обходило.
-  // В чисто декларативной модели `){` не встречается: после `)` декоратора
-  // идёт поле/декоратор, а у `class … {` перед скобкой нет `)`.
+  /=\s{0,10}[A-Za-z_$][\w$.]{0,80}\s*\(/,
+  // Не менять, потому что паттерн имя-агностичен намеренно: он ловит
+  // многострочные сигнатуры и computed/unicode/#private-имена.
   /\)\s*\{/,
-  /\bstatic\s*\{/, // static initialization block — исполняется при eval класса
+  /\bstatic\s*\{/,
   /\.(?:map|filter|reduce|reduceRight|forEach|find|findIndex|some|every|flatMap|sort)\s*\(/,
-  /\$\{/, // template-интерполяция
+  /\$\{/,
 ];
 
 function isDeclarativeModelFile(content) {
@@ -408,79 +309,50 @@ function isDeclarativeModelFile(content) {
   return true;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Презентационный SFC (Vue/Svelte/Astro): компонент без логики в <script>.
-// Аналог isTypeOnlyTsFile — content-based skip. Консервативен: «презентационный»
-// (skip) только при НУЛЕ сигналов логики; любое сомнение → логика → тест нужен.
-// ────────────────────────────────────────────────────────────────────────────
-
-// Достаёт «исходник логики» из SFC: содержимое всех <script>-блоков (Vue/Svelte)
-// + Astro-frontmatter (между ведущими `---`).
 function extractScriptSource(content) {
   const c = String(content || "");
   const parts = [];
   for (const m of c.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
     parts.push(m[1]);
   }
-  // Astro frontmatter: файл начинается с `---\n ... \n---`.
   const fm = c.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
   if (fm) parts.push(fm[1]);
   return parts.join("\n");
 }
 
-// Сигналы реальной логики в script-блоке. Любое совпадение → НЕ презентационный.
-// Подобраны так, чтобы типовые аннотации (`onClick: () => void`) НЕ считались
-// логикой — arrow ловим только в позиции значения/коллбэка (`= (..) =>`, `(() =>`).
-//
-// ВСЕ квантификаторы внутри скобочных групп ОГРАНИЧЕНЫ ({0,N}) — иначе на
-// adversarial SFC (`=((`×N, `f((`×N в пределах 200KB-капа) `[^)]*` + `[\w$]*\s*\(`
-// давали catastrophic backtracking O(N²): 60KB → 1.8s, 200KB → ~60s, вешая Stop-хук
-// на каждом turn. Bounded-версии линейны (~301 симв./позиция максимум).
-// `\n` в _ARG разрешён: Prettier переносит длинные списки параметров, а
-// однострочная версия пропускала такие arrow-значения/коллбэки (ревью v1.9.4).
-const _ARG = "[^)]{0,240}"; // тело списка аргументов: без `)`, с капом
+// Не менять, потому что баунд обязателен: без `{0,240}` списки аргументов дают
+// катастрофический backtracking на подобранном входе (замерено: 60KB → 1.8s,
+// 200KB → ~60s). Расширять можно, снимать баунд — нет.
+const _ARG = "[^)]{0,240}";
+
+// Не менять, потому что arrow ловится только в позиции значения или коллбэка:
+// иначе типовая аннотация `onClick: () => void` считалась бы логикой, и
+// презентационный компонент требовал бы теста.
 const _SFC_LOGIC_SIGNALS = [
-  // Vue Composition: реактивность / состояние / DI.
   /\b(?:ref|shallowRef|customRef|toRef|toRefs|reactive|shallowReactive|readonly|computed|watch|watchEffect|watchPostEffect|watchSyncEffect|effect|inject|provide)\s*\(/,
-  // Vue Composition: lifecycle-хуки (берут коллбэк = логика).
   /\b(?:onMounted|onBeforeMount|onUnmounted|onBeforeUnmount|onUpdated|onBeforeUpdate|onActivated|onDeactivated|onErrorCaptured|onRenderTracked|onRenderTriggered)\s*\(/,
-  // Options API: логические блоки + lifecycle/data-методы.
   /\b(?:methods|computed|watch)\s*:\s*\{/,
   /\b(?:data|created|mounted|beforeCreate|beforeMount|updated|beforeUpdate|destroyed|beforeDestroy|setup|render)\s*\(/,
-  // function-объявление.
   /\bfunction\b/,
-  // control-flow.
   /\b(?:if|for|while|switch)\s*\(/,
   /\btry\s*\{/,
   /\b(?:await|async|throw|yield)\b/,
-  // data-transforms (итерация/трансформация коллекций).
   /\.(?:map|filter|reduce|reduceRight|forEach|find|findIndex|findLast|some|every|flatMap|sort)\s*\(/,
-  // Тело метода / control-flow с телом: `)` + `{` через любой whitespace.
-  // Имя-агностично (как в _MODEL_LOGIC_SIGNALS): ловит `data() {`,
-  // `defineExpose({ focus() {} })`, многострочные сигнатуры и
-  // computed/unicode-имена. В презентационном script `){` не встречается:
-  // `defineProps({...})` даёт `({`/`})`, `withDefaults(x(), {...})` — `), {`,
-  // а `) => {` объектного return-type режется стрелкой между `)` и `{`.
+  // Не менять, потому что паттерн имя-агностичен намеренно: ловит `data() {`,
+  // `defineExpose({ focus() {} })` и многострочные сигнатуры.
   /\)\s*\{/,
-  /\bstatic\s*\{/, // static initialization block — исполняется при eval класса
-  // arrow-функция как значение: `= (args) =>` / `= async (..) =>`.
+  /\bstatic\s*\{/,
   new RegExp(`=\\s*(?:async\\s+)?\\(${_ARG}\\)\\s*=>`),
-  // arrow-функция как значение с одним параметром без скобок: `= x =>`.
   /=\s*(?:async\s+)?[A-Za-z_$][\w$]{0,60}\s*=>/,
-  // arrow-коллбэк первым аргументом вызова: `(() => ..)` / `((args) => ..)`.
   new RegExp(`\\(\\s*(?:async\\s+)?\\(${_ARG}\\)\\s*=>`),
-  // Svelte: реактивные statements `$:` и руны $state/$derived/$effect.
   /(?:^|\n)\s*\$:\s/,
   /\$(?:state|derived|effect)\s*\(/,
 ];
 
-// Возвращает true, если SFC-контент презентационный (template/markup без логики
-// в script). Базируется на <script> (Vue/Svelte) или frontmatter (Astro).
 function isPresentationalSFC(content) {
   const src = extractScriptSource(content);
-  if (!src.trim()) return true; // нет script → чистый template/markup
-  // Стрипаем комментарии (как isTypeOnlyTsFile), чтобы закомментированный код
-  // не считался логикой.
+  if (!src.trim()) return true;
+  // Не менять, потому что без стрипа закомментированный код считается логикой.
   const stripped = src
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/\/\/[^\n]*/g, "");
@@ -488,12 +360,8 @@ function isPresentationalSFC(content) {
   return true;
 }
 
-// Правка релевантна мехчекам Stop-хука (D/E/F/A), только если файл (а) внутри
-// repoRoot и (б) существует к моменту Stop. Throwaway-скрипты в /tmp и файлы,
-// удалённые в ходе сессии, не требуют тестов — их больше нет в проекте
-// (dogfooding-кейс v1.9.11: репро-скрипты сессии ложно триггерили D).
-// Компромисс: «удалить перед Stop, вернуть после» формально обходит D — тот же
-// документированный потолок teeth, что текстовый матч render-команд в M.
+// Не менять, потому что файла вне repoRoot или уже удалённого в сессии больше
+// нет в проекте — требовать для него тест бессмысленно.
 function existsInsideRepo(fp, repoRoot) {
   try {
     if (typeof fp !== "string" || !fp || typeof repoRoot !== "string")
@@ -508,14 +376,11 @@ function existsInsideRepo(fp, repoRoot) {
   }
 }
 
-// Возвращает true если для srcPath не нужен парный unit-тест.
-// Универсально по стекам. repoRoot опционален для content-чтения.
 function shouldSkipForTestPairing(srcPath, repoRoot = null) {
   const fp = String(srcPath || "").replace(/\\/g, "/");
   for (const re of SKIP_PATH_PATTERNS) if (re.test(fp)) return true;
   for (const re of SKIP_FILENAME_PATTERNS) if (re.test(fp)) return true;
 
-  // Content-based проверки (если файл на диске и небольшой).
   const abs = path.isAbsolute(fp)
     ? fp
     : repoRoot
@@ -535,35 +400,20 @@ function shouldSkipForTestPairing(srcPath, repoRoot = null) {
   } catch {
     return false;
   }
-  // Проверяем «@generated» / «Code generated by» в первых ~10 строках.
   const head = body.split("\n").slice(0, 10).join("\n");
   if (GENERATED_HEADER_RE.test(head)) return true;
-  // TS type-only. Пре-стрип посимвольным сканером нейтрализует квадратичный
-  // lazy-regex стрипа `/* */` внутри isTypeOnlyTsFile на adversarial-входе.
+  // Не менять, потому что пре-стрип сканером гасит квадратичный lazy-regex
+  // внутри isTypeOnlyTsFile на adversarial-входе.
   if (/\.(ts|tsx)$/i.test(fp) && isTypeOnlyTsFile(stripBlockComments(body)))
     return true;
-  // Декларативная ORM-модель (Lucid/TypeORM): только колонки/relations —
-  // тестировать нечего; любой сигнал логики внутри → НЕ skip, тест обязателен.
   if (/\.(ts|js)$/i.test(fp) && isDeclarativeModelFile(body)) return true;
-  // Презентационный SFC (Vue/Svelte/Astro): template/markup без логики в script.
   if (/\.(vue|svelte|astro)$/i.test(fp) && isPresentationalSFC(body))
     return true;
   return false;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер M: render-verify для фронт-правок
-// ────────────────────────────────────────────────────────────────────────────
-
-// Render-класс верификация: то, что реально открывает страницу — headless
-// browser / curl|wget по localhost (активный браузер-MCP трекается отдельно
-// в verify-changes.js по имени tool_use). Unit-раннеры (vitest/jest, jsdom)
-// сюда НАМЕРЕННО не входят — jsdom не рендерит (нет layout-движка). Внешний
-// `https?://`-curl — тоже нет: продовый URL не проверяет локальную правку.
-// `\n` исключён из curl/wget-квантификаторов: иначе многострочная команда со
-// словом «localhost» в ДРУГОЙ строке (echo/коммент) ложно засчиталась бы
-// рендером. Квантификаторы ограничены ({0,300}) против квадратичного
-// backtracking-а на adversarial-команде из множества anchor-токенов.
+// Не менять, потому что unit-раннеры сюда не входят: jsdom не рендерит, и
+// внешний https:// тоже — прод-URL не проверяет локальную правку.
 function isRenderVerifyCmd(cmd) {
   const c = String(cmd || "");
   return (
@@ -574,80 +424,184 @@ function isRenderVerifyCmd(cmd) {
     ) ||
     /chrom(e|ium)[^\n]{0,300}--headless/i.test(c) ||
     /\bnpx\s+playwright\s+(test|open|screenshot)/i.test(c) ||
-    // cypress — реальный браузерный рендер; E/reasonE легитимизируют его как
-    // e2e-стек, значит и M обязан засчитывать (иначе внутренняя нестыковка).
+    // Не менять, потому что cypress признан e2e-стеком в триггере E: не засчитать
+    // его в M — внутренняя нестыковка.
     /\bcypress\s+(run|open)\b/i.test(c) ||
-    // Vitest Browser Mode — реальный браузер через playwright-provider;
-    // testing-strategy.md рекомендует его для UI-компонентов, значит M обязан
-    // засчитывать. Голый `vitest run` (jsdom) рендером НЕ считается.
+    // Не менять, потому что засчитывается только `--browser`: голый `vitest run`
+    // живёт в jsdom и рендером не является.
     /\bvitest\b[^\n]{0,300}--browser/i.test(c)
   );
 }
 
-// Посимвольный однопроходный стрип комментариев — O(n) гарантированно.
-// НЕ заменять regex-ом: и lazy `[\s\S]*?`, и unrolled-альтернация квадратичны
-// на adversarial-входе из множества незакрытых `/*` (документированные грабли).
-// State-machine различает `//`-комментарии и строки (' " `): иначе `/*` внутри
-// line-comment-а (`// paths like /api/*`) или строкового литерала открывал бы
-// «блок» и съедал файл до EOF вместе с кодом-дисквалификатором — обход
-// type-only exempt в триггере M. Mis-parse экзотики (regex-литералы) оставляет
-// мусор в выводе → детекторы дают «не exempt» — fail toward требования.
-function stripBlockComments(src) {
+const COMMENT_FAMILIES = [
+  [
+    /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|astro|go|rs|java|kt|kts|scala|php|cs|fs|fsx|swift|dart)$/i,
+    "slash",
+  ],
+  [/\.(py|rb|sh|bash|zsh|fish|ps1|ex|exs|pl|r)$/i, "hash"],
+  [/\.(lua|sql|hs)$/i, "dash"],
+];
+
+function commentFamilyFor(fp) {
+  const f = String(fp || "");
+  for (const [re, fam] of COMMENT_FAMILIES) if (re.test(f)) return fam;
+  return null;
+}
+
+// Не менять, потому что: (1) regex вместо посимвольного скана квадратичен на
+// входе из множества незакрытых `/*` — и lazy `[\s\S]*?`, и unrolled-альтернация;
+// (2) без учёта строк (' " ` и python-тройных) и regex-литералов токен внутри
+// литерала (`// paths like /api/*`, docstring с `# заголовком`, бэктик в
+// /```[a-z]*/) открывает мнимый комментарий и съедает файл до EOF вместе с
+// кодом-дисквалификатором — обход type-only exempt в триггере M и ложный deny
+// в comment-guard. Остаточный mis-parse оставляет мусор → детекторы дают «не
+// exempt», гард — deny: fail toward требования.
+function scanComments(src, family) {
   const s = String(src || "");
-  const out = [];
-  let state = "code"; // code | block | line | str
-  let quote = "";
-  for (let i = 0; i < s.length; i++) {
+  const fam = family || "slash";
+  const lineTok = fam === "slash" ? "//" : fam === "dash" ? "--" : "#";
+  const hasBlock = fam === "slash";
+  const spans = [];
+  const n = s.length;
+  let i = 0;
+  let codeTail = "";
+  // Не менять, потому что бюджет — единственное, что держит скан линейным:
+  // неудачная попытка regex-литерала откатывает курсор на один символ, и без
+  // бюджета строка из `=/[` даёт O(n²) (замерено: 180KB → 13.6s, при дефолтном
+  // таймауте хука в 60s это снятие enforcement).
+  let regexBudget = 4 * n;
+  const remember = (c) => {
+    codeTail = (codeTail + c).slice(-16);
+  };
+  while (i < n) {
     const ch = s[i];
-    if (state === "block") {
-      if (ch === "*" && s[i + 1] === "/") {
-        state = "code";
+    if (ch === '"' || ch === "'" || (fam === "slash" && ch === "`")) {
+      remember(ch);
+      if (fam === "hash" && s[i + 1] === ch && s[i + 2] === ch) {
+        const q = ch + ch + ch;
+        const end = s.indexOf(q, i + 3);
+        i = end === -1 ? n : end + 3;
+        continue;
+      }
+      i++;
+      while (i < n) {
+        const c = s[i];
+        if (c === "\\") {
+          i += 2;
+          continue;
+        }
+        if (c === ch) {
+          i++;
+          break;
+        }
+        if (c === "\n" && ch !== "`") break;
         i++;
       }
       continue;
     }
-    if (state === "line") {
-      if (ch === "\n") {
-        state = "code";
-        out.push(ch); // перенос сохраняем — построчные проверки живут
-      }
+    if (hasBlock && ch === "/" && s[i + 1] === "*") {
+      const end = s.indexOf("*/", i + 2);
+      const stop = end === -1 ? n : end + 2;
+      spans.push({
+        start: i,
+        end: stop,
+        text: s.slice(i, stop),
+        kind: "block",
+      });
+      i = stop;
       continue;
     }
-    if (state === "str") {
-      out.push(ch);
-      if (ch === "\\") {
-        if (i + 1 < s.length) out.push(s[++i]); // escape — копируем как есть
+    if (s.startsWith(lineTok, i)) {
+      let end = s.indexOf("\n", i);
+      if (end === -1) end = n;
+      spans.push({ start: i, end, text: s.slice(i, end), kind: "line" });
+      i = end;
+      continue;
+    }
+    if (
+      fam === "slash" &&
+      ch === "/" &&
+      regexBudget > 0 &&
+      startsRegexLiteral(codeTail)
+    ) {
+      const r = skipRegexLiteral(s, i);
+      regexBudget -= r.scanned;
+      if (r.end > i) {
+        i = r.end;
+        codeTail = "/";
         continue;
       }
-      if (ch === quote || (quote !== "`" && ch === "\n")) state = "code";
-      continue;
     }
-    // state === "code"
-    if (ch === "/" && s[i + 1] === "*") {
-      state = "block";
-      i++;
-      continue;
-    }
-    if (ch === "/" && s[i + 1] === "/") {
-      state = "line";
-      i++;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === "`") {
-      state = "str";
-      quote = ch;
-      out.push(ch);
-      continue;
-    }
-    out.push(ch);
+    if (!/\s/.test(ch)) remember(ch);
+    i++;
   }
+  return spans;
+}
+
+const REGEX_PREV_PUNCT = /[([{,;:=!&|?+\-*%~^<>]$/;
+const REGEX_PREV_KEYWORD =
+  /\b(return|typeof|case|in|of|new|delete|void|do|else|yield|await)$/;
+
+// Не менять, потому что различение regex-литерала и деления держится только на
+// предыдущем значимом токене: после идентификатора / числа / `)` / `]` слэш —
+// деление, в остальных позициях — regex. Точка перед ключевым словом обязана
+// снимать keyword-ветку: `obj.do / 2` — деление, а принятый за regex слэш съест
+// строку до `//` и спрячет от comment-guard реальный комментарий.
+function startsRegexLiteral(codeTail) {
+  const t = codeTail.replace(/\s+$/, "");
+  if (t === "") return true;
+  if (REGEX_PREV_PUNCT.test(t)) return true;
+  const kw = t.match(REGEX_PREV_KEYWORD);
+  if (!kw) return false;
+  return t[t.length - kw[0].length - 1] !== ".";
+}
+
+// { end, scanned }: end — индекс за концом regex-литерала либо start при неудаче.
+// Не менять, потому что: (1) перенос строки означает «это было деление», иначе
+// одиночный слэш съедал бы файл до следующего слэша; (2) `scanned` возвращается
+// и при неудаче — из него вычитается бюджет в scanComments, без этого учёта скан
+// снова становится квадратичным.
+function skipRegexLiteral(s, start) {
+  let i = start + 1;
+  let inClass = false;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "\\") {
+      i += 2;
+      continue;
+    }
+    if (c === "\n") return { end: start, scanned: i - start };
+    if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) {
+      i++;
+      while (i < s.length && /[a-z]/i.test(s[i])) i++;
+      return { end: i, scanned: i - start };
+    }
+    i++;
+  }
+  return { end: start, scanned: i - start };
+}
+
+// Не менять, потому что: спан line-комментария кончается ДО `\n` (перенос
+// остаётся в выводе — построчные проверки триггера M живут), а спан блочного
+// включает `*/` целиком.
+function stripBlockComments(src) {
+  const s = String(src || "");
+  const spans = scanComments(s, "slash");
+  if (spans.length === 0) return s;
+  const out = [];
+  let prev = 0;
+  for (const sp of spans) {
+    out.push(s.slice(prev, sp.start));
+    prev = sp.end;
+  }
+  out.push(s.slice(prev));
   return out.join("");
 }
 
-// Безопасное чтение файла проекта по пути из транскрипта: symlink-resolve,
-// confinement под repoRoot (как hardening transcript_path в verify-changes.js),
-// только regular file, size-cap. null при любой аномалии — решает вызывающий
-// (exempt-детект трактует null как «не exempt», mutating-детект — как «нет сигнала»).
+// Не менять, потому что путь приходит из транскрипта: без realpath-confinement
+// под repoRoot он читает что угодно, а без isFile — виснет на FIFO.
 function readRepoFileSafe(fp, repoRoot, maxBytes = 200_000) {
   const f = String(fp || "");
   const abs = path.isAbsolute(f) ? f : path.join(repoRoot || ".", f);
@@ -663,49 +617,46 @@ function readRepoFileSafe(fp, repoRoot, maxBytes = 200_000) {
   }
 }
 
-// Token-only stylesheet: только дизайн-токены (custom properties / SCSS-vars /
-// @import-статементы) — нечего рендерить. Консервативно: любая строка вне
-// допустимого набора → НЕ token-only (fail toward требования рендера).
+// Не менять, потому что любая строка вне допустимого набора обязана давать «не
+// token-only»: exempt по умолчанию снял бы триггер M с реальных стилей.
 function isTokenOnlyCss(content) {
   const stripped = stripBlockComments(content);
   const lines = stripped.split("\n");
   const allowed = [
     /^\s*$/,
-    /^\s*\/\/.*$/, // однострочный комментарий (SCSS/LESS)
-    /^\s*(:root|html)[\s,.:\w[\]="'-]{0,200}\{?\s*$/i, // селектор токен-скоупа (+attr: [data-theme="dark"])
-    /^\s*@(media|supports)\b[^{}]{0,300}\{\s*$/i, // dark-mode обёртка вокруг :root
+    /^\s*\/\/.*$/,
+    /^\s*(:root|html)[\s,.:\w[\]="'-]{0,200}\{?\s*$/i,
+    /^\s*@(media|supports)\b[^{}]{0,300}\{\s*$/i,
     /^\s*\}\s*;?\s*$/,
-    /^\s*--[\w-]+\s*:[^;{}]*;?\s*$/, // CSS custom property
-    /^\s*\$[\w-]+\s*:[^;{}]*;?\s*$/, // SCSS variable
+    /^\s*--[\w-]+\s*:[^;{}]*;?\s*$/,
+    /^\s*\$[\w-]+\s*:[^;{}]*;?\s*$/,
     /^\s*@(import|use|forward|charset|layer)\b[^{}]*;?\s*$/i,
-    /^\s*@[\w-]+\s*:[^;{}]*;?\s*$/, // LESS variable (`@brand: #f00;`)
+    /^\s*@[\w-]+\s*:[^;{}]*;?\s*$/,
   ];
   const tokenLine =
     /^\s*(--[\w-]+|\$[\w-]+|@(?!(import|use|forward|charset|layer)\b)[\w-]+)\s*:/;
   let sawToken = false;
   for (const line of lines) {
-    // ReDoS-guard: в allowed есть смежные квантификаторы — квадратичны на
-    // длинной adversarial-строке. Легитимные токен-строки короткие →
-    // длинная строка = не token-only (fail toward требования рендера).
+    // Не менять, потому что смежные квантификаторы в allowed квадратичны: гейт
+    // длины строки — единственное, что держит их bounded.
     if (line.length > 500) return false;
     if (!allowed.some((re) => re.test(line))) return false;
     if (tokenLine.test(line)) sawToken = true;
   }
-  return sawToken; // пустой/структурный файл без единого токена — не exempt
+  return sawToken;
 }
 
-// Файл, правка которого не требует render-проверки. Fail toward требования:
-// нечитаемый / не-файл / вне repoRoot / >200KB → НЕ exempt. Презентационные
-// SFC и .html НАМЕРЕННО не exempt — визуал именно там.
+// Не менять, потому что аномалия (нечитаемо / вне repoRoot / >200KB) обязана
+// давать «не exempt», а презентационные SFC и .html не exempt никогда — визуал
+// именно там.
 function isRenderExemptFrontendFile(fp, repoRoot) {
   const f = String(fp || "");
   const body = readRepoFileSafe(f, repoRoot);
   if (body == null) return false;
   const head = body.split("\n").slice(0, 10).join("\n");
   if (GENERATED_HEADER_RE.test(head)) return true;
-  // Type-only .tsx/.jsx (интерфейсы/типы без рендерящего кода). Предварительный
-  // посимвольный стрип гасит ReDoS-паттерн внутри isTypeOnlyTsFile на
-  // adversarial-входе из незакрытых `/*` (сканер убирает их до regex-а).
+  // Не менять, потому что стрип сканером идёт до regex-а: он убирает незакрытые
+  // `/*`, на которых lazy-regex внутри isTypeOnlyTsFile квадратичен.
   if (/\.(tsx|jsx)$/i.test(f))
     return isTypeOnlyTsFile(stripBlockComments(body));
   if (/\.(css|scss|sass|less|styl|stylus)$/i.test(f))
@@ -713,61 +664,44 @@ function isRenderExemptFrontendFile(fp, repoRoot) {
   return false;
 }
 
-// Контент-сигнал мутирующего endpoint-а — дополнение к path-детекту
-// isCriticalEndpoint (CAVEAT бэклога: детект только по имени пути пропускает
-// неназванные мутации — /users/:id destroy, /orders POST). Bounded substring-
-// якоря по телу controller/route-файла (комментарии предварительно стрипнуты).
-// False positive → лишний endpoint-тест (безвредно); false negative →
-// остаётся D-парный тест.
+// Не менять, потому что это единственный детект мутаций без говорящего имени
+// (/users/:id destroy, /orders POST); квантификаторы bounded — вход недоверенный.
 const MUTATING_HANDLER_RES = [
-  /\bexport\s+(async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/, // Next.js app router
-  /\.(post|put|patch|delete)\s*\(\s*["'`/]/i, // Express/Fastify/Koa/Adonis router.post('/x')
-  /@(Post|Put|Patch|Delete)\s*\(/, // NestJS
-  /\bdef\s+(create|update|destroy)\b/, // Rails resource actions
-  /\bpublic\s+function\s+(store|update|destroy)\b/i, // Laravel
-  /\basync\s+(store|update|destroy)\s*\(/, // AdonisJS resource-методы
+  /\bexport\s+(async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/,
+  /\.(post|put|patch|delete)\s*\(\s*["'`/]/i,
+  /@(Post|Put|Patch|Delete)\s*\(/,
+  /\bdef\s+(create|update|destroy)\b/,
+  /\bpublic\s+function\s+(store|update|destroy)\b/i,
+  /\basync\s+(store|update|destroy)\s*\(/,
 ];
 
 function hasMutatingHandler(fp, repoRoot) {
   const body = readRepoFileSafe(fp, repoRoot);
-  if (body == null) return false; // нечитаемо → сигнала нет; решает path-детект
+  if (body == null) return false;
   const stripped = stripBlockComments(body);
   return MUTATING_HANDLER_RES.some((re) => re.test(stripped));
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер D: поиск парного test-файла
-// ────────────────────────────────────────────────────────────────────────────
-
-// Директории, где лежат тесты бизнес-логики, ходящие в реальную БД/сервисы
-// (AdonisJS/Japa `tests/functional/`, общая `tests/integration/`). Это валидный
-// парный тест логики (не browser-e2e) — поэтому набор шарится между триггером D
-// (парный тест) и E (e2e/functional). E дополнительно знает чисто-браузерные
-// дир-ы (e2e/, cypress/, playwright/), которые в D намеренно НЕ входят: совпадение
-// basename с браузерным e2e не доказывает покрытие логики файла.
+// Не менять, потому что набор шарится с триггером E: functional/integration —
+// валидный парный тест логики, а не browser-e2e.
 const SHARED_LOGIC_TEST_DIRS = [
   ["tests", "functional"],
   ["tests", "integration"],
 ];
 
-// Mirror-discovery: src-prefix → test-prefixes (внутри того же package-root).
-// Возвращает массив { fromRel, toReplacements: string[] } — список замен src-сегмента.
 function getMirrorPrefixReplacements(relFromPackageRoot) {
   const r = relFromPackageRoot.replace(/\\/g, "/");
   const out = [];
-  // Maven/Gradle: src/main/<lang>/ → src/test/<lang>/
   let m = r.match(/^(src\/main\/(java|kotlin|scala|groovy))\//);
   if (m) {
     out.push({ from: m[1], to: ["src/test/" + m[2]] });
     return out;
   }
-  // Swift SPM: Sources/<Module>/ → Tests/<Module>Tests/
   m = r.match(/^(Sources\/([^/]+))\//);
   if (m) {
     out.push({ from: m[1], to: [`Tests/${m[2]}Tests`] });
     return out;
   }
-  // Ruby: app/<group>/ → spec/<group>/, test/<group>/
   m = r.match(/^(app\/[^/]+)\//);
   if (m) {
     out.push({
@@ -776,45 +710,30 @@ function getMirrorPrefixReplacements(relFromPackageRoot) {
     });
     return out;
   }
-  // Generic src/lib/Sources/app на верхнем уровне → tests/, test/, spec/, __tests__/,
-  // ИЛИ внутрь самого src как __tests__-поддиректория (Jest-style).
   m = r.match(/^(src|lib|Sources|app)(\/|$)/);
   if (m) {
     const prefix = m[1];
     out.push({
       from: prefix,
-      to: [
-        "tests",
-        "test",
-        "spec",
-        "__tests__",
-        `${prefix}/__tests__`, // Jest in-source convention
-      ],
+      to: ["tests", "test", "spec", "__tests__", `${prefix}/__tests__`],
     });
   }
   return out;
 }
 
-// Возвращает relative-path найденного парного test-файла, либо null.
-// Ищет в репо (existsSync) и среди session-edits (если test ещё не на диске).
 function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
-  if (isTestFile(srcPath)) return srcPath; // тест-файл сам себе парный
+  if (isTestFile(srcPath)) return srcPath;
   const ext = path.extname(srcPath);
   const dir = path.dirname(srcPath);
   const base = path.basename(srcPath, ext);
 
   const candidates = [];
 
-  // JS/TS conventions.
-  // Component-расширения (.vue/.svelte/.astro) тестируются ФАЙЛАМИ С ДРУГИМ расширением
-  // (Vue+Vitest: App.spec.ts, Svelte: Button.spec.ts), поэтому строим candidates
-  // по списку tested-extensions, а не по ext исходника.
+  // Не менять, потому что для component-расширений (.vue/.svelte/.astro) кандидаты
+  // строятся по ДРУГИМ расширениям: App.spec.vue не существует.
   if (/\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|astro)$/i.test(ext)) {
     const isComponent = /\.(vue|svelte|astro)$/i.test(ext);
-    // JS/TS-расширения, на которых пишутся тесты (в порядке популярности).
     const JS_TEST_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
-    // Для component-файла сам ext — не валиден для теста (App.spec.vue не существует).
-    // Для .ts/.tsx/.js/... добавляем сначала свой ext, затем JS/TS fallback.
     const testExts = isComponent
       ? JS_TEST_EXTS
       : [
@@ -834,17 +753,14 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
         path.join(dir, "__tests__", `${base}${tExt}`),
         path.join(dir, "__tests__", `${base}.test${tExt}`),
         path.join(dir, "__tests__", `${base}.spec${tExt}`),
-        // same-dir tests|test подкаталог (node:test-конвенция src/tests/x.test.ts).
-        // Суффикс обязателен: файл без .test/.spec в tests/ — хелпер, не доказательство
-        // (в __tests__/ выше суффикс не нужен — там Jest testMatch считает тестом всё).
+        // Не менять, потому что здесь суффикс .test/.spec обязателен: файл без него в
+        // tests/ — хелпер, а не доказательство покрытия (в __tests__/ Jest считает всё).
         path.join(dir, "tests", `${base}.test${tExt}`),
         path.join(dir, "tests", `${base}.spec${tExt}`),
         path.join(dir, "test", `${base}.test${tExt}`),
         path.join(dir, "test", `${base}.spec${tExt}`),
       );
     }
-    // vitest-plugin-svelte / Vue паттерн: Card.svelte.test.ts / App.vue.spec.ts —
-    // тест-файл сохраняет component-ext в имени и добавляет .test.<jsext>.
     if (isComponent) {
       for (const tExt of JS_TEST_EXTS) {
         candidates.push(
@@ -854,7 +770,6 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
       }
     }
   }
-  // Python.
   if (ext === ".py") {
     candidates.push(
       path.join(dir, `test_${base}.py`),
@@ -864,18 +779,15 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
       path.join("test", `test_${base}.py`),
     );
   }
-  // Go: <name>_test.go рядом.
   if (ext === ".go") {
     candidates.push(path.join(dir, `${base}_test.go`));
   }
-  // Ruby: <name>_test.rb / <name>_spec.rb рядом.
   if (ext === ".rb") {
     candidates.push(
       path.join(dir, `${base}_test.rb`),
       path.join(dir, `${base}_spec.rb`),
     );
   }
-  // Java/Kotlin/Scala/Swift/C#/PHP — same-dir CamelCase suffix.
   if (/\.(java|kt|kts|scala|swift|cs|php)$/i.test(ext)) {
     candidates.push(
       path.join(dir, `${base}Test${ext}`),
@@ -883,15 +795,11 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
       path.join(dir, `${base}Spec${ext}`),
     );
   }
-  // Rust integration-тесты: crate/tests/<base>.rs (но НЕ inline #[cfg(test)]).
   if (ext === ".rs") {
     candidates.push(path.join("tests", `${base}.rs`));
   }
-  // Generic same-dir fallback для языков без специфической поддержки выше
-  // (sh/bash/zsh/lua/dart/exs/erl/hs/html/css/sql/...). Универсальная конвенция
-  // `<name>.test.<ext>` / `<name>.spec.<ext>` рядом с src — документирована в
-  // сообщении триггера D первой строкой; без неё трейлинг-extensions ловили
-  // false-positive D даже когда тесты лежат корректно рядом.
+  // Не менять, потому что это последний шанс для языков без своей конвенции
+  // (sh/lua/dart/…): убери — и парный `<name>.test.<ext>` рядом перестанет считаться.
   const HANDLED_LANG_EXT_RE =
     /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|astro|py|go|rb|java|kt|kts|scala|swift|cs|php|rs)$/i;
   if (isCodeFile(srcPath) && !HANDLED_LANG_EXT_RE.test(ext)) {
@@ -903,9 +811,8 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
     );
   }
 
-  // Generic test directories.
-  // Для component-файлов {base}{ext} в tests/ (например tests/App.vue) бессмысленно —
-  // используем JS/TS-расширения как и в same-dir секции.
+  // Не менять, потому что для component-файлов ищется JS/TS-расширение: спек
+  // tests/App.vue не существует.
   const isComponent = /\.(vue|svelte|astro)$/i.test(ext);
   const genericExts = isComponent
     ? [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
@@ -920,7 +827,6 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
       path.join("test", `${base}.test${gExt}`),
       path.join("spec", `${base}_spec${gExt}`),
     );
-    // tests/functional, tests/integration — DB-hitting логика-тесты (Adonis/Japa).
     for (const segs of SHARED_LOGIC_TEST_DIRS) {
       candidates.push(
         path.join(...segs, `${base}.test${gExt}`),
@@ -931,8 +837,6 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
 
   const baseRoots = findPackageRoots(srcPath, repoRoot);
 
-  // Mirror discovery: src/<rel>/X.ext ↔ <test-prefix>/<rel>/X.<test-suffix>.<ext>
-  // относительно каждого package-root.
   const absSrc = path.isAbsolute(srcPath)
     ? srcPath
     : path.join(repoRoot, srcPath);
@@ -951,8 +855,7 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
     if (!rel || rel.startsWith("..")) continue;
     const replacements = getMirrorPrefixReplacements(rel);
     for (const { from, to } of replacements) {
-      const tail = rel.slice(from.length); // включает leading '/'
-      // tail = '/<rel>/<base>.<ext>'
+      const tail = rel.slice(from.length);
       for (const newPrefix of to) {
         const mirroredDir = path.posix.dirname(newPrefix + tail);
         for (const sfx of mirrorTestSuffixes) {
@@ -961,7 +864,6 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
           const candidate = path.join(root, candidatePosix);
           candidates.push(candidate);
         }
-        // Для PHP-стиля tests/Unit|Feature|Integration/<rel>/<Base>Test.php
         if (/\.php$/i.test(ext)) {
           for (const phpDir of ["Unit", "Feature", "Integration"]) {
             const phpMirroredDir = path.posix.join(
@@ -1000,34 +902,23 @@ function findPairedTestFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
   return null;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер D, fallback: централизованные спеки, именованные по фиче.
-// Кейс ERP_NEW: код покрыт tests/unit/auth_cookies.spec.ts (имя по фиче, не по
-// источнику) → findPairedTestFile его не видит → Claude выписывает каталожные
-// ignore-глобы. Второй шанс: grep импортов источника по спекам центральных
-// тест-дир пакета. False positive (спек импортирует, но не ассертит) —
-// осознанно приемлем: лучше, чем толкать к широким глобам / VERIFY_CHANGES=0.
-// ────────────────────────────────────────────────────────────────────────────
-
 const CENTRAL_TEST_DIR_NAMES = ["tests", "test", "spec", "specs", "__tests__"];
-// Капы I/O-DoS: filesRead — на чтение СОДЕРЖИМОГО спеков (общий на прогон),
-// MAX_LIST — на длину списка кандидатов, MAX_VISITED — на просмотренные
-// readdir-entries (иначе дерево из тысяч не-спековых файлов walk-ается целиком).
+// Не менять, потому что без всех трёх капов дерево из тысяч не-спековых файлов
+// превращает Stop в I/O-DoS.
 const IMPORT_SCAN_MAX_FILES = 200;
 const IMPORT_SCAN_MAX_LIST = 400;
 const IMPORT_SCAN_MAX_VISITED = 20_000;
 
-// Лимит чтений конфигурируем per-project (монорепы с сотнями центральных
-// спеков): MAIN_SKILL_IMPORT_SCAN_MAX_FILES. Мусор/≤0 → дефолт; кап 10000 —
-// защита от опечатки (200KB-кап на файл остаётся вторым эшелоном).
+// Не менять, потому что кап 10000 страхует от опечатки в env-ручке; мусор и ≤0
+// обязаны падать на дефолт.
 function importScanMaxFiles() {
   const raw = parseInt(process.env.MAIN_SKILL_IMPORT_SCAN_MAX_FILES, 10);
   if (!Number.isFinite(raw) || raw <= 0) return IMPORT_SCAN_MAX_FILES;
   return Math.min(raw, 10_000);
 }
 
-// Дир-ы, куда walk не спускается — деривативы/vendored. Общий для import-scan
-// и walkCarrierFiles в audit-ignore-globs.js (раздельные копии дрейфуют).
+// Не менять, потому что набор общий с walkCarrierFiles в audit-ignore-globs.js:
+// раздельные копии дрейфуют.
 const WALK_SKIP_DIRS = new Set([
   "node_modules",
   ".git",
@@ -1044,38 +935,28 @@ const WALK_SKIP_DIRS = new Set([
   ".uploads",
 ]);
 
-// Строки, где упоминание модуля доказывает статический линк спек→источник:
-// import/require/from (JS/TS/Python/Java/Ruby) + jest.mock/vi.mock/vi.doMock.
-// `require_relative` отдельно: `\brequire\b` не матчит из-за `_` (word char).
+// Не менять, потому что `require_relative` вынесен отдельно: `\brequire\b` не
+// матчит его из-за `_` в границе слова.
 const IMPORT_LINE_RE = /\b(?:import|require(?:_relative)?|from)\b|mock\s*\(/i;
 
-// Имена, бессмысленные как матч-таргет сами по себе: почти любой спек
-// импортирует какой-нибудь `../index` → массовый false positive, D замолчал бы
-// на непокрытых barrel-файлах. Матчим по имени родительской диры (`cart` /
-// `cart/index`); родитель тоже generic (src/index.ts) → скан не применяем.
+// Не менять, потому что без этого списка любой `../index` давал бы матч, и D
+// замолчал бы на непокрытых barrel-файлах.
 const GENERIC_BASENAME_RE = /^(index|route|handler|main|mod)$/i;
 const GENERIC_PARENT_RE = /^(\.?|src|lib|app|sources?|dist|build)$/i;
 
-// Набор bounded-регексов для матча импорта источника в тексте import-строк.
-// Basename/parent эскейпятся (недоверенный ввод из транскрипта → литерал) и
-// капятся по длине: без капа фейковый file_path на десятки KB из транскрипта
-// ронял бы new RegExp («too large») → exception → весь Stop-хук fail-open.
-// Все квантификаторы ограничены по конвенции репо.
-//
-// У файла с содержательным родителем (app/billing/db.ts) ПУТЁВЫЙ импорт обязан
-// нести родительский сегмент (`billing/db`, `billing.db`) — иначе одноимённый
-// файл чужого модуля (app/auth/db.ts) ложно засчитывался бы спеком про billing.
-// Голый импорт имени ('db', '#step_up') принимается: алиас может прятать путь.
+// Не менять, потому что basename/parent приходят из транскрипта: без эскейпа и
+// капа длины фейковый file_path на десятки KB роняет new RegExp, а вместе с ним
+// весь Stop-хук.
 function buildImportMatchRes(srcPath) {
   const ext = path.extname(srcPath);
   const base = path.basename(srcPath, ext);
   if (!base || base.length > 200) return null;
   const parentRaw = path.basename(path.dirname(srcPath));
   const parent = parentRaw && parentRaw.length <= 200 ? parentRaw : "";
-  const extPat = "(?:\\.[A-Za-z]{1,7})?"; // опц. расширение перед кавычкой
+  const extPat = "(?:\\.[A-Za-z]{1,7})?";
   if (GENERIC_BASENAME_RE.test(base)) {
-    // index/route/... сами по себе не идентифицируют модуль — матчим родителя
-    // (`cart` / `cart/index`); родитель тоже generic (src/index.ts) → скана нет.
+    // Не менять, потому что для generic-имён матч идёт по родителю, а generic
+    // родитель (src/index.ts) скан отключает — иначе массовый false positive.
     if (!parent || GENERIC_PARENT_RE.test(parent)) return null;
     const namePat = `${escapeRegExp(parent)}(?:/${escapeRegExp(base)})?`;
     return [
@@ -1090,13 +971,9 @@ function buildImportMatchRes(srcPath) {
   if (parent && !GENERIC_PARENT_RE.test(parent)) {
     const parentPat = escapeRegExp(parent);
     return [
-      // путёвый кавычечный: '../../app/billing/db' | '#controllers/auth_controller'
       new RegExp(`['"\`#/]${parentPat}/${basePat}${extPat}['"\`]`, "i"),
-      // голый кавычечный (без '/'): 'auth_controller' | `#step_up` | "db"
       new RegExp(`['"\`#]${basePat}${extPat}['"\`]`, "i"),
-      // dotted-путь: Python `from app.billing.db import x`, Java `import com.app.billing.Db;`
       new RegExp(`\\b${parentPat}\\.${basePat}\\b`, "i"),
-      // Python `from app.billing import db` (имя ПОСЛЕ import, списком в т.ч.)
       new RegExp(
         `\\b${parentPat}\\s{1,40}import\\s{1,40}[\\w.,\\s]{0,200}\\b${basePat}\\b`,
         "i",
@@ -1104,9 +981,7 @@ function buildImportMatchRes(srcPath) {
     ];
   }
   return [
-    // generic/корневой родитель: путь не проверить — кавычечный матч имени…
     new RegExp(`['"\`#/]${basePat}${extPat}['"\`]`, "i"),
-    // …и бескавычечный import-стейтмент (Python/Java), включая `from src import utils`
     new RegExp(
       `^\\s{0,40}(?:from|import)\\s[\\w.,\\s]{0,300}\\b${basePat}\\b`,
       "im",
@@ -1114,17 +989,8 @@ function buildImportMatchRes(srcPath) {
   ];
 }
 
-// Walk центральных тест-дир от root: <root>/tests|test|spec|specs|__tests__.
-// Берём только файлы, чьё ИМЯ само по себе спековое (isTestFile по basename:
-// *.spec.* / *.test.* / test_*.py / *_test.go / XxxTest.java) — хелперы,
-// фикстуры и setup.ts внутри tests/ линк не доказывают. Симлинки не следуем
-// (Dirent.isFile()=false), сортировка — детерминизм порядка матча.
-// Возвращает {files, truncated}. truncated=true — обход прерван капом (maxList
-// или MAX_VISITED) при непройденных entries, т.е. список кандидатов может быть
-// неполон; без флага «дочитали список целиком» неотличимо от «обрезали ровно
-// по бюджету» (ревью-регресс: при env-cap ≥ 400 maxList == бюджету чтений, и
-// цикл чтения в Inner завершается штатно, не увидев обрыва). FP «капы выбраны
-// последним entry» безвреден: лишняя ⚠-приписка «не подтверждено» — честна.
+// Не менять, потому что засчитываются только спек-именованные файлы: хелперы и
+// фикстуры в tests/ линк спек→источник не доказывают.
 function collectCentralSpecFiles(rootAbs, maxList = IMPORT_SCAN_MAX_LIST) {
   const out = [];
   let visited = 0;
@@ -1159,18 +1025,8 @@ function collectCentralSpecFiles(rootAbs, maxList = IMPORT_SCAN_MAX_LIST) {
   return { files: out, truncated };
 }
 
-// Порядок чтения спеков — по релевантности к источнику, не по алфавиту:
-// early-exit на первом матче есть, значит покрытый файл находится за единицы
-// чтений вместо сотен, и кэп чтений перестаёт отрезать алфавитно-хвостовые
-// покрывающие спеки (баг-репорт: пакет >200 спеков → ложный D). Сигналы
-// грубые намеренно — ошибка скоринга меняет лишь порядок чтения, не результат:
-// имя источника в basename спека (+4; для generic index/route/... — имя
-// родителя, как в buildImportMatchRes), родительский сегмент в пути спека
-// (+2), токен basename в имени спека (+1). Гейт длины ≥3 — короткие имена
-// (db) дают шумные подстрочные матчи; кап длины ≤200 на base/parent зеркалит
-// buildImportMatchRes (srcPath из транскрипта недоверен — мегабайтный сегмент
-// не должен гоняться по скорингу). Tie → исходный (алфавитный) порядок, вход
-// не мутируется; стоимость — includes по списку кандидатов (≤ бюджета, до 10k).
+// Не менять, потому что порядок решает, найдётся ли покрытый файл до исчерпания
+// бюджета чтений: алфавит отрезал бы хвост в пакете на сотни спеков.
 function rankSpecCandidates(files, srcPath) {
   const ext = path.extname(srcPath);
   const baseRaw = path.basename(srcPath, ext);
@@ -1192,8 +1048,8 @@ function rankSpecCandidates(files, srcPath) {
     const specBase = path.basename(lower);
     let score = 0;
     if (nameSig.length >= 3 && specBase.includes(nameSig)) score += 4;
-    // сплит по обоим сепараторам: юнит-тесты передают POSIX-литералы, прод —
-    // нативные пути из path.join; path.basename выше понимает оба сам
+    // Не менять, потому что сплит идёт по обоим сепараторам: тесты дают
+    // POSIX-литералы, прод — нативные пути из path.join.
     if (parent.length >= 3 && lower.split(/[\\/]/).includes(parent)) score += 2;
     for (const t of tokens) if (specBase.includes(t)) score += 1;
     return { f, i, score };
@@ -1202,9 +1058,8 @@ function rankSpecCandidates(files, srcPath) {
   return scored.map((s) => s.f);
 }
 
-// Контент спека → только import-строки (предфильтр IMPORT_LINE_RE): срезает
-// объём матчинга и отсекает упоминания в assert-литералах / test-описаниях.
-// Чтение через readRepoFileSafe (realpath + confinement + 200KB-кап).
+// Не менять, потому что матчатся только import-строки: по всему тексту спека
+// упоминание в assert-литерале или описании теста давало бы ложный линк.
 function specImportLines(absSpec, repoRoot) {
   const body = readRepoFileSafe(absSpec, repoRoot);
   if (body == null) return "";
@@ -1214,21 +1069,8 @@ function specImportLines(absSpec, repoRoot) {
     .join("\n");
 }
 
-// Fallback триггера D: прямой парный тест не найден → ищем спек центральных
-// тест-дир, импортирующий источник. `cache` шарится между вызовами одного
-// прогона хука (один скан на Stop, не пер-файл): rootFiles — списки спеков по
-// package-root, importLines — import-строки по спеку, filesRead — общий бюджет
-// чтений (≤ IMPORT_SCAN_MAX_FILES; исчерпан → null, D сработает как раньше —
-// fail toward требования теста). Любой exception → null по той же причине:
-// улети он выше — уронил бы весь Stop-хук в fail-open. Roots сортируются
-// ближайший-пакет-первым (по глубине пути; insertion-order Set-а из
-// findPackageRoots этого НЕ гарантирует): пакетный tests/ релевантнее
-// монорепного root-tests/ и дешевле по бюджету.
-//
-// cache.lastTruncated — сигнал ПОСЛЕДНЕГО вызова (сбрасывается на входе):
-// true = хотя бы раз упёрлись в бюджет чтений. Осмыслен при null-результате —
-// различает «дочитал список, матча нет» (честный D) от «обрезан, покрытие не
-// подтверждено» (reasonD дополняется grep-рецептом и ручкой лимита).
+// Не менять, потому что кэш шарится между файлами одного Stop (один скан на
+// прогон), а любое исключение обязано давать null — fail toward требования.
 function findTestByImportScan(srcPath, repoRoot, cache = {}) {
   cache.lastTruncated = false;
   try {
@@ -1245,8 +1087,8 @@ function findTestByImportScanInner(srcPath, repoRoot, cache) {
   if (!cache.importLines) cache.importLines = new Map();
   if (cache.filesRead == null) cache.filesRead = 0;
 
-  // Кандидатов в списки собираем не меньше лимита чтений: поднятая env-ручка
-  // без масштабирования maxList упёрлась бы в кап списка, а не бюджета.
+  // Не менять, потому что список кандидатов масштабируется вместе с бюджетом:
+  // иначе поднятая env-ручка упирается в кап списка, а не чтений.
   const cap = importScanMaxFiles();
   const maxList = Math.max(IMPORT_SCAN_MAX_LIST, cap);
   const roots = findPackageRoots(srcPath, repoRoot).sort(
@@ -1257,8 +1099,8 @@ function findTestByImportScanInner(srcPath, repoRoot, cache) {
       cache.rootFiles.set(root, collectCentralSpecFiles(root, maxList));
     }
     const entry = cache.rootFiles.get(root);
-    // обрезание СПИСКА кандидатов — тоже обрыв: непопавший в список спек
-    // непроверяем, «теста нет» не доказано (даже если бюджет чтений не выбран)
+    // Не менять, потому что обрезание списка — тоже обрыв: непроверенный спек
+    // означает «покрытие не опровергнуто», даже если бюджет чтений не выбран.
     if (entry.truncated) cache.lastTruncated = true;
     for (const absSpec of rankSpecCandidates(entry.files, srcPath)) {
       if (!cache.importLines.has(absSpec)) {
@@ -1280,21 +1122,16 @@ function findTestByImportScanInner(srcPath, repoRoot, cache) {
   return null;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер E: e2e/functional парный
-// ────────────────────────────────────────────────────────────────────────────
-
 function findE2eFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
   const ext = path.extname(srcPath);
   const baseFull = path.basename(srcPath, ext);
   const baseStripped = baseFull.replace(/_controller$|Controller$/, "");
-  // Ищем по обоим именам — ресурсному (`auth` ← auth_controller) и полному
-  // (`auth_controller`): конвенции именования endpoint-тестов в проектах разные.
+  // Не менять, потому что ищутся оба имени — ресурсное и полное: конвенции
+  // именования endpoint-тестов в проектах разные.
   const bases =
     baseStripped === baseFull ? [baseFull] : [baseStripped, baseFull];
-  // Directory-based роутинг (Next.js App Router / Nuxt / SvelteKit):
-  // app/api/auth/login/route.ts — имя ресурса живёт в родительской директории,
-  // basename бесполезен (`route`). Ищем тест и по имени родителя (`login`).
+  // Не менять, потому что при directory-роутинге basename бесполезен (`route`) —
+  // имя ресурса живёт в родительской директории.
   if (/^(route|index|handler)$/i.test(baseFull)) {
     const parent = path.basename(path.dirname(srcPath));
     if (parent && parent !== "." && !bases.includes(parent)) bases.push(parent);
@@ -1309,14 +1146,14 @@ function findE2eFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
   const candidates = [];
   for (const base of bases) {
     for (const e of exts) {
-      // functional/integration — общий с триггером D набор логика-тест-дир.
       for (const segs of SHARED_LOGIC_TEST_DIRS) {
         candidates.push(
           path.join(...segs, `${base}.spec${e}`),
           path.join(...segs, `${base}.test${e}`),
         );
       }
-      // e2e-специфичные дир-ы — только здесь, в D намеренно не входят.
+      // Не менять, потому что e2e-специфичные дир-ы живут только здесь: в триггере D
+      // они дали бы e2e-форс вместо парного unit-теста.
       candidates.push(
         path.join("tests", "e2e", `${base}.test${e}`),
         path.join("tests", "e2e", `${base}.spec${e}`),
@@ -1349,26 +1186,14 @@ function findE2eFile(srcPath, repoRoot, sessionEditedFiles = new Set()) {
   return null;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер F: парсинг и валидация <edge-cases> блока
-// ────────────────────────────────────────────────────────────────────────────
-
-// Возвращает { entries, raw } или null если блока нет.
-// Формат: <edge-cases>name1:path/to/test.ts:test_name1; name2:path/to/other.ts:test_name2</edge-cases>
-// Также принимает многострочный формат с переносами/перечислением.
-// Семантика разбора: первый сегмент — name, второй — test_file (или 'N/A'),
-// весь остаток (склеенный через `:`) — test_name. Это позволяет test_name
-// содержать `:` (типичный node:test/Jest стиль с вложенными группами).
-// POSIX-пути в репо `:` не содержат, так что test_file как ровно один сегмент — безопасно.
 function parseEdgeCasesBlock(text) {
   if (!text) return null;
-  // extractTagBlocks (indexOf) вместо lazy-regex — тот же квадратичный
-  // ReDoS-класс на незакрытых тегах, что и в findPremortemBlocks.
+  // Не менять, потому что lazy-regex здесь квадратичен на незакрытых тегах — тот
+  // же класс, что в findPremortemBlocks.
   const m = extractTagBlocks(text, "edge-cases", 1);
   if (m.length === 0) return null;
   const raw = m[0].trim();
   if (!raw) return { entries: [], raw };
-  // Разделители: ; или \n
   const parts = raw
     .split(/;|\n/)
     .map((s) => s.trim())
@@ -1382,8 +1207,8 @@ function parseEdgeCasesBlock(text) {
         valid: false,
         reason: "формат должен быть name:test_file:test_name",
       };
-    // trim только name и test_file; test_name склеиваем обратно через `:`,
-    // чтобы внутренние пробелы (`main: empty stdin`) сохранились.
+    // Не менять, потому что test_name склеивается обратно через `:` — иначе
+    // внутренние пробелы лейбла (`main: empty stdin`) теряются.
     const name = segs[0].trim();
     const test_file = segs[1].trim();
     const test_name = segs.slice(2).join(":").trim();
@@ -1392,10 +1217,6 @@ function parseEdgeCasesBlock(text) {
   return { entries, raw };
 }
 
-// Проверяет, что test_file существует и содержит it/test/describe с test_name.
-// Спец-кейс: test_file === 'N/A' означает что кейс реально неприменим;
-// требуется непустой test_name (он же причина). См. SKILL.md §edge-cases.
-// Возвращает массив { entry, ok, reason, na? } для каждой записи.
 function validateEdgeCases(parsed, repoRoot) {
   if (!parsed) return null;
   return parsed.entries.map((entry) => {
@@ -1420,9 +1241,8 @@ function validateEdgeCases(parsed, repoRoot) {
         reason: `test_file не найден: ${entry.test_file}`,
       };
     }
-    // Чтение с confinement (realpath внутрь repoRoot, обычный файл, ≤200KB):
-    // test_file приходит из недоверенного текста — traversal/симлинк наружу,
-    // FIFO (висящее чтение) и гигантский файл отсекаются, не Stop-хук.
+    // Не менять, потому что test_file приходит из недоверенного текста: без
+    // confinement это traversal, без isFile — висящее чтение FIFO.
     const body = readRepoFileSafe(entry.test_file, repoRoot);
     if (body === null) {
       return {
@@ -1431,35 +1251,26 @@ function validateEdgeCases(parsed, repoRoot) {
         reason: `не удалось прочитать ${entry.test_file} (вне repoRoot / не обычный файл / >200KB)`,
       };
     }
-    // Кап длины до компиляции RegExp: многокилобайтный test_name раздул бы
-    // паттерн до «Regular expression too large» → exception → fail-open всего
-    // хука (in-band обход всех триггеров). Конвенция rankSpecCandidates: ≤200.
+    // Не менять, потому что многокилобайтный test_name роняет new RegExp
+    // («too large»), а exception = fail-open всего Stop-хука.
     const name =
       entry.test_name.length > 200
         ? entry.test_name.slice(0, 200)
         : entry.test_name;
     const shown = entry.test_name.length > 200 ? name + "…" : name;
-    // Ищем it('...test_name...') / test('...test_name...') / describe('...') — гибко по подстроке.
-    // test_name может быть как точная строка, так и snake/camel-вариант.
     const escaped = escapeRegExp(name);
     const re = new RegExp(
       `(?:^|\\W)(?:it|test|describe|context|specify|t\\.run|test\\.it)\\s*\\(\\s*['"\`][^'"\`]*${escaped}[^'"\`]*['"\`]`,
       "i",
     );
     if (!re.test(body)) {
-      // fallback: function-like Python/Go test_name
       const reFn = new RegExp(
         `(?:def|func|test\\s*!|fn)\\s+[a-zA-Z_]*${escaped}[a-zA-Z_0-9]*\\s*\\(`,
         "i",
       );
       if (!reFn.test(body)) {
-        // fallback: sh-интеграционные тесты — только ТЕСТ-именованный *.sh/*.bash
-        // (isTestFile: `*.test.sh` / `tests/…`): иначе комментарий в продакшн-
-        // скрипте «доказывал» бы несуществующий тест. Матчатся: TAP-лейбл
-        // `ok - …`/`not ok - …`, строка assert-хелпера (лейбл — кавычный аргумент,
-        // литерала `ok - <лейбл>` в файле нет) и комментарий-заголовок блока
-        // (`# 7d. …`; шебанг `#!` исключён). test_name < 3 символов — отказ:
-        // матчится слишком дёшево. Квантификаторы bounded (ReDoS-конвенция).
+        // Не менять, потому что гейт на тест-именованный *.sh обязателен: иначе
+        // комментарий в самом продакшн-скрипте «доказывал» бы несуществующий тест.
         const isShTest =
           /\.(sh|bash)$/i.test(entry.test_file) &&
           isTestFile(entry.test_file) &&
@@ -1496,17 +1307,11 @@ function validateEdgeCases(parsed, repoRoot) {
   });
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер G: auto-lint
-// ────────────────────────────────────────────────────────────────────────────
-
-// Возвращает { ran: bool, ok: bool, cmd, output, reason } либо null если лайнтер не настроен.
 function runLint(repoRoot, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   let cmd = null;
   let cwd = repoRoot;
 
-  // package.json scripts.lint
   try {
     const pkgPath = path.join(repoRoot, "package.json");
     if (fs.existsSync(pkgPath)) {
@@ -1522,7 +1327,6 @@ function runLint(repoRoot, opts = {}) {
     }
   } catch {}
 
-  // pyproject.toml + ruff
   if (!cmd) {
     try {
       const py = path.join(repoRoot, "pyproject.toml");
@@ -1533,7 +1337,6 @@ function runLint(repoRoot, opts = {}) {
     } catch {}
   }
 
-  // golangci-lint
   if (!cmd) {
     try {
       if (
@@ -1544,7 +1347,6 @@ function runLint(repoRoot, opts = {}) {
     } catch {}
   }
 
-  // cargo clippy
   if (!cmd) {
     try {
       if (fs.existsSync(path.join(repoRoot, "Cargo.toml")))
@@ -1597,11 +1399,6 @@ function runLint(repoRoot, opts = {}) {
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггеры J / K: self-review + триаж замечаний ревьюеров
-// ────────────────────────────────────────────────────────────────────────────
-
-// Security-sensitive paths — для них self-review обязателен даже на маленьких diff'ах.
 const SECURITY_SENSITIVE_RE =
   /(auth|api|sql|crypto|payment|admin|session|token|password|secret|jwt|oauth|cookie|cors|csrf|xss|sanitiz|escape|webhook|hash|cipher|encrypt|decrypt|hmac|signature|signin|signup|login|logout|permission|role|access|sso|saml|ldap)/i;
 
@@ -1612,15 +1409,11 @@ function hasSecuritySensitivePath(allEdits) {
   return false;
 }
 
-// Считает строки нетривиальных изменений в Edit/Write/MultiEdit за всю сессию.
-// Чисто-пустые / whitespace / comment-only — не считаются.
 const COMMENT_ONLY_RE = /^\s*(\/\/|#|\/\*|\*\/|\*|--|<!--|;;|%)/;
 
-// Канонические ключи нетривиальных строк текста: trim + схлопывание
-// внутреннего whitespace + NFC — механический реформат (выравнивание `=`,
-// таб→пробел, денормализованный unicode из копипаста) не порождает «новую»
-// строку. Кап 1MB — > 1MB данных всё равно «много», точное число не важно
-// для порога 20.
+// Не менять, потому что ключ нормализуется (trim + whitespace + NFC): без этого
+// реформат выравнивания и денормализованный unicode считаются новыми строками.
+// Мультимножество, а не Set: дописанный дубликат строки — это добавление.
 function _nonTrivialLineKeys(text) {
   if (!text) return [];
   const s0 = String(text);
@@ -1639,24 +1432,13 @@ function _countNonTrivialLines(text) {
   return _nonTrivialLineKeys(text).length;
 }
 
-// Добавленные нетривиальные строки Edit-пары: multiset-дельта канонических
-// строк new_string − old_string. Дельта, а не весь new_string: Edit несёт
-// контекстный блок ради уникальности якоря — rename/extract в 25-строчной
-// функции меняет одну строку, не 25 (backlog #5). Multiset, не Set (дописанный
-// дубликат строки — добавление) и не LCS (O(n·m) на недоверенном транскрипте —
-// DoS Stop-хука); перестановки/re-indent/реформат ВНУТРИ одной пары добавлением
-// не считаются, cross-edit перенос блока считается (FP-направление, безопасно).
-// Чистое удаление даёт 0 — осознанно: метрика меряет внесённое новое поведение.
-// Known gaps (FN, документированы в CLAUDE.md): replace_all считается один раз
-// (множитель сайтов неизвестен без чтения файла); построчно совпадающее тело
-// удалённого блока поглощает строки нового (rename одной из двух похожих
-// функций); код, внесённый мимо Edit/Write (Bash heredoc/sed) и эхо-ящийся
-// old_string-ом последующего Edit, абсорбируется.
+// Не менять, потому что считается дельта, а не весь new_string: Edit несёт
+// контекстный якорь, и rename в 25-строчном блоке иначе требовал бы ритуалов.
+// LCS отвергнут: O(n·m) на недоверенном транскрипте — DoS Stop-хука.
 function _countAddedNonTrivialLines(newText, oldText) {
   if (!oldText) return _countNonTrivialLines(newText);
-  // new_string за 1MB-капом → дельта на усечённом тексте занулила бы логику,
-  // добавленную ЗА границей капа (in-band обход порога). Fail toward
-  // требования: fallback на полный счёт, как до дельта-семантики.
+  // Не менять, потому что за 1MB-капом идёт fallback на полный счёт: дельта на
+  // усечённом тексте занулила бы логику за границей капа (обход порога).
   if (String(newText).length > 1_000_000) return _countNonTrivialLines(newText);
   const oldCounts = new Map();
   for (const k of _nonTrivialLineKeys(oldText))
@@ -1673,11 +1455,6 @@ function _countAddedNonTrivialLines(newText, oldText) {
   return n;
 }
 
-// `filterFn(file_path)` — опциональный фильтр (например, считать только observable
-// исходники). `cap` — early-return когда total достиг порога; для J это 20.
-// Edit/MultiEdit — дельта против old_string; Write — весь content (старого
-// содержимого в tool_use нет — known limitation, перезапись существующего файла
-// считается целиком).
 function countNonTrivialDiffLines(lines, filterFn = null, cap = Infinity) {
   let total = 0;
   for (const e of lines || []) {
@@ -1711,36 +1488,26 @@ function countNonTrivialDiffLines(lines, filterFn = null, cap = Infinity) {
   return total;
 }
 
-// Имена сабагент-инструментов: в разных сборках Claude Code диспатч сабагента
-// экспонирован как Task ИЛИ Agent (в Agent-окружении Task отсутствует вовсе).
+// Не менять, потому что диспатч сабагента в разных сборках зовётся Task ИЛИ
+// Agent: в Agent-окружении Task отсутствует вовсе.
 const SUBAGENT_TOOL_NAMES = new Set(["Task", "Agent"]);
 
-// Поле tool_use.input из транскрипта — недоверенный JSON: значением может быть
-// объект, и тогда String(v) БРОСАЕТ TypeError (`{"toString": 1}` — ToPrimitive не
-// находит callable). Необёрнутый throw убил бы весь Stop-хук в silent exit, погасив
-// все триггеры разом. Не-строки схлопываем в "", длину капим как соседний prompt.
+// Не менять, потому что String(v) на объекте БРОСАЕТ TypeError
+// (`{"toString": 1}`), а необёрнутый throw снимает все триггеры A–N разом.
 function safeInputStr(v, max = 2000) {
   if (typeof v === "string") return v.slice(0, max);
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   return "";
 }
 
-// Модель, запрещённая для premortem-линзы: SKILL.md §self-review требует sonnet
-// и дословно «не haiku» — ценность линзы в специфичности гипотез. Матчим только
-// Anthropic-формы: алиас целиком (`haiku`) либо ID/Bedrock-ARN с сегментом
-// `claude-haiku` (`claude-haiku-4-5-20251001`, `us.anthropic.claude-haiku-…`).
-// Подстрока `haiku` где угодно дала бы FP на кастомных именах деплоя у
-// не-Anthropic провайдеров (`prod-haiku-router`, переименованный на Sonnet-класс).
+// Не менять, потому что матчатся только Anthropic-формы (алиас целиком либо
+// сегмент claude-haiku): подстрока `haiku` где угодно даёт FP на чужих
+// деплой-именах вроде prod-haiku-router.
 function isWeakPremortemModel(model) {
   const s = safeInputStr(model, 200).trim();
   return /^haiku$/i.test(s) || /claude-haiku/i.test(s);
 }
 
-// Собирает все сабагент-вызовы (Task/Agent) из транскрипта и категоризирует по
-// типу review. Возвращает { code: bool, security: bool, edge: bool, edgeModel: string }.
-// edgeModel — значение input.model ПОСЛЕДНЕГО premortem-вызова ("" если не передан,
-// т.е. модель наследуется от сессии или от frontmatter кастомного сабагента —
-// в транскрипте этого не видно). Последний, а не первый: его находки идут в триаж.
 function findReviewAgentCalls(lines) {
   let code = false;
   let security = false;
@@ -1757,7 +1524,6 @@ function findReviewAgentCalls(lines) {
       const desc = safeInputStr(inp.description);
       const prompt = safeInputStr(inp.prompt);
       const hay = `${sub}\n${desc}\n${prompt}`;
-      // code review: subagent_type явно code-reviewer ИЛИ описание/промпт упоминает code review.
       if (
         /code[\s-]*review/i.test(sub) ||
         /code[\s-]*reviewer/i.test(sub) ||
@@ -1766,7 +1532,6 @@ function findReviewAgentCalls(lines) {
       ) {
         code = true;
       }
-      // security review: явные маркеры из OWASP/security-prompt.
       if (
         /security/i.test(sub) ||
         /\b(security[\s-]*review|OWASP|injection|auth[\s-]*bypass|secret[\s-]*leak|XSS|CSRF|SSRF|path\s+traversal|RCE|TOCTOU|weak\s+crypto)\b/i.test(
@@ -1776,8 +1541,7 @@ function findReviewAgentCalls(lines) {
       ) {
         security = true;
       }
-      // premortem-линза (edge): гипотезы «что сломается в проде».
-      // hay уже содержит sub — отдельная sub-проверка была бы мертва.
+      // Не менять, потому что hay уже содержит sub — отдельная sub-проверка мертва.
       if (/пре-?мортем|pre-?mortem/i.test(hay)) {
         edge = true;
         edgeModel = safeInputStr(inp.model, 200);
@@ -1787,9 +1551,6 @@ function findReviewAgentCalls(lines) {
   return { code, security, edge, edgeModel };
 }
 
-// Парсит блок <self-review>. Возвращает { code, security, edge, skippedTrivial, raw }
-// или null. Каждое поле code/security/edge: { status, reason } | null.
-// status ∈ { applied, rejected, deferred, 'none-found' }.
 function parseSelfReview(text) {
   if (!text) return null;
   const m = extractTagBlocks(text, "self-review", 1);
@@ -1803,7 +1564,6 @@ function parseSelfReview(text) {
     raw,
   };
   if (!raw) return out;
-  // Может быть `skipped:trivial` целиком — без code/security секций.
   if (/^\s*skipped\s*:\s*trivial\s*$/i.test(raw)) {
     out.skippedTrivial = true;
     return out;
@@ -1813,9 +1573,8 @@ function parseSelfReview(text) {
     .map((s) => s.trim())
     .filter(Boolean)
     .filter((s) => !s.startsWith("#") && !s.startsWith("//"));
-  // Per-section `skipped` намеренно НЕ принимается — это был bypass для J/K
-  // (`code:skipped`/`security:skipped` обходили fake-decl и triage). Только
-  // whole-block `<self-review>skipped:trivial</self-review>` валиден; см. raw-check выше.
+  // Не менять, потому что per-section `skipped` — это bypass J/K: валиден только
+  // whole-block `<self-review>skipped:trivial</self-review>`.
   for (const p of parts) {
     const m2 = p.match(
       /^(code|security|edge)\s*:\s*(applied|rejected|deferred|none-found|none)\s*:?\s*(.*)$/i,
@@ -1840,9 +1599,6 @@ function parseSelfReview(text) {
   return out;
 }
 
-// Парсит блок <review-triage>. Возвращает { entries, raw } или null.
-// Запись: <source>:<id>:<status>:<reason>; source ∈ { code, security, edge };
-// status ∈ { applied, rejected, deferred }. edge — находки premortem-линзы.
 function parseReviewTriage(text) {
   if (!text) return null;
   const m = extractTagBlocks(text, "review-triage", 1);
@@ -1850,16 +1606,14 @@ function parseReviewTriage(text) {
   const raw = m[0].trim();
   const out = { entries: [], raw };
   if (!raw) return out;
-  // Разделитель: \n ИЛИ `;` перед началом следующей записи (`code:` / `security:`).
-  // Так reason может содержать `;` (URL params, fragments) без поломки парсинга.
+  // Не менять, потому что `;` считается разделителем только перед началом
+  // следующей записи: иначе reason с `;` (URL params) ломает парсинг.
   const parts = raw
     .split(/\n|;(?=\s*(?:code|security|edge)\s*:)/i)
     .map((s) => s.trim())
     .filter(Boolean)
     .filter((s) => !s.startsWith("#") && !s.startsWith("//"));
   for (const p of parts) {
-    // <source>:<id>:<status>:<reason>
-    // id может содержать буквы; reason может содержать `:`.
     const m2 = p.match(
       /^(code|security|edge)\s*:\s*([^:]+?)\s*:\s*(applied|rejected|deferred)\s*:\s*(.+)$/i,
     );
@@ -1883,9 +1637,8 @@ function parseReviewTriage(text) {
   return out;
 }
 
-// Slop-фразы — чистые отмазки без технического содержания.
-// Используем lookaround вместо `\b`, потому что `\b` в JS не работает на кириллице
-// (граница между \W и \W не существует, а кириллица — это \W без флага u).
+// Не менять, потому что вместо `\b` стоит lookaround: JS-`\b` не работает на
+// кириллице — границы между двумя \W не существует.
 const _NW = "(?<![\\p{L}\\p{N}_])";
 const _NWE = "(?![\\p{L}\\p{N}_])";
 const SLOP_RE = new RegExp(
@@ -1893,50 +1646,38 @@ const SLOP_RE = new RegExp(
   "iu",
 );
 
-// Сильные tech-сигналы — конкретность, специфичные security-термины,
-// явная аргументация. Слабые сигналы (одна цифра, общий keyword) не считаются —
-// иначе slop тривиально обходится «версия 2» / упоминанием `null`.
+// Не менять, потому что одиночный слабый сигнал не засчитывается: иначе slop
+// обходится словами «версия 2» или упоминанием `null`.
 const _STRONG_SIGNALS = [
-  // file path with ext — самый надёжный признак
   /[/\\][\p{L}\p{N}._-]+\.\p{L}{1,8}/u,
-  // <ident>.<ident> при отсутствии русских аббревиатур
   /(?<!\bт)(?<!\bи)(?:[A-Za-z_][A-Za-z0-9_]{2,})\.[A-Za-z_][A-Za-z0-9_]+/,
-  // безопасностные / архитектурные термины — сильные
   new RegExp(
     `${_NW}(?:injection|XSS|CSRF|SSRF|RCE|TOCTOU|owasp|exploit|payload|allowlist|denylist|whitelist|blacklist|rate[\\s-]?limit|throttle|backoff|sanitiz[eaí]|escape|hash|hmac|signature|jwt|oauth|csp|cors|hardcode|secret|credential|leak|bypass|exposes?|приведёт|приведет|нарушит|сломает|breaks|prevents|exposes|allows|leaks|bypasses)${_NWE}`,
     "iu",
   ),
-  // явная аргументация-связка
   new RegExp(
     `${_NW}(?:потому\\s+что|так\\s+как|поскольку|из-за|вместо\\s+(?:этого|того)|because|since\\s+(?:it|the)|due\\s+to)${_NWE}`,
     "iu",
   ),
 ];
 
-// camelCase-идентификатор, bounded против ReDoS. Общий для _WEAK_SIGNALS
-// (triage) и _PREMORTEM_SIGNAL_RES (триггер N) — единый баунд, не дрейфует.
+// Не менять, потому что баунд общий с _PREMORTEM_SIGNAL_RES: вторая копия
+// дрейфует и теряет ReDoS-гарантию.
 const _CAMEL_RE = /[a-z][a-zA-Z]{0,30}[A-Z][a-zA-Z]{0,30}/;
 
-// Слабые сигналы — поодиночке не засчитываются, но в паре дают tech-signal.
 const _WEAK_SIGNALS = [
-  // line:number стиль `:42-58`
   /:\d+(?:[-–]\d+)?/,
   _CAMEL_RE,
-  // snake_case
   /[a-z]+(?:_[a-z]+)+/,
-  // common code-структуры
   new RegExp(
     `${_NW}(?:class|function|method|interface|struct|module|hook|middleware|handler|endpoint|route|model|schema|migration|query|table|column|reducer|provider|component|service|repository|gateway|adapter|controller)${_NWE}`,
     "iu",
   ),
 ];
 
-// Технический индикатор — конкретный сигнал в обосновании.
-// Возвращает true, если есть >= 1 strong сигнал ИЛИ >= 2 weak.
 function _hasTechnicalSignal(reason) {
   if (!reason) return false;
-  // ReDoS-защита: обрезаем длинные reason — semantically всё что > 4KB подозрительно
-  // и не должно ставить hook на колени regex'ами.
+  // Не менять, потому что без капа длинный reason ставит хук на колени regex-ами.
   const r = String(reason).slice(0, 4096);
   for (const re of _STRONG_SIGNALS) if (re.test(r)) return true;
   let weak = 0;
@@ -1944,14 +1685,13 @@ function _hasTechnicalSignal(reason) {
   return weak >= 2;
 }
 
-// Возвращает массив { entry, ok, reason } для каждой записи.
-// rejected/deferred с slop-only обоснованием → ok=false.
 function validateReviewTriage(parsed) {
   if (!parsed) return null;
   return (parsed.entries || []).map((entry) => {
     if (!entry.valid) return { entry, ok: false, reason: entry.reason };
     if (entry.status === "applied") {
-      // applied — тоже требуем минимальный reason (>=10 символов), иначе декларация бесполезна.
+      // Не менять, потому что минимальный reason требуется и для applied: без него
+      // декларация превращается в пустую отписку.
       if ((entry.reason || "").length < 10) {
         return {
           entry,
@@ -1962,7 +1702,6 @@ function validateReviewTriage(parsed) {
       }
       return { entry, ok: true };
     }
-    // rejected / deferred — slop-detector
     const reason = entry.reason || "";
     if (reason.length < 15) {
       return {
@@ -1984,15 +1723,8 @@ function validateReviewTriage(parsed) {
   });
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер N: премортем-блок (гипотезы «что сломается» до первой правки)
-// ────────────────────────────────────────────────────────────────────────────
-
-// Линейный (indexOf) экстрактор <tag>...</tag>-блоков БЕЗ regex: lazy
-// `[\s\S]*?` квадратичен на adversarial-тексте из незакрытых открывающих
-// тегов (30k тегов ≈ 1.5s, 50MB транскрипт → минуты → таймаут хука →
-// fail-open обход ВСЕХ триггеров). Case-insensitive; возвращает ≤ maxBlocks
-// тел непересекающихся пар (семантика non-greedy матча).
+// Не менять, потому что lazy `[\s\S]*?` квадратичен на тексте из незакрытых
+// тегов: 30k тегов ≈ 1.5s, на 50MB транскрипте — таймаут хука.
 function extractTagBlocks(text, tag, maxBlocks = 100) {
   const out = [];
   const s = String(text || "");
@@ -2011,11 +1743,6 @@ function extractTagBlocks(text, tag, maxBlocks = 100) {
   return out;
 }
 
-// Ищет блоки <premortem>...</premortem> во всех assistant-текстах транскрипта.
-// Возвращает [{ idx, body }] в порядке появления, суммарно ≤ 100 (DoS-кап).
-// Блок пишется в идеале ДО первой observable-правки; позиция механически НЕ
-// форсится — блокировка не отматывает время, а ретро-премортем против уже
-// написанного кода лучше отсутствия ритуала. Зуб ловит отсутствие/невалидность.
 const PREMORTEM_MAX_BLOCKS = 100;
 
 function findPremortemBlocks(lines) {
@@ -2045,13 +1772,6 @@ function findPremortemBlocks(lines) {
   return out;
 }
 
-// Парсит тело премортем-блока. Запись = одна строка:
-//   <вход/состояние> → <наблюдаемый отказ> → <решение>
-// Стрелки `→` или `->`; сегментов ≥ 3 (стрелка внутри решения допустима).
-// Разделитель ТОЛЬКО перенос строки: гипотезы — фразы, `;` внутри легален
-// (в отличие от коротких записей edge-cases). Капы против DoS недоверенным
-// транскриптом: тело ≤ 20KB, записей ≤ 100 (сверх — invalid-маркер, блок
-// не засчитывается; премортем — это 3–7 конкретных гипотез, не простыня).
 const PREMORTEM_MAX_BODY = 20_000;
 const PREMORTEM_MAX_PARSED = 100;
 
@@ -2100,28 +1820,15 @@ function parsePremortemBlock(body) {
   return out;
 }
 
-// Анти-generic минимум: в гипотезе есть число (лимит / код ошибки / таймаут;
-// нумерация записи «1.» / «2)» / «шаг 3:» стрипуется до проверки — иначе любой
-// пронумерованный generic-список проходил бы), ИЛИ код-идентификатор
-// (camelCase / snake_case / UPPER_SNAKE / dotted.path / `литерал`), ИЛИ термин
-// механизма отказа (идемпотентность / ретрай / таймаут / кодировка / гонка …) —
-// честная кириллическая гипотеза без латинского токена и цифры («повторная
-// доставка при ретрае → двойное начисление → идемпотентность по внешнему
-// идентификатору») — не generic; enum узкий: имена механизмов, не симптомов
-// («ошибка» / «сломается» сигналом не являются).
-// «Сеть может упасть → ошибка → обработать» не проходит;
-// «sendMessage: text >4096 → 400 MESSAGE_TOO_LONG → чанковать» проходит.
-// Намеренно мягче _hasTechnicalSignal (strong или 2×weak): премортем пишется
-// ДО кода — file:line ещё не существует, а цифра-лимит и есть главный сигнал
-// специфичности. Одиночная цифра в теле обходится («смотри пункт 2») — как
-// любой текстовый зуб это floor, семантику несут SKILL.md + reason-промпт.
+// Не менять, потому что ведущая нумерация стрипуется до проверки: иначе любой
+// пронумерованный generic-список проходил бы как сигнал.
 const _PREMORTEM_SIGNAL_RES = [
-  /\d/, // число: лимит, код ошибки, таймаут, размер
-  _CAMEL_RE, // camelCase (общая константа с _WEAK_SIGNALS)
-  /[A-Za-z]{2,60}(?:[_.][A-Za-z0-9]{2,60}){1,20}/, // snake/UPPER/dotted, bounded (ReDoS-конвенция); сегменты ≥2 — «e.g.» не сигнал
-  /`[^`\n]{1,80}`/, // квотированный код-литерал (и однобуквенный: `*` в parse_mode-гипотезе)
-  // Хвосты словоформ — [\p{L}], НЕ \w: JS-\w = [A-Za-z0-9_] даже с /u,
-  // кириллический хвост («идемпотентн-ость») ломал бы матч перед _NWE.
+  /\d/,
+  _CAMEL_RE,
+  /[A-Za-z]{2,60}(?:[_.][A-Za-z0-9]{2,60}){1,20}/,
+  /`[^`\n]{1,80}`/,
+  // Не менять, потому что хвост словоформы — `[\p{L}]`, а не `\w`: JS-`\w` не
+  // включает кириллицу даже с /u, и «идемпотентн-ость» перестала бы матчиться.
   new RegExp(
     `${_NW}(?:идемпотентн[\\p{L}]{0,8}|ретра[йяеи][\\p{L}]{0,6}|retry|таймаут[\\p{L}]{0,3}|timeout|лимит[\\p{L}]{0,4}|limit|rate[\\s-]?limit|квот[аыуе]|кодировк[\\p{L}]{0,3}|encoding|charset|unicode|экраниров[\\p{L}]{0,6}|escap(?:e|ing)|sanitiz[\\p{L}]{0,6}|переполнен[\\p{L}]{0,4}|overflow|дедуп[\\p{L}]{0,10}|dedup[\\p{L}]{0,10}|идентификатор[\\p{L}]{0,3}|конкурентн[\\p{L}]{0,4}|гонк[аиуе]|race|пагинаци[\\p{L}]{0,2}|pagination|backoff|бэкофф[\\p{L}]{0,3}|троттл[\\p{L}]{0,6}|throttl[\\p{L}]{0,4})${_NWE}`,
     "iu",
@@ -2129,8 +1836,7 @@ const _PREMORTEM_SIGNAL_RES = [
 ];
 
 function _hasPremortemSignal(entryRaw) {
-  // Кап 2048 — жёсткая граница стоимости regex-прогонов на одну запись
-  // (у _hasTechnicalSignal кап 4096; здесь короче — запись = одна строка).
+  // Не менять, потому что кап держит стоимость regex-прогонов на запись.
   const s = String(entryRaw || "")
     .slice(0, 2048)
     .replace(
@@ -2140,7 +1846,6 @@ function _hasPremortemSignal(entryRaw) {
   return _PREMORTEM_SIGNAL_RES.some((re) => re.test(s));
 }
 
-// Возвращает массив { entry, ok, reason } для каждой записи блока.
 function validatePremortem(parsed) {
   if (!parsed) return null;
   return (parsed.entries || []).map((entry) => {
@@ -2157,18 +1862,10 @@ function validatePremortem(parsed) {
   });
 }
 
-// Минимум валидных гипотез в блоке. Блок засчитывается, если ВСЕ записи
-// валидны И их ≥ PREMORTEM_MIN_ENTRIES: частично-мусорный блок не проходит,
-// иначе 3 валидных + пачка generic-шума формально закрывали бы ритуал.
+// Не менять, потому что требуются ВСЕ валидные записи: иначе 3 валидных плюс
+// пачка generic-шума формально закрывают ритуал.
 const PREMORTEM_MIN_ENTRIES = 3;
 
-// ────────────────────────────────────────────────────────────────────────────
-// Триггер L: парсеры manifest-форматов + сбор version-lookup-ов из transcript
-// ────────────────────────────────────────────────────────────────────────────
-
-// Топ-уровневые поля package.json — НЕ являются dependency-ями. Используется
-// для фильтрации при regex-парсинге фрагментов (когда JSON.parse целиком не
-// проходит).
 const _PKG_TOPLEVEL_FIELDS = new Set([
   "name",
   "version",
@@ -2244,7 +1941,6 @@ function _parsePackageJson(content) {
     }
     return out;
   }
-  // Fragment fallback — regex pass.
   for (const m of String(content).matchAll(
     /"([@a-zA-Z0-9._\-/]+)"\s*:\s*"([^"]+)"/g,
   )) {
@@ -2574,8 +2270,6 @@ function findVersionLookups(lines) {
         )) {
           map.npm.add(m[1].toLowerCase());
         }
-        // docker pull image:tag — эффективно проверяет существование тэга в registry,
-        // считаем как lookup. Тэг отбрасываем, ключ — только image-name.
         for (const m of cmd.matchAll(/\bdocker\s+pull\s+([\w.\-/]+)/g)) {
           map.docker.add(m[1].split(":")[0].toLowerCase());
         }
@@ -2621,9 +2315,8 @@ function findVersionLookups(lines) {
   return map;
 }
 
-// ReDoS-safe: один `(?:\.0)*` вместо `(\.0)*(\.0)*` — двойная звезда давала
-// catastrophic backtracking O(N²) на хитро подобранной строке `>=0` + `.0`*N + хвост.
-// Семантически эквивалентно: матчит `>=0`, `>=0.0`, `>=0.0.0`, `>=0.0.0.0`...
+// Не менять, потому что двойная звезда `(\.0)*(\.0)*` даёт catastrophic
+// backtracking на строке `>=0` + `.0`×N + хвост.
 const _LOOSE_VERSION_RE =
   /^\s*(latest|next|beta|alpha|rc|\*|x|\.|>=?\s*0(?:\.0)*)\s*$/i;
 
@@ -2637,10 +2330,8 @@ function getDepsWithoutLookup(deps, lookupMap) {
     const set = lookupMap[d.type];
     const lower = d.name.toLowerCase();
     if (set && set.has(lower)) continue;
-    // Cross-type fallback: docker image и runtime — это часто один и тот же
-    // продукт. Lookup на endoflife.date/api/nodejs покрывает и `runtime/node`
-    // (.nvmrc), и `docker/node` (FROM node:18). И наоборот: docker manifest
-    // inspect node:18 покрывает и runtime/node.
+    // Не менять, потому что docker-образ и runtime — часто один продукт: без
+    // cross-type матча FROM node:18 + lookup endoflife/nodejs считался бы непроверенным.
     if (d.type === "docker" && lookupMap.runtime?.has(lower)) continue;
     if (d.type === "runtime" && lookupMap.docker?.has(lower)) continue;
     out.push(d);
@@ -2683,13 +2374,8 @@ function collectManifestDepsFromEdits(lines) {
   return dedup;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Resolve repo root.
-// ────────────────────────────────────────────────────────────────────────────
-
 function resolveRepoRoot(envProjectDir, fallbackEdits = []) {
   if (envProjectDir && fs.existsSync(envProjectDir)) return envProjectDir;
-  // Поднимаемся от первой Edit-локации до .git
   for (const e of fallbackEdits) {
     let cur = path.dirname(e.file_path);
     for (let i = 0; i < 10 && cur && cur !== "/"; i++) {
@@ -2716,6 +2402,8 @@ module.exports = {
   hasMutatingHandler,
   readRepoFileSafe,
   stripBlockComments,
+  scanComments,
+  commentFamilyFor,
   isTokenOnlyCss,
   shouldSkipForTestPairing,
   isDeclarativeModelFile,
@@ -2735,7 +2423,6 @@ module.exports = {
   validateEdgeCases,
   runLint,
   resolveRepoRoot,
-  // J / K
   hasSecuritySensitivePath,
   countNonTrivialDiffLines,
   findReviewAgentCalls,
@@ -2745,7 +2432,6 @@ module.exports = {
   parseReviewTriage,
   validateReviewTriage,
   SECURITY_SENSITIVE_RE,
-  // N: премортем-ритуал
   extractTagBlocks,
   findPremortemBlocks,
   parsePremortemBlock,
@@ -2753,7 +2439,6 @@ module.exports = {
   PREMORTEM_MIN_ENTRIES,
   PREMORTEM_MAX_PARSED,
   PREMORTEM_MAX_BODY,
-  // L: dep version-lookup enforcement
   parseManifestDeps,
   findVersionLookups,
   getDepsWithoutLookup,

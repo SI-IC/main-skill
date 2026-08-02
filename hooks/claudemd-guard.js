@@ -1,32 +1,20 @@
 #!/usr/bin/env node
 "use strict";
 
-// PreToolUse-хук: гард против раздувания CLAUDE.md. На Edit/Write/MultiEdit по
-// basename `CLAUDE.md` считает net-прирост строк правки; дописывание в существующий
-// файл >= порога → permissionDecision:deny с дистиллятом правил claude-md-management.
-// Дизайн, инварианты и known-gap — в CLAUDE.md «PreToolUse claude-md-guard».
-//
-// Env: MAIN_SKILL_CLAUDEMD_CHECK=0 — выкл; MAIN_SKILL_CLAUDEMD_MAXADD=<n> — порог.
-
 const fs = require("fs");
 const path = require("path");
 const { readSettings, enabledPluginNames } = require("./lib/plugin-check");
 const { isDisabled } = require("./lib/session-disabled");
 
 const DEFAULT_MAXADD = 20;
+const DEFAULT_MAXBYTES = 40 * 1024;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
-// Число строк в тексте. Пустая строка / не-строка → 0. Trailing `\n` даёт +1
-// сегмент. Для Edit/MultiEdit это симметрично (old/new — подстроки одного файла).
-// Для Write возможна асимметрия ±1: disk-файл обычно с trailing `\n`, а content
-// от Claude — нет. Для эвристики-порога погрешность в 1 строку приемлема.
 function countLines(s) {
   if (typeof s !== "string" || s === "") return 0;
   return s.split("\n").length;
 }
 
-// { netAdded, isCreation } для правки, либо null если форму входа не распознали.
-// readFile(path) → содержимое существующего файла или null (нет файла / ошибка).
 function netAddedLines(toolName, input, readFile) {
   if (!input || typeof input !== "object") return null;
 
@@ -63,7 +51,8 @@ function netAddedLines(toolName, input, readFile) {
   return null;
 }
 
-// Гардим только дописывание в существующий файл, перешедшее порог.
+// Не менять, потому что порог не применяется к созданию с нуля: плотный новый
+// CLAUDE.md — не раздувание, deny должен ловить только дописывание.
 function decide(metrics, threshold) {
   if (!metrics || metrics.isCreation) return { guard: false };
   return { guard: metrics.netAdded >= threshold };
@@ -74,21 +63,56 @@ function resolveThreshold(env) {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAXADD;
 }
 
+function resolveMaxBytes(env) {
+  const n = parseInt((env && env.MAIN_SKILL_CLAUDEMD_MAXBYTES) || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAXBYTES;
+}
+
+// Размер файла ПОСЛЕ правки. Не менять, потому что счёт в символах (`s.length`)
+// занижает кириллицу вдвое (UTF-8: 2 байта на символ) — кап в 40KB не сработал
+// бы никогда на русскоязычном CLAUDE.md.
+function projectedBytes(toolName, input, readFile) {
+  if (!input || typeof input !== "object") return null;
+  const b = (s) => Buffer.byteLength(String(s || ""), "utf8");
+
+  if (toolName === "Write") {
+    if (typeof input.content !== "string") return null;
+    return b(input.content);
+  }
+
+  const base = b(readFile(input.file_path) || "");
+  if (toolName === "Edit") {
+    if (typeof input.new_string !== "string") return null;
+    return base - b(input.old_string) + b(input.new_string);
+  }
+  if (toolName === "MultiEdit") {
+    if (!Array.isArray(input.edits)) return null;
+    let size = base;
+    for (const e of input.edits) {
+      if (!e || typeof e.new_string !== "string") continue;
+      size += b(e.new_string) - b(e.old_string);
+    }
+    return size;
+  }
+  return null;
+}
+
 function isClaudeMd(filePath) {
   return (
     typeof filePath === "string" && path.basename(filePath) === "CLAUDE.md"
   );
 }
 
-// Дистиллят правил claude-md-management (update-guidelines «What NOT to add» +
-// quality-criteria conciseness). НИКАКОГО недоверенного ввода в reason — только
-// статичный текст и целые числа (netAdded/threshold), поэтому ANSI-санитизация
-// не нужна (ср. инвариант plugin-check.js formatBanner).
+// Не менять, потому что в reason идут только статичный текст и числа: любой
+// недоверенный ввод потребует ANSI-санитизации (инвариант formatBanner).
 function buildReason(netAdded, threshold, improverAvailable) {
   const lines = [
     `[main-skill claude-md-guard] Эта правка добавляет в CLAUDE.md ~${netAdded} строк (порог ${threshold}).`,
-    "CLAUDE.md грузится в контекст каждой сессии — прежде чем переиздать, выкинь то, что запрещает claude-md-management:",
+    "CLAUDE.md грузится в контекст каждой сессии — прежде чем переиздать, выкинь то, что выводится",
+    "из самого проекта:",
     "  • очевидное из кода (имя класса/функции уже говорит, что он делает);",
+    "  • то, что утверждает тест или проверяет хук — они и есть источник истины,",
+    "    а копия в доке протухает молча; нет теста/хука, но он уместен → напиши его вместо абзаца;",
     "  • generic best-practices («пишите тесты», «понятные имена») — это не про проект;",
     "  • разовые фиксы («починили баг в commit abc123») — не повторится, мусор;",
     "  • многословные объяснения — ужимай до одной плотной строки.",
@@ -105,10 +129,25 @@ function buildReason(netAdded, threshold, improverAvailable) {
   return lines.join("\n");
 }
 
-// Чистое ядро: payload + инъецируемые зависимости → {decision,reason} | null.
+function buildCapReason(projected, cap) {
+  return [
+    `[main-skill claude-md-guard] После этой правки CLAUDE.md весит ~${Math.round(projected / 1024)}KB при капе ${Math.round(cap / 1024)}KB.`,
+    "Кап жёсткий: файл целиком грузится в контекст каждой сессии, вытесняя рабочий материал.",
+    "Правка, которая файл УМЕНЬШАЕТ, проходит и над капом — ужимай сколько нужно заходов.",
+    "Эта — не уменьшает. Что выкидывать в первую очередь:",
+    "  • перечисления, выводимые из кода (списки паттернов, пороги, форматы) — источник истины в коде;",
+    "  • то, что уже утверждает тест или проверяет хук; нет такого теста/хука, но он уместен →",
+    "    создай его, и абзац станет не нужен;",
+    "  • инвариант «почему именно так» — его место рядом с кодом как `Не менять, потому что …`;",
+    "  • историю правок и разовые решения — их хранит git.",
+    "Остаётся то, что не выводится ниоткуда: команды, связи модулей, осознанные компромиссы.",
+    `Кап осознанно другой → MAIN_SKILL_CLAUDEMD_MAXBYTES=<байты> или MAIN_SKILL_CLAUDEMD_CHECK=0.`,
+  ].join("\n");
+}
+
 function evaluate(payload, deps) {
   const env = (deps && deps.env) || {};
-  if (isDisabled(env)) return null; // /main-skill:off или MAIN_SKILL_OFF=1 — плагин выкл на сессию.
+  if (isDisabled(env)) return null;
   if (env.MAIN_SKILL_CLAUDEMD_CHECK === "0") return null;
 
   const tool = (payload && payload.tool_name) || "";
@@ -117,12 +156,25 @@ function evaluate(payload, deps) {
   const input = payload.tool_input;
   if (!isClaudeMd(input && input.file_path)) return null;
 
+  // Не менять, потому что кап идёт раньше порога и без исключения для создания:
+  // 50KB одним Write вытесняют контекст ровно так же, как дописанные по строчке.
+  // Уменьшающая правка пропускается даже над капом — иначе легаси-файл за капом
+  // невозможно ужать инкрементально, только переписать целиком.
+  const cap = resolveMaxBytes(env);
+  const projected = projectedBytes(tool, input, deps.readFile);
+  const current = Buffer.byteLength(
+    deps.readFile(input.file_path) || "",
+    "utf8",
+  );
+  if (projected != null && projected > cap && projected >= current) {
+    return { decision: "deny", reason: buildCapReason(projected, cap) };
+  }
+
   const threshold = resolveThreshold(env);
   const metrics = netAddedLines(tool, input, deps.readFile);
   if (!decide(metrics, threshold).guard) return null;
 
-  // Постороннее исключение improverAvailable не должно ронять deny — гард важнее
-  // упоминания improver в тексте.
+  // Не менять, потому что исключение improverAvailable не должно ронять deny.
   let improver = false;
   try {
     improver = deps.improverAvailable();
@@ -135,14 +187,10 @@ function evaluate(payload, deps) {
   };
 }
 
-// ─── IO-обёртка ──────────────────────────────────────────────────────────────
-
-// isFile-guard обязателен: без него readFileSync завис бы на FIFO/сокете. Cap —
-// страховка от раздутого файла. ENOENT (создание) и любая ошибка → null (fail-soft).
-// statSync намеренно СЛЕДУЕТ симлинку (в отличие от lstat в auto-format / realpath
-// в verify-changes): нам нужен счёт строк реального целевого файла. Leak-safe —
-// в reason уходит только целое netAdded, НЕ содержимое; читать «наружу» нечем
-// поживиться. Если reason когда-то начнёт эхо-ить содержимое — вернуть lstat-guard.
+// Не менять, потому что: isFile-guard спасает от зависания на FIFO/сокете, а
+// statSync здесь СЛЕДУЕТ симлинку намеренно (нужен размер целевого файла) —
+// это безопасно лишь пока в reason уходят только числа; начнёт эхо-ить
+// содержимое — верни lstat-guard.
 function safeReadFile(fp) {
   try {
     if (typeof fp !== "string" || !path.isAbsolute(fp)) return null;
@@ -203,8 +251,11 @@ if (require.main === module) {
 module.exports = {
   countLines,
   netAddedLines,
+  projectedBytes,
   decide,
   resolveThreshold,
+  resolveMaxBytes,
+  buildCapReason,
   isClaudeMd,
   buildReason,
   evaluate,

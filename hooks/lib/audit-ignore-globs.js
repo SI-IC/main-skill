@@ -1,18 +1,6 @@
 #!/usr/bin/env node
 "use strict";
 
-// CLI + модуль: аудит MAIN_SKILL_VERIFY_IGNORE_GLOBS в проекте. Ищет, где
-// переменная реально задана (carrier-файлы проекта: .env* / .claude/settings*.json
-// / .mcp.json / *.sh; home-конфиги; текущее окружение), классифицирует каждый глоб
-// узкий/широкий через ту же isBroadIgnoreGlob, что и PreToolUse-гард, и печатает
-// отчёт с широкими глобами (глушат Stop-триггер D по целым папкам/языкам) для
-// последующего сужения. Стоит за слэш-командой /main-skill:check-ignore-globs.
-//
-// Standalone: node hooks/lib/audit-ignore-globs.js [dir]
-//
-// Логика «широты» НЕ дублируется — переиспользует isBroadIgnoreGlob (checks.js);
-// поиск присваиваний / carrier-детект / sanitize — из ignore-glob-guard.js.
-
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -24,20 +12,15 @@ const {
 } = require("../ignore-glob-guard");
 
 const VAR = "MAIN_SKILL_VERIFY_IGNORE_GLOBS";
-// Паритет с ignore-glob-guard.safeReadFile (5MB): меньший cap создал бы слепую
-// зону — carrier-файл 2–5MB с широким глобом гард бы отклонил при записи, а этот
-// ретро-аудит молча пропустил (ровно та дыра, которую он призван закрывать).
+// Не менять, потому что cap обязан совпадать с ignore-glob-guard.safeReadFile:
+// меньший даёт слепую зону — гард отклонит глоб при записи, а аудит его не найдёт.
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
-// Дир-ы, куда не спускаемся при walk — деривативы/vendored, там carrier-файлы
-// либо не наши (node_modules/.env пакета), либо не про этот проект.
-// Набор общий с import-scan триггера D (checks.js) — раздельные копии дрейфуют.
+// Не менять, потому что набор общий с import-scan триггера D: своя копия дрейфует.
 const SKIP_DIRS = WALK_SKIP_DIRS;
 
-// Home-level carrier-файлы: глоб, заданный тут, действует на ВСЕ проекты.
-// Намеренно ПОДмножество isEnvCarrierFile: без `~/.mcp.json` (MCP-конфиг не ставит
-// эту env) и без generic `~/*.sh` (полный walk $HOME недопустим) — только
-// стандартные места, где юзер реально экспортит переменную (Claude settings + shell-rc).
+// Не менять, потому что список намеренно уже isEnvCarrierFile: generic `~/*.sh`
+// означал бы полный walk $HOME.
 const HOME_CARRIERS = [
   ".claude/settings.json",
   ".claude/settings.local.json",
@@ -68,16 +51,15 @@ function existsSafe(p) {
   }
 }
 
-// Человеко-читаемое «почему широкий» — cosmetic-объяснение для отчёта. Ветвление
-// зеркалит isBroadIgnoreGlob (каталог-глоб vs один-расширение), но само решение
-// broad/narrow остаётся за isBroadIgnoreGlob — здесь только формулировка.
+// Не менять, потому что здесь только формулировка: решение broad/narrow принимает
+// isBroadIgnoreGlob, вторая его копия разъедется с гардом.
 function describeBroad(glob) {
   const g = String(glob || "")
     .trim()
     .replace(/\/+$/, "");
   const segs = g.split("/");
   const last = segs.pop();
-  const rest = last.replace(/^[*?]+/, ""); // снять ведущий wildcard-ран
+  const rest = last.replace(/^[*?]+/, "");
   const dirPart = segs.join("/");
   if (rest === "") {
     return dirPart ? `весь каталог ${dirPart}/` : "всё дерево репозитория";
@@ -85,20 +67,15 @@ function describeBroad(glob) {
   return `весь язык/расширение (${rest})`;
 }
 
-// Разносит все глобы источников на broad/narrow. sanitize — очистка глоба перед
-// эхом в отчёт (глоб недоверенный: читается из файла). Возвращает
-// { broad: [{label, glob, why}], narrow: [{label, glob}] }.
 function classifySources(sources, sanitize = (s) => s) {
   const broad = [];
   const narrow = [];
   for (const src of sources || []) {
-    // label (имя файла) недоверенно — эхо-ится в отчёт; sanitize перед выводом.
     const label = sanitize(src.label);
     for (const glob of src.globs || []) {
       const shown = sanitize(glob);
-      // classification — на RAW glob (как в гарде); why строим из УЖЕ sanitized
-      // shown, а не из raw glob: describeBroad эхо-ит dir-часть в терминал, сырой
-      // control-char протёк бы в обход sanitizeGlob (terminal-injection).
+      // Не менять, потому что why строится из sanitized shown, а не из raw glob:
+      // describeBroad эхо-ит dir-часть в терминал в обход sanitizeGlob.
       if (isBroadIgnoreGlob(glob)) {
         broad.push({ label, glob: shown, why: describeBroad(shown) });
       } else {
@@ -109,8 +86,6 @@ function classifySources(sources, sanitize = (s) => s) {
   return { broad, narrow };
 }
 
-// Рекурсивно собирает carrier-файлы под rootDir (пропуская SKIP_DIRS и уходя не
-// глубже maxDepth). Возвращает массив абсолютных путей.
 function walkCarrierFiles(rootDir, opts = {}) {
   const maxDepth = opts.maxDepth ?? 8;
   const out = [];
@@ -136,8 +111,6 @@ function walkCarrierFiles(rootDir, opts = {}) {
   return out;
 }
 
-// Собирает источники, где задан VAR: env → project carrier-файлы → home carrier-файлы.
-// Возвращает [{label, globs, home?}] только для источников с ≥1 глобом.
 function collectSources(opts = {}) {
   const {
     rootDir = null,
@@ -148,7 +121,6 @@ function collectSources(opts = {}) {
   } = opts;
   const sources = [];
 
-  // 1. Текущее окружение (эффективное значение, действующее в рантайме).
   const envVal = env[VAR];
   if (typeof envVal === "string") {
     const globs = envVal
@@ -158,7 +130,6 @@ function collectSources(opts = {}) {
     if (globs.length) sources.push({ label: "окружение (env)", globs });
   }
 
-  // 2. Carrier-файлы проекта.
   if (rootDir) {
     for (const f of walk(rootDir)) {
       const globs = extractIgnoreGlobs(readFile(f));
@@ -167,7 +138,6 @@ function collectSources(opts = {}) {
     }
   }
 
-  // 3. Home-level carrier-файлы (действуют на все проекты).
   if (homeDir) {
     for (const rel of HOME_CARRIERS) {
       const globs = extractIgnoreGlobs(readFile(path.join(homeDir, rel)));
@@ -178,7 +148,6 @@ function collectSources(opts = {}) {
   return sources;
 }
 
-// Группировка элементов отчёта по label с сохранением порядка появления.
 function groupByLabel(items) {
   const map = new Map();
   for (const it of items) {
@@ -240,7 +209,8 @@ function formatReport(sources, rootDir, sanitize = (s) => s) {
 
 function run(argv, env, homeDir) {
   const rootDir = argv && argv[2] ? path.resolve(argv[2]) : process.cwd();
-  // Опечатка в пути дала бы тот же «нигде не задан», что и чистый проект — различаем.
+  // Не менять, потому что без этой ветки опечатка в пути неотличима от чистого
+  // проекта — обе дают «нигде не задан».
   if (!existsSafe(rootDir)) {
     return `main-skill: аудит ${VAR}\nпуть не найден: ${sanitizeGlob(rootDir)}`;
   }

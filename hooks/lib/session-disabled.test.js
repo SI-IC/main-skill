@@ -1,5 +1,3 @@
-// Unit-tests для lib/session-disabled.js. Запуск: node --test hooks/lib/session-disabled.test.js
-
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
@@ -46,13 +44,12 @@ test("MAIN_SKILL_OFF c иным значением не выключает", () 
 });
 
 test("isDisabled() без аргумента читает process.env, не бросает", () => {
-  // Так его зовут verify-changes.js / auto-format.js. В нейтральной среде
-  // (сентинела под реальным HOME нет) → false, без исключения.
+  // Не менять, потому что кейс повторяет реальный вызов из хуков: без аргумента
+  // и в нейтральной среде.
   assert.doesNotThrow(() => isDisabled());
   assert.equal(typeof isDisabled(), "boolean");
 });
 
 test("fail-soft: несуществующий HOME → false, не бросает", () => {
-  // existsSync под отсутствующим путём возвращает false, а не кидает.
   assert.equal(isDisabled({ HOME: "/nonexistent/main-skill-xyz" }), false);
 });

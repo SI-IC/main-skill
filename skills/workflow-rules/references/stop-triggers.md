@@ -30,5 +30,7 @@
 - `MAIN_SKILL_VERIFY_PREMORTEM=0` — выключить N и требование edge-секции в J.
 - `MAIN_SKILL_VERIFY_IGNORE_GLOBS="**/*.gen.ts:src/generated/schema.ts"` — POSIX-globs (`:`-разделитель) для путей, которые не требуют парного теста (для D/E). **Только узкий глоб по имени/расширению конкретных файлов, не каталог целиком** — широкий `dir/**` прячет и тестируемую логику рядом и отклоняется PreToolUse-хуком `ignore-glob-guard`. Централизованные тесты, импортирующие исходники, D засчитывает сам (fallback выше); спеки вовсе без импортов (чистый HTTP-flow) → не глоб, а `MAIN_SKILL_VERIFY_CHANGES=0`.
 - `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — отключить `ignore-glob-guard` (разрешить запись широких ignore-глобов).
+- `MAIN_SKILL_COMMENT_CHECK=0` — отключить `comment-guard` (проект требует комментариев по конвенции).
+- `MAIN_SKILL_CLAUDEMD_CHECK=0` / `MAIN_SKILL_CLAUDEMD_MAXADD=<n>` / `MAIN_SKILL_CLAUDEMD_MAXBYTES=<байты>` — `claudemd-guard`: выкл целиком / порог net-прироста строк (дефолт 20) / кап размера файла (дефолт 40960).
 
 Опт-ауты — только когда триггер ловит действительно нерелевантный кейс. Не используй для обхода легитимных требований.
