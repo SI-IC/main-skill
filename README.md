@@ -73,13 +73,15 @@ A repo with centralized tests (all tests under `tests/`, spec names by feature r
 
 To audit ignore-globs already configured in a project (e.g. broad ones set before the guard existed), run **`/main-skill:check-ignore-globs`**. It scans the project's carrier files (`.env*`, `.claude/settings*.json`, `.mcp.json`, `*.sh`), home-level configs (`~/.claude/settings.json`, shell rc) and the environment, flags any broad `dir/**` / `**/*.ext` glob via the same `isBroadIgnoreGlob` the guard uses, and helps you narrow each one. Standalone (no Claude): `node hooks/lib/audit-ignore-globs.js <dir>`.
 
-## Comments and CLAUDE.md (PreToolUse guards)
+## Comments, CLAUDE.md and commit subjects (PreToolUse guards)
 
-Two guards keep prose out of places where it rots. Both deny the pending edit and ask Claude to re-issue it — nothing is written behind your back.
+Three guards keep prose out of places where it rots. All of them deny the pending call and ask Claude to re-issue it — nothing is written behind your back.
 
 `comment-guard.js` rejects code comments Claude adds. A comment survives only where its absence risks a regression on the next edit, and then it must start with **`Не менять, потому что …`** (`Do not change because …` also accepted) — the rest belongs in the code itself: a function name instead of a section header, a named constant instead of a note about a magic number. Not treated as comments: functional directives (`eslint-disable`, `# type: ignore`, `# noqa`, shebang), license / `@generated` headers, and JSDoc blocks carrying tags (`@param`, `@returns`, …). Only comments the edit _adds_ count — re-quoting an existing one in `old_string` is free. Opt out with `MAIN_SKILL_COMMENT_CHECK=0`.
 
 `claudemd-guard.js` keeps CLAUDE.md small: it denies an edit that appends ≥ `MAIN_SKILL_CLAUDEMD_MAXADD` net lines (default 20), and — regardless of the increment, creation included — any edit leaving the file above `MAIN_SKILL_CLAUDEMD_MAXBYTES` (default 40960, measured in UTF-8 bytes, so non-Latin docs are counted honestly). The block reason names the criterion: keep only what is derivable from neither code, nor tests, nor hooks; anything a test could assert or a hook could enforce belongs there instead. Opt out with `MAIN_SKILL_CLAUDEMD_CHECK=0`.
+
+`commit-msg-guard.js` denies a `git commit` whose subject line exceeds `MAIN_SKILL_COMMIT_HEADER_MAX` characters (default 100 — the `header-max-length` shipped by `@commitlint/config-conventional`), so the message is rewritten before commitlint rejects it rather than after. It reads the first `-m` / `--message` argument only (git treats the second `-m` as the body) and resolves the `-m "$(cat <<'EOF' … EOF)"` heredoc form Claude Code emits by default; the subject is the first non-empty, non-`#` line. Length is counted in UTF-16 code units, exactly as commitlint counts it. Subjects commitlint ignores by default — `fixup!` / `squash!` / `amend!`, merge, revert, reapply and bare semver — pass through untouched. The hook never executes the shell, so `-F file`, `-m "$MSG"` (the whole value coming from a variable), and commits made through a wrapper or the editor are not checked at all; a `git commit` example quoted inside a heredoc body is not mistaken for a real call. Opt out with `MAIN_SKILL_COMMIT_CHECK=0`.
 
 Hard opt-outs:
 
@@ -96,6 +98,7 @@ Hard opt-outs:
 - `MAIN_SKILL_IMPORT_SCAN_MAX_FILES=<n>` — raise trigger D's import-scan read budget (default 200, cap 10000) for monorepos with hundreds of centralized specs per package.
 - `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — disable the `ignore-glob-guard` PreToolUse hook (allow writing broad `dir/**` ignore-globs).
 - `MAIN_SKILL_COMMENT_CHECK=0` — disable the `comment-guard` PreToolUse hook (projects whose convention mandates code comments).
+- `MAIN_SKILL_COMMIT_CHECK=0` / `MAIN_SKILL_COMMIT_HEADER_MAX=<n>` — `commit-msg-guard`: disable entirely / commit-subject length limit (default 100, accepted range 1–1000; anything else falls back to the default).
 - `MAIN_SKILL_CLAUDEMD_CHECK=0` / `MAIN_SKILL_CLAUDEMD_MAXADD=<n>` / `MAIN_SKILL_CLAUDEMD_MAXBYTES=<bytes>` — `claudemd-guard`: disable entirely / net added-lines threshold (default 20) / hard file-size cap (default 40960).
 
 ## Editing the rules
@@ -119,6 +122,8 @@ main-skill/
 │   ├── session-start.sh    # remote-SHA check + plugin update + skill-invocation prompt
 │   ├── ignore-glob-guard.js     # PreToolUse hook: deny writing broad MAIN_SKILL_VERIFY_IGNORE_GLOBS (dir/**)
 │   ├── ignore-glob-guard.test.js # unit tests for ignore-glob-guard.js
+│   ├── commit-msg-guard.js      # PreToolUse hook: deny git commit with a subject longer than 100 chars
+│   ├── commit-msg-guard.test.js # unit tests for commit-msg-guard.js
 │   ├── comment-guard.js    # PreToolUse hook: deny code comments other than "Не менять, потому что …"
 │   ├── comment-guard.test.js # unit tests for comment-guard.js
 │   ├── claudemd-guard.js   # PreToolUse hook: deny CLAUDE.md bloat (net added lines + 40 KB cap)

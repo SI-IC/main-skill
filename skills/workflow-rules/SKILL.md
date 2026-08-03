@@ -32,6 +32,12 @@ description: Personal workflow rules — language=ru, triage (bugfix → systema
 
 Меняешь поведение, контракт, CLI, конфиг, env или любой user-facing surface — обнови существующие доки (`README`, `CLAUDE.md`, `/docs/*`, docstrings) в том же коммите. Перед завершением — `grep` по старому названию/флагу. Новых `NOTES.md` / `SUMMARY.md` не плодить.
 
+## Заголовок коммита ≤ 100 символов
+
+Первая строка коммита — `тип(scope): что изменилось`, до 100 символов; перечисление файлов, мотивация и Co-Authored-By идут в тело после пустой строки.
+
+Enforcement: PreToolUse `commit-msg-guard.js` (лимит `MAIN_SKILL_COMMIT_HEADER_MAX`, дефолт 100 — как `header-max-length` у `@commitlint/config-conventional`; выкл — `MAIN_SKILL_COMMIT_CHECK=0`).
+
 ## Удаляй ненужное
 
 Что стало не нужно — выпиливай полностью: код, файлы, доки, хуки, зависимости, env-переменные, фиче-флаги, секции CLAUDE.md / README. Не оставляй `// removed`, TODO-надгробий, закомментированных блоков, deprecated shim-ов «на всякий случай», устаревших примеров. Сомневаешься — `grep` по репо; нет ссылок → удаляй. Git хранит историю.

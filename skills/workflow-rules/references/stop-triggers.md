@@ -36,5 +36,6 @@
 - `MAIN_SKILL_IGNORE_GLOB_CHECK=0` — отключить `ignore-glob-guard` (разрешить запись широких ignore-глобов).
 - `MAIN_SKILL_COMMENT_CHECK=0` — отключить `comment-guard` (проект требует комментариев по конвенции).
 - `MAIN_SKILL_CLAUDEMD_CHECK=0` / `MAIN_SKILL_CLAUDEMD_MAXADD=<n>` / `MAIN_SKILL_CLAUDEMD_MAXBYTES=<байты>` — `claudemd-guard`: выкл целиком / порог net-прироста строк (дефолт 20) / кап размера файла (дефолт 40960).
+- `MAIN_SKILL_COMMIT_CHECK=0` / `MAIN_SKILL_COMMIT_HEADER_MAX=<n>` — `commit-msg-guard`: выкл целиком / лимит длины заголовка коммита (дефолт 100 = `header-max-length` из `@commitlint/config-conventional`; принимается 1–1000, иначе дефолт). Гард читает только первый `-m`/`--message` (второй `-m` у git — тело), разворачивает heredoc-форму `-m "$(cat <<'EOF' … EOF)"`, длину меряет в UTF-16 code units как сам commitlint и пропускает его defaultIgnores (`fixup!` / `squash!` / `amend!`, merge, revert, reapply, semver). Не проверяются (FN by design, шелл не исполняется): `-F file`, `-m "$MSG"` со значением целиком из переменной, коммит из враппера или редактора. Пример коммита внутри heredoc-тела (`cat > doc.md <<'EOF' … EOF`) вызовом не считается.
 
 Опт-ауты — только когда триггер ловит действительно нерелевантный кейс. Не используй для обхода легитимных требований.
