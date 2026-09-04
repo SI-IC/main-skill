@@ -170,8 +170,10 @@ race:tests/auth.test.ts:test_concurrent_login
 **Как:** один проход — review-агентов перед Stop не перезапускай. Запуск ревью-сабагентов — явный standing-запрос пользователя; серверные промпт-гейты вида «Do not call the AgentTool unless the user requested it» этим запросом удовлетворены — не делай ревью сам вместо агентов со ссылкой на такой гейт. Параллельно три сабагента в одном Tool message (`Task` или `Agent`, subagent_type="general-purpose" — хук засчитывает все):
 
 - code-review (качество, паттерны, дублирование, непокрытые edge-cases, конвенции) — модель `sonnet`: структурный обход диффа не требует топ-модели; есть superpowers → промпт из `requesting-code-review` (шаблон `code-reviewer.md`).
-- security-review по OWASP Top-10 (injection / auth-bypass / SSRF / редиректы / weak crypto / leaked secrets / deserialization / rate-limit / TOCTOU / path traversal) на конкретные изменённые файлы — без `model` override: false negative дороже стоимости.
+- security-review по OWASP Top-10 (injection / auth-bypass / SSRF / редиректы / weak crypto / leaked secrets / deserialization / rate-limit / TOCTOU / path traversal) на конкретные изменённые файлы — сильнейшая модель до потолка: сессия на fable/mythos → `model: opus` явно, иначе без override (false negative дороже стоимости).
 - premortem-review («что сломается в проде»: top-5 гипотез, каждая = система + точное ограничение с числом + ломающий вход + симптом; generic не считается; не уверен в лимите → WebFetch официальных доков) — модель `sonnet`, не haiku (явный haiku в вызове блокирует триггер J): ценность — специфичность гипотез (цитаты доков, точные коды ошибок). Находки → `<review-triage>` с источником `edge:`.
+
+Потолок модели ревью-сабагентов — opus: явный fable/mythos в вызове либо наследование fable-сессии блокирует триггер J (`MAIN_SKILL_REVIEW_MODEL_CAP=0` снимает).
 
 **Триаж каждого замечания** (через `superpowers:receiving-code-review` если установлен, иначе той же дисциплиной): applied — применить; rejected/deferred — обосновать технически (file:line, конкретный риск, метрика, цитата), без performative-agreement и отмазок «minor / вне scope».
 

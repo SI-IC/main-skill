@@ -91,6 +91,7 @@ Hard opt-outs:
 - `MAIN_SKILL_VERIFY_REVIEW=code` — require only code-review section.
 - `MAIN_SKILL_VERIFY_REVIEW=security` — require only security-review section.
 - `MAIN_SKILL_VERIFY_PREMORTEM=0` — disable N (premortem block) and the `edge:` section requirement in self-review.
+- `MAIN_SKILL_REVIEW_MODEL_CAP=0` — lift the opus ceiling on review subagents in J. By default a review call whose effective model (explicit `model`, else `message.model` of the assistant entry that made the call) is fable/mythos blocks the Stop: in a fable session security-review must be dispatched with `model: "opus"`. Use the opt-out when the model is forced externally (`CLAUDE_CODE_SUBAGENT_MODEL`, org allowlist).
 - `MAIN_SKILL_VERIFY_RENDER=0` — disable M (render-verification of frontend edits).
 - `MAIN_SKILL_VERIFY_DEPS=0` — disable L (dep version-lookup enforcement). Useful for projects with a frozen lockfile where dep upgrades are batched manually.
 - `MAIN_SKILL_VERIFY_TAIL_WAIT_MS=<ms>` — how long the Stop hook waits for Claude Code to finish appending the turn's final message to the transcript (default 2000, capped at 10000, polled every 100 ms). Without the wait the hook reads a tail that has no final message yet and silently lets the Stop through. Set `0` to restore the old no-wait behaviour.

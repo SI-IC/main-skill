@@ -568,7 +568,12 @@ function main(p) {
                   code: false,
                   security: false,
                   edge: false,
+                  codeModel: "",
+                  securityModel: "",
                   edgeModel: "",
+                  codeCallerModel: "",
+                  securityCallerModel: "",
+                  edgeCallerModel: "",
                 };
               }
               const fakeSections = [];
@@ -596,8 +601,50 @@ function main(p) {
                 !calls.edge
               )
                 fakeSections.push("edge");
+              // Не менять, потому что эффективная модель = override ?? модель entry
+              // с вызовом: security-review без override в fable-сессии — целевой кейс.
+              // Обёртка нужна: throw здесь снял бы весь Stop-хук, а не только потолок.
+              const overCap = [];
+              try {
+                if (process.env.MAIN_SKILL_REVIEW_MODEL_CAP !== "0") {
+                  for (const [sec, want, called, explicit, caller] of [
+                    [
+                      "code",
+                      reviewWantCode,
+                      calls.code,
+                      calls.codeModel,
+                      calls.codeCallerModel,
+                    ],
+                    [
+                      "security",
+                      reviewWantSec,
+                      calls.security,
+                      calls.securityModel,
+                      calls.securityCallerModel,
+                    ],
+                    [
+                      "edge",
+                      reviewWantEdge,
+                      calls.edge,
+                      calls.edgeModel,
+                      calls.edgeCallerModel,
+                    ],
+                  ]) {
+                    if (!want || !sectionsRequiringCall(sec) || !called)
+                      continue;
+                    const inherited = !checks.safeInputStr(explicit).trim();
+                    const model = inherited ? caller : explicit;
+                    if (checks.isOverCapReviewModel(model))
+                      overCap.push({ section: sec, model, inherited });
+                  }
+                }
+              } catch {
+                overCap.length = 0;
+              }
               if (fakeSections.length > 0) {
                 addRitual("J", { kind: "fake-decl", fakeSections, reviewMode });
+              } else if (overCap.length > 0) {
+                addRitual("J", { kind: "over-cap-model", overCap });
               } else if (
                 reviewWantEdge &&
                 sectionsRequiringCall("edge") &&
@@ -1010,13 +1057,14 @@ function main(p) {
     const howTo = [
       "Что должен сделать:",
       "  1. Параллельно запусти ТРИ сабагента в одном сообщении (один Tool message, три Task/Agent call):",
-      '       • code-review — Task/Agent(subagent_type="general-purpose") с требованием в',
-      "         промпте провести code review;",
+      '       • code-review — Task/Agent(subagent_type="general-purpose", model="sonnet") с',
+      "         требованием в промпте провести code review;",
       '       • security-review — Task/Agent(subagent_type="general-purpose") с промптом',
       "         «security review по OWASP Top-10 + injection / auth-bypass / SSRF / weak-crypto /",
-      "         secret leaks» на конкретные изменённые файлы;",
-      '       • premortem-review — Task/Agent(subagent_type="general-purpose") с промптом',
-      "         «премортем: top-5 гипотез, что сломается в проде — система + точное ограничение",
+      '         secret leaks» на конкретные изменённые файлы; сессия на fable/mythos → model="opus"',
+      "         (потолок модели ревью — opus, иначе без override);",
+      '       • premortem-review — Task/Agent(subagent_type="general-purpose", model="sonnet") с',
+      "         промптом «премортем: top-5 гипотез, что сломается в проде — система + точное ограничение",
       "         с числом + ломающий вход + симптом; generic запрещён; не уверен в лимите —",
       "         WebFetch официальных доков» на те же файлы.",
       "  2. По каждому замечанию — пункт в <review-triage> блоке (триггер K); источник",
@@ -1081,6 +1129,43 @@ function main(p) {
         '  • edge — Task/Agent с промптом/описанием, содержащим "premortem" / «премортем».',
         "",
         ...howTo,
+      ].join("\n");
+    }
+    if (ritualData?.kind === "over-cap-model") {
+      const overCap = ritualData.overCap || [];
+      const rows = overCap.map((o) => {
+        const m = sanitize(trunc(o.model, 60));
+        return o.inherited
+          ? `  • ${o.section}: model не указан, унаследовано "${m}"`
+          : `  • ${o.section}: model="${m}"`;
+      });
+      const fixes = overCap.map(
+        (o) =>
+          `  • ${o.section}-review — model="${o.section === "security" ? "opus" : "sonnet"}"`,
+      );
+      return [
+        baseHead.replace(
+          "нет валидного <self-review> блока",
+          "ревью-сабагент запущен на модели выше потолка opus",
+        ),
+        "",
+        "Ревью-вызовы выше потолка (эффективная модель = model в вызове, иначе модель",
+        "assistant-сообщения, из которого вызов сделан):",
+        ...rows,
+        "",
+        "workflow-rules §self-review: потолок модели ревью-сабагентов — opus. Сессия на",
+        "fable/mythos наследуется вызовом без override — здесь override обязателен.",
+        "",
+        "Что сделать: перезапусти перечисленные сабагенты с явной моделью и обнови их секции",
+        "в <self-review> по находкам:",
+        ...fixes,
+        "Правило «один проход» здесь не действует — прогон выше потолка не засчитан.",
+        "",
+        "Учти: реально исполненная модель могла отличаться от запрошенной (CLAUDE_CODE_SUBAGENT_MODEL,",
+        "организационный availableModels-allowlist, frontmatter кастомного сабагента); хук видит",
+        "только вызов и model assistant-сообщения в транскрипте.",
+        "",
+        "Опт-аут: MAIN_SKILL_REVIEW_MODEL_CAP=0.",
       ].join("\n");
     }
     if (ritualData?.kind === "weak-edge-model") {

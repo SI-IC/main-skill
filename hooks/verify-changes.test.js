@@ -97,6 +97,61 @@ function asstTask(subagent_type, description, prompt, model) {
   };
 }
 
+function withSessionModel(entries, model) {
+  return entries.map((e) =>
+    e.type === "assistant" ? { ...e, message: { ...e.message, model } } : e,
+  );
+}
+
+const FINAL_REVIEW_OK = () =>
+  SUCCESS +
+  " " +
+  EDGE_CASES_BLOCK("src/foo.test.ts", "empty") +
+  "\n" +
+  PREMORTEM_OK +
+  "\n<self-review>code:none-found\nsecurity:none-found\nedge:none-found</self-review>";
+
+function reviewTrio(securityModel) {
+  return [
+    asstTask(
+      "superpowers:code-reviewer",
+      "review",
+      "code review please",
+      "sonnet",
+    ),
+    asstTask(
+      "general-purpose",
+      "security review",
+      "security review per OWASP, injection, auth bypass",
+      securityModel,
+    ),
+    asstTask(
+      "general-purpose",
+      "premortem review",
+      "премортем: top-5",
+      "sonnet",
+    ),
+  ];
+}
+
+function runReviewScenario(entriesWithoutFinal, sessionModel, env = {}) {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(
+    dir,
+    withSessionModel(
+      [...base, ...entriesWithoutFinal, asstText(FINAL_REVIEW_OK())],
+      sessionModel,
+    ),
+  );
+  return runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+    ...env,
+  });
+}
+
 function asstAgent(subagent_type, description, prompt) {
   return {
     type: "assistant",
@@ -2207,6 +2262,110 @@ test("triggerJ: отравленный tool_use не роняет хук в sile
     MAIN_SKILL_VERIFY_PREMORTEM: "1",
   });
   expectBlock(r.stdout, "J");
+});
+
+test("triggerJ: fable-сессия, security-review без override → block (over-cap-model)", () => {
+  const r = runReviewScenario(reviewTrio(undefined), "claude-fable-5-1");
+  expectBlock(r.stdout, "J");
+  assert.match(r.stdout, /потолка opus/);
+  assert.match(
+    r.stdout,
+    /security: model не указан, унаследовано \\"claude-fable-5-1\\"/,
+  );
+  assert.match(r.stdout, /security-review — model=\\"opus\\"/);
+  assert.doesNotMatch(r.stdout, /code-review — model=/);
+  assert.match(r.stdout, /MAIN_SKILL_REVIEW_MODEL_CAP=0/);
+});
+
+test("triggerJ: /model mid-session — вызов сделан из opus-entry, финал на fable → блока нет", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...withSessionModel([...base, ...reviewTrio(undefined)], "claude-opus-5"),
+    ...withSessionModel([asstText(FINAL_REVIEW_OK())], "claude-fable-5-1"),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: /model mid-session — вызов из fable-entry, финал на opus → block", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  const tp = writeTranscript(dir, [
+    ...withSessionModel(
+      [...base, ...reviewTrio(undefined)],
+      "claude-fable-5-1",
+    ),
+    ...withSessionModel([asstText(FINAL_REVIEW_OK())], "claude-opus-5"),
+  ]);
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "J");
+});
+
+test("triggerJ: fable-сессия, security-review с model=opus → блока нет", () => {
+  const r = runReviewScenario(reviewTrio("opus"), "claude-fable-5-1[1m]");
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: opus-сессия, security-review без override → блока нет (наследование под потолком)", () => {
+  const r = runReviewScenario(reviewTrio(undefined), "claude-opus-5");
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: модель сессии в транскрипте отсутствует → блока нет (fail-toward-silence)", () => {
+  const r = runReviewScenario(reviewTrio(undefined), undefined);
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: явный model=fable у code-review в sonnet-сессии → block, sonnet-security не в списке", () => {
+  const r = runReviewScenario(
+    [
+      asstTask(
+        "superpowers:code-reviewer",
+        "review",
+        "code review please",
+        "fable",
+      ),
+      ...reviewTrio("sonnet").slice(1),
+    ],
+    "claude-sonnet-5",
+  );
+  expectBlock(r.stdout, "J");
+  assert.match(r.stdout, /code: model=\\"fable\\"/);
+  assert.match(r.stdout, /code-review — model=\\"sonnet\\"/);
+  assert.doesNotMatch(r.stdout, /security: model/);
+});
+
+test("triggerJ: security перезапущен на opus после fable → блока нет (считается последний вызов)", () => {
+  const r = runReviewScenario(
+    [...reviewTrio("fable"), reviewTrio("opus")[1]],
+    "claude-fable-5-1",
+  );
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: MAIN_SKILL_REVIEW_MODEL_CAP=0 снимает потолок в fable-сессии", () => {
+  const r = runReviewScenario(reviewTrio(undefined), "claude-fable-5-1", {
+    MAIN_SKILL_REVIEW_MODEL_CAP: "0",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: fake-decl приоритетнее over-cap (нет premortem-вызова в fable-сессии)", () => {
+  const r = runReviewScenario(
+    reviewTrio(undefined).slice(0, 2),
+    "claude-fable-5-1",
+  );
+  expectBlock(r.stdout, "J");
+  assert.match(r.stdout, /без реального запуска/);
 });
 
 test("triggerJ: premortem-агент на haiku → block (weak-edge-model)", () => {

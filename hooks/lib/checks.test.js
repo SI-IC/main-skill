@@ -652,6 +652,79 @@ test("safeInputStr: не-строки схлопываются, длина ка�
   assert.strictEqual(checks.safeInputStr("x".repeat(5000), 200).length, 200);
 });
 
+test("findReviewAgentCalls: codeModel/securityModel — модель последнего вызова каждой линзы", () => {
+  const r = checks.findReviewAgentCalls([
+    asstTool("Task", {
+      subagent_type: "general-purpose",
+      model: "fable",
+      prompt: "security review per OWASP",
+    }),
+    asstTool("Task", {
+      subagent_type: "general-purpose",
+      model: "opus",
+      prompt: "security review per OWASP",
+    }),
+    asstTool("Agent", {
+      subagent_type: "general-purpose",
+      prompt: "code review please",
+    }),
+  ]);
+  assert.strictEqual(r.securityModel, "opus");
+  assert.strictEqual(r.codeModel, "");
+  assert.strictEqual(r.edgeModel, "");
+});
+
+test("isOverCapReviewModel: алиас/ID fable и mythos — да, opus/sonnet/чужие имена — нет", () => {
+  assert.strictEqual(checks.isOverCapReviewModel("fable"), true);
+  assert.strictEqual(checks.isOverCapReviewModel("Mythos"), true);
+  assert.strictEqual(checks.isOverCapReviewModel("claude-fable-5-1"), true);
+  assert.strictEqual(checks.isOverCapReviewModel("claude-fable-5-1[1m]"), true);
+  assert.strictEqual(
+    checks.isOverCapReviewModel("us.anthropic.claude-mythos-5-1-v1:0"),
+    true,
+  );
+  assert.strictEqual(checks.isOverCapReviewModel("opus"), false);
+  assert.strictEqual(checks.isOverCapReviewModel("claude-opus-5"), false);
+  assert.strictEqual(checks.isOverCapReviewModel("sonnet"), false);
+  assert.strictEqual(checks.isOverCapReviewModel("fable-router"), false);
+  assert.strictEqual(checks.isOverCapReviewModel(""), false);
+  assert.strictEqual(checks.isOverCapReviewModel(undefined), false);
+  assert.strictEqual(checks.isOverCapReviewModel({ toString: 1 }), false);
+});
+
+test("findReviewAgentCalls: *CallerModel — message.model того entry, где лежит вызов", () => {
+  const withModel = (model, input) => ({
+    type: "assistant",
+    message: { model, content: [{ type: "tool_use", name: "Task", input }] },
+  });
+  const r = checks.findReviewAgentCalls([
+    withModel("claude-fable-5-1", {
+      subagent_type: "general-purpose",
+      prompt: "security review per OWASP",
+    }),
+    withModel("claude-opus-5", {
+      subagent_type: "general-purpose",
+      model: "sonnet",
+      prompt: "code review please",
+    }),
+    withModel(
+      { toString: 1 },
+      {
+        subagent_type: "general-purpose",
+        prompt: "премортем",
+      },
+    ),
+    { type: "assistant", message: { model: "claude-sonnet-5", content: [] } },
+  ]);
+  assert.strictEqual(r.securityCallerModel, "claude-fable-5-1");
+  assert.strictEqual(r.securityModel, "");
+  assert.strictEqual(r.codeCallerModel, "claude-opus-5");
+  assert.strictEqual(r.codeModel, "sonnet");
+  assert.strictEqual(r.edgeCallerModel, "");
+  const none = checks.findReviewAgentCalls([]);
+  assert.strictEqual(none.securityCallerModel, "");
+});
+
 test("isWeakPremortemModel: алиас и полный ID haiku — да, остальное — нет", () => {
   assert.strictEqual(checks.isWeakPremortemModel("haiku"), true);
   assert.strictEqual(

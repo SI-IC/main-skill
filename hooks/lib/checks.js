@@ -1577,14 +1577,30 @@ function isWeakPremortemModel(model) {
   return /^haiku$/i.test(s) || /claude-haiku/i.test(s);
 }
 
+// Не менять, потому что матчатся только Anthropic-формы (алиас целиком либо
+// сегмент claude-fable / claude-mythos): подстрока где угодно даёт FP на чужих
+// именах вроде fable-router.
+function isOverCapReviewModel(model) {
+  const s = safeInputStr(model, 200).trim();
+  return /^(fable|mythos)$/i.test(s) || /claude-(fable|mythos)/i.test(s);
+}
+
 function findReviewAgentCalls(lines) {
   let code = false;
   let security = false;
   let edge = false;
+  let codeModel = "";
+  let securityModel = "";
   let edgeModel = "";
+  let codeCallerModel = "";
+  let securityCallerModel = "";
+  let edgeCallerModel = "";
   for (const e of lines || []) {
     if (e.type !== "assistant") continue;
     const content = e.message?.content || [];
+    // Не менять, потому что модель берётся из ТОГО ЖЕ assistant-entry, где лежит
+    // вызов: «последняя модель файла» врёт после /model mid-session и на ветвлении.
+    const callerModel = safeInputStr(e.message?.model, 200).trim();
     for (const b of content) {
       if (!b || b.type !== "tool_use" || !SUBAGENT_TOOL_NAMES.has(b.name))
         continue;
@@ -1600,6 +1616,8 @@ function findReviewAgentCalls(lines) {
         /\bревью\s+кода\b/i.test(hay)
       ) {
         code = true;
+        codeModel = safeInputStr(inp.model, 200);
+        codeCallerModel = callerModel;
       }
       if (
         /security/i.test(sub) ||
@@ -1609,15 +1627,28 @@ function findReviewAgentCalls(lines) {
         /\b(секьюрити|безопасност[ьи])\b/i.test(hay)
       ) {
         security = true;
+        securityModel = safeInputStr(inp.model, 200);
+        securityCallerModel = callerModel;
       }
       // Не менять, потому что hay уже содержит sub — отдельная sub-проверка мертва.
       if (/пре-?мортем|pre-?mortem/i.test(hay)) {
         edge = true;
         edgeModel = safeInputStr(inp.model, 200);
+        edgeCallerModel = callerModel;
       }
     }
   }
-  return { code, security, edge, edgeModel };
+  return {
+    code,
+    security,
+    edge,
+    codeModel,
+    securityModel,
+    edgeModel,
+    codeCallerModel,
+    securityCallerModel,
+    edgeCallerModel,
+  };
 }
 
 function parseSelfReview(text) {
@@ -2496,6 +2527,7 @@ module.exports = {
   countNonTrivialDiffLines,
   findReviewAgentCalls,
   isWeakPremortemModel,
+  isOverCapReviewModel,
   safeInputStr,
   parseSelfReview,
   parseReviewTriage,
