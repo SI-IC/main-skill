@@ -86,15 +86,35 @@ function asstText(text) {
   return { type: "assistant", message: { content: [{ type: "text", text }] } };
 }
 
-function asstTask(subagent_type, description, prompt, model) {
+function asstTask(subagent_type, description, prompt, model, id) {
   const input = { subagent_type, description, prompt };
   if (model !== undefined) input.model = model;
+  const block = { type: "tool_use", name: "Task", input };
+  if (id !== undefined) block.id = id;
   return {
     type: "assistant",
     message: {
-      content: [{ type: "tool_use", name: "Task", input }],
+      content: [block],
     },
   };
+}
+
+function writeSubagentRun(dir, toolUseId, executedModel) {
+  const sub = path.join(dir, "transcript", "subagents");
+  fs.mkdirSync(sub, { recursive: true });
+  const name = `agent-${toolUseId}`;
+  fs.writeFileSync(
+    path.join(sub, `${name}.meta.json`),
+    JSON.stringify({ toolUseId, agentType: "general-purpose" }),
+  );
+  fs.writeFileSync(
+    path.join(sub, `${name}.jsonl`),
+    JSON.stringify({
+      type: "assistant",
+      isSidechain: true,
+      message: { model: executedModel, content: [] },
+    }),
+  );
 }
 
 function withSessionModel(entries, model) {
@@ -2350,6 +2370,92 @@ test("triggerJ: security перезапущен на opus после fable → �
     "claude-fable-5-1",
   );
   expectNoBlock(r.stdout);
+});
+
+test("triggerJ: запрошен opus, фактически исполнено на fable (subagents/*.jsonl) → block", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  writeSubagentRun(dir, "toolu_sec", "claude-fable-5-1");
+  const trio = reviewTrio("opus");
+  trio[1] = asstTask(
+    "general-purpose",
+    "security review",
+    "security review per OWASP, injection, auth bypass",
+    "opus",
+    "toolu_sec",
+  );
+  const tp = writeTranscript(
+    dir,
+    withSessionModel(
+      [...base, ...trio, asstText(FINAL_REVIEW_OK())],
+      "claude-opus-5",
+    ),
+  );
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "J");
+  assert.match(
+    r.stdout,
+    /security: фактически исполнено на \\"claude-fable-5-1\\"/,
+  );
+});
+
+test("triggerJ: fable-сессия без override, но фактически исполнено на opus → блока нет", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  writeSubagentRun(dir, "toolu_sec", "claude-opus-5");
+  const trio = reviewTrio(undefined);
+  trio[1] = asstTask(
+    "general-purpose",
+    "security review",
+    "security review per OWASP, injection, auth bypass",
+    undefined,
+    "toolu_sec",
+  );
+  const tp = writeTranscript(
+    dir,
+    withSessionModel(
+      [...base, ...trio, asstText(FINAL_REVIEW_OK())],
+      "claude-fable-5-1",
+    ),
+  );
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectNoBlock(r.stdout);
+});
+
+test("triggerJ: явный model=fable + подделанный subagents/*.jsonl с opus → всё равно block", () => {
+  const dir = tmp();
+  const base = setupReviewBase(dir);
+  writeSubagentRun(dir, "toolu_sec", "claude-opus-5");
+  const trio = reviewTrio("opus");
+  trio[1] = asstTask(
+    "general-purpose",
+    "security review",
+    "security review per OWASP, injection, auth bypass",
+    "fable",
+    "toolu_sec",
+  );
+  const tp = writeTranscript(
+    dir,
+    withSessionModel(
+      [...base, ...trio, asstText(FINAL_REVIEW_OK())],
+      "claude-opus-5",
+    ),
+  );
+  const r = runHook(tp, {
+    CLAUDE_PROJECT_DIR: dir,
+    MAIN_SKILL_VERIFY_REVIEW: "both",
+    MAIN_SKILL_VERIFY_PREMORTEM: "1",
+  });
+  expectBlock(r.stdout, "J");
+  assert.match(r.stdout, /security: model=\\"fable\\"/);
 });
 
 test("triggerJ: MAIN_SKILL_REVIEW_MODEL_CAP=0 снимает потолок в fable-сессии", () => {

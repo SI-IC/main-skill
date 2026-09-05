@@ -574,6 +574,9 @@ function main(p) {
                   codeCallerModel: "",
                   securityCallerModel: "",
                   edgeCallerModel: "",
+                  codeToolUseId: "",
+                  securityToolUseId: "",
+                  edgeToolUseId: "",
                 };
               }
               const fakeSections = [];
@@ -601,19 +604,20 @@ function main(p) {
                 !calls.edge
               )
                 fakeSections.push("edge");
-              // Не менять, потому что эффективная модель = override ?? модель entry
-              // с вызовом: security-review без override в fable-сессии — целевой кейс.
-              // Обёртка нужна: throw здесь снял бы весь Stop-хук, а не только потолок.
+              // Не менять, потому что эффективная модель = исполненная (subagents/*.jsonl)
+              // ?? override ?? модель entry с вызовом: security-review без override в
+              // fable-сессии — целевой кейс. Throw здесь снял бы весь Stop-хук, не потолок.
               const overCap = [];
               try {
                 if (process.env.MAIN_SKILL_REVIEW_MODEL_CAP !== "0") {
-                  for (const [sec, want, called, explicit, caller] of [
+                  for (const [sec, want, called, explicit, caller, id] of [
                     [
                       "code",
                       reviewWantCode,
                       calls.code,
                       calls.codeModel,
                       calls.codeCallerModel,
+                      calls.codeToolUseId,
                     ],
                     [
                       "security",
@@ -621,6 +625,7 @@ function main(p) {
                       calls.security,
                       calls.securityModel,
                       calls.securityCallerModel,
+                      calls.securityToolUseId,
                     ],
                     [
                       "edge",
@@ -628,14 +633,33 @@ function main(p) {
                       calls.edge,
                       calls.edgeModel,
                       calls.edgeCallerModel,
+                      calls.edgeToolUseId,
                     ],
                   ]) {
                     if (!want || !sectionsRequiringCall(sec) || !called)
                       continue;
+                    const executed = checks.findExecutedSubagentModel(
+                      resolvedTp,
+                      id,
+                    );
                     const inherited = !checks.safeInputStr(explicit).trim();
-                    const model = inherited ? caller : explicit;
+                    // Не менять, потому что subagents/ пишется без подписи и доступен
+                    // модели: файл может ужесточить вердикт по вызову, но не снять
+                    // явный over-cap из самого вызова.
+                    let model;
+                    let source;
+                    if (!inherited && checks.isOverCapReviewModel(explicit)) {
+                      model = explicit;
+                      source = "explicit";
+                    } else if (executed) {
+                      model = executed;
+                      source = "executed";
+                    } else {
+                      model = inherited ? caller : explicit;
+                      source = inherited ? "inherited" : "explicit";
+                    }
                     if (checks.isOverCapReviewModel(model))
-                      overCap.push({ section: sec, model, inherited });
+                      overCap.push({ section: sec, model, source });
                   }
                 }
               } catch {
@@ -1135,9 +1159,11 @@ function main(p) {
       const overCap = ritualData.overCap || [];
       const rows = overCap.map((o) => {
         const m = sanitize(trunc(o.model, 60));
-        return o.inherited
-          ? `  • ${o.section}: model не указан, унаследовано "${m}"`
-          : `  • ${o.section}: model="${m}"`;
+        if (o.source === "executed")
+          return `  • ${o.section}: фактически исполнено на "${m}" (subagents/*.jsonl)`;
+        if (o.source === "inherited")
+          return `  • ${o.section}: model не указан, унаследовано "${m}"`;
+        return `  • ${o.section}: model="${m}"`;
       });
       const fixes = overCap.map(
         (o) =>
@@ -1149,8 +1175,8 @@ function main(p) {
           "ревью-сабагент запущен на модели выше потолка opus",
         ),
         "",
-        "Ревью-вызовы выше потолка (эффективная модель = model в вызове, иначе модель",
-        "assistant-сообщения, из которого вызов сделан):",
+        "Ревью-вызовы выше потолка (эффективная модель = фактическая из subagents/agent-*.jsonl,",
+        "иначе model в вызове, иначе модель assistant-сообщения, из которого вызов сделан):",
         ...rows,
         "",
         "workflow-rules §self-review: потолок модели ревью-сабагентов — opus. Сессия на",
@@ -1161,9 +1187,8 @@ function main(p) {
         ...fixes,
         "Правило «один проход» здесь не действует — прогон выше потолка не засчитан.",
         "",
-        "Учти: реально исполненная модель могла отличаться от запрошенной (CLAUDE_CODE_SUBAGENT_MODEL,",
-        "организационный availableModels-allowlist, frontmatter кастомного сабагента); хук видит",
-        "только вызов и model assistant-сообщения в транскрипте.",
+        "Учти: подмену модели извне (CLAUDE_CODE_SUBAGENT_MODEL, allowlist, frontmatter кастомного",
+        "сабагента) хук видит только через subagents/agent-*.jsonl; нет файла — верит вызову.",
         "",
         "Опт-аут: MAIN_SKILL_REVIEW_MODEL_CAP=0.",
       ].join("\n");

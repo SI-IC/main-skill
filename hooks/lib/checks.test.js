@@ -725,6 +725,167 @@ test("findReviewAgentCalls: *CallerModel — message.model того entry, гд�
   assert.strictEqual(none.securityCallerModel, "");
 });
 
+test("findReviewAgentCalls: *ToolUseId — id последнего вызова секции", () => {
+  const r = checks.findReviewAgentCalls([
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_sec1",
+            name: "Task",
+            input: { subagent_type: "general-purpose", prompt: "OWASP review" },
+          },
+          {
+            type: "tool_use",
+            id: 42,
+            name: "Agent",
+            input: { subagent_type: "general-purpose", prompt: "премортем" },
+          },
+        ],
+      },
+    },
+  ]);
+  assert.strictEqual(r.securityToolUseId, "toolu_sec1");
+  assert.strictEqual(r.edgeToolUseId, "42");
+  assert.strictEqual(r.codeToolUseId, "");
+});
+
+test("findExecutedSubagentModel: читает message.model из subagents/agent-*.jsonl по toolUseId", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "msv-sub-"));
+  const tp = path.join(dir, "sess.jsonl");
+  fs.writeFileSync(tp, "");
+  const sub = path.join(dir, "sess", "subagents");
+  fs.mkdirSync(sub, { recursive: true });
+  const writeAgent = (name, meta, lines) => {
+    fs.writeFileSync(path.join(sub, `${name}.meta.json`), JSON.stringify(meta));
+    fs.writeFileSync(
+      path.join(sub, `${name}.jsonl`),
+      lines
+        .map((l) => (typeof l === "string" ? l : JSON.stringify(l)))
+        .join("\n"),
+    );
+  };
+  writeAgent("agent-a1", { toolUseId: "toolu_1", model: "opus" }, [
+    {
+      type: "user",
+      isSidechain: true,
+      message: { role: "user", content: "x" },
+    },
+    "not json",
+    { type: "assistant", message: { model: "claude-fable-5-1", content: [] } },
+    { type: "assistant", message: { model: "claude-opus-5", content: [] } },
+  ]);
+  writeAgent("agent-a2", { toolUseId: "toolu_2" }, [
+    { type: "assistant", message: { content: [] } },
+  ]);
+  fs.writeFileSync(path.join(sub, "agent-broken.meta.json"), "{not json");
+  fs.writeFileSync(
+    path.join(sub, "agent-orphan.meta.json"),
+    JSON.stringify({ toolUseId: "toolu_3" }),
+  );
+  assert.strictEqual(
+    checks.findExecutedSubagentModel(tp, "toolu_1"),
+    "claude-fable-5-1",
+  );
+  assert.strictEqual(checks.findExecutedSubagentModel(tp, "toolu_2"), "");
+  assert.strictEqual(checks.findExecutedSubagentModel(tp, "toolu_3"), "");
+  assert.strictEqual(checks.findExecutedSubagentModel(tp, "toolu_none"), "");
+  assert.strictEqual(checks.findExecutedSubagentModel(tp, ""), "");
+  assert.strictEqual(checks.findExecutedSubagentModel(tp, { toString: 1 }), "");
+  assert.strictEqual(
+    checks.findExecutedSubagentModel(path.join(dir, "nope.jsonl"), "toolu_1"),
+    "",
+  );
+  assert.strictEqual(checks.findExecutedSubagentModel(null, "toolu_1"), "");
+});
+
+test("findExecutedSubagentModel: assistant без model пропускается, берётся первый с непустым", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "msv-sub-"));
+  const tp = path.join(dir, "sess.jsonl");
+  fs.writeFileSync(tp, "");
+  const sub = path.join(dir, "sess", "subagents");
+  fs.mkdirSync(sub, { recursive: true });
+  fs.writeFileSync(
+    path.join(sub, "agent-s.meta.json"),
+    JSON.stringify({ toolUseId: "toolu_s" }),
+  );
+  fs.writeFileSync(
+    path.join(sub, "agent-s.jsonl"),
+    [
+      { type: "assistant", message: { content: [] } },
+      { type: "assistant", message: { model: "   ", content: [] } },
+      { type: "assistant", message: { model: "claude-opus-5", content: [] } },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join("\n"),
+  );
+  assert.strictEqual(
+    checks.findExecutedSubagentModel(tp, "toolu_s"),
+    "claude-opus-5",
+  );
+});
+
+test("findExecutedSubagentModel: симлинк наружу и FIFO в subagents/ → пусто, без подвисания", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "msv-sub-"));
+  const tp = path.join(dir, "sess.jsonl");
+  fs.writeFileSync(tp, "");
+  const sub = path.join(dir, "sess", "subagents");
+  fs.mkdirSync(sub, { recursive: true });
+  const outside = path.join(dir, "outside.jsonl");
+  fs.writeFileSync(
+    outside,
+    JSON.stringify({
+      type: "assistant",
+      message: { model: "claude-fable-5-1", content: [] },
+    }),
+  );
+  fs.writeFileSync(
+    path.join(sub, "agent-l.meta.json"),
+    JSON.stringify({ toolUseId: "toolu_l" }),
+  );
+  fs.symlinkSync(outside, path.join(sub, "agent-l.jsonl"));
+  assert.strictEqual(checks.findExecutedSubagentModel(tp, "toolu_l"), "");
+  fs.writeFileSync(
+    path.join(sub, "agent-f.meta.json"),
+    JSON.stringify({ toolUseId: "toolu_f" }),
+  );
+  require("child_process").execFileSync("mkfifo", [
+    path.join(sub, "agent-f.jsonl"),
+  ]);
+  const t0 = Date.now();
+  assert.strictEqual(checks.findExecutedSubagentModel(tp, "toolu_f"), "");
+  assert.ok(Date.now() - t0 < 2000);
+  fs.symlinkSync(outside, path.join(sub, "agent-m.meta.json"));
+  assert.strictEqual(checks.findExecutedSubagentModel(tp, "toolu_m"), "");
+});
+
+test("findExecutedSubagentModel: assistant-entry за пределами 256KB-головы не читается", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "msv-sub-"));
+  const tp = path.join(dir, "sess.jsonl");
+  fs.writeFileSync(tp, "");
+  const sub = path.join(dir, "sess", "subagents");
+  fs.mkdirSync(sub, { recursive: true });
+  fs.writeFileSync(
+    path.join(sub, "agent-big.meta.json"),
+    JSON.stringify({ toolUseId: "toolu_big" }),
+  );
+  const filler = JSON.stringify({
+    type: "user",
+    message: { content: "y".repeat(1000) },
+  });
+  const lines = Array.from({ length: 300 }, () => filler);
+  lines.push(
+    JSON.stringify({
+      type: "assistant",
+      message: { model: "claude-fable-5-1", content: [] },
+    }),
+  );
+  fs.writeFileSync(path.join(sub, "agent-big.jsonl"), lines.join("\n"));
+  assert.strictEqual(checks.findExecutedSubagentModel(tp, "toolu_big"), "");
+});
+
 test("isWeakPremortemModel: алиас и полный ID haiku — да, остальное — нет", () => {
   assert.strictEqual(checks.isWeakPremortemModel("haiku"), true);
   assert.strictEqual(

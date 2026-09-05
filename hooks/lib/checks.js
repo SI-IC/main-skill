@@ -1585,6 +1585,85 @@ function isOverCapReviewModel(model) {
   return /^(fable|mythos)$/i.test(s) || /claude-(fable|mythos)/i.test(s);
 }
 
+const SUBAGENT_META_MAX_FILES = 500;
+const SUBAGENT_META_MAX_BYTES = 64 * 1024;
+const SUBAGENT_TRANSCRIPT_HEAD_BYTES = 256 * 1024;
+
+// Не менять, потому что фактическая модель сабагента лежит только в
+// <session>/subagents/agent-*.jsonl (`message.model`), а в вызове — запрошенная:
+// CLAUDE_CODE_SUBAGENT_MODEL и allowlist подменяют её молча. Любой сбой → "" (не блок).
+function findExecutedSubagentModel(transcriptPath, toolUseId) {
+  const id = safeInputStr(toolUseId, 200).trim();
+  if (!id || typeof transcriptPath !== "string") return "";
+  try {
+    const dir = fs.realpathSync(
+      path.join(
+        path.dirname(transcriptPath),
+        path.basename(transcriptPath, ".jsonl"),
+        "subagents",
+      ),
+    );
+    // Не менять, потому что realpath-confinement + O_NONBLOCK + fstat: симлинк в
+    // subagents/ читал бы произвольный файл, FIFO — подвешивал бы Stop-хук навсегда.
+    const insideDir = (fp) => {
+      const real = fs.realpathSync(fp);
+      return real.startsWith(dir + path.sep) ? real : "";
+    };
+    const names = fs
+      .readdirSync(dir)
+      .filter((n) => n.endsWith(".meta.json"))
+      .slice(0, SUBAGENT_META_MAX_FILES);
+    for (const n of names) {
+      let meta;
+      try {
+        const metaPath = insideDir(path.join(dir, n));
+        if (!metaPath) continue;
+        const st = fs.statSync(metaPath);
+        if (!st.isFile() || st.size > SUBAGENT_META_MAX_BYTES) continue;
+        meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      } catch {
+        continue;
+      }
+      if (!meta || meta.toolUseId !== id) continue;
+      const agentPath = insideDir(
+        path.join(dir, n.slice(0, -".meta.json".length) + ".jsonl"),
+      );
+      if (!agentPath) return "";
+      const fd = fs.openSync(
+        agentPath,
+        fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+      );
+      let head;
+      try {
+        const st = fs.fstatSync(fd);
+        if (!st.isFile()) return "";
+        const buf = Buffer.alloc(
+          Math.min(st.size, SUBAGENT_TRANSCRIPT_HEAD_BYTES),
+        );
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        head = buf.toString("utf8", 0, n);
+      } finally {
+        fs.closeSync(fd);
+      }
+      for (const line of head.split("\n")) {
+        let e;
+        try {
+          e = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (e?.type !== "assistant") continue;
+        const m = safeInputStr(e.message?.model, 200).trim();
+        if (m) return m;
+      }
+      return "";
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
 function findReviewAgentCalls(lines) {
   let code = false;
   let security = false;
@@ -1595,6 +1674,9 @@ function findReviewAgentCalls(lines) {
   let codeCallerModel = "";
   let securityCallerModel = "";
   let edgeCallerModel = "";
+  let codeToolUseId = "";
+  let securityToolUseId = "";
+  let edgeToolUseId = "";
   for (const e of lines || []) {
     if (e.type !== "assistant") continue;
     const content = e.message?.content || [];
@@ -1618,6 +1700,7 @@ function findReviewAgentCalls(lines) {
         code = true;
         codeModel = safeInputStr(inp.model, 200);
         codeCallerModel = callerModel;
+        codeToolUseId = safeInputStr(b.id, 200);
       }
       if (
         /security/i.test(sub) ||
@@ -1629,12 +1712,14 @@ function findReviewAgentCalls(lines) {
         security = true;
         securityModel = safeInputStr(inp.model, 200);
         securityCallerModel = callerModel;
+        securityToolUseId = safeInputStr(b.id, 200);
       }
       // Не менять, потому что hay уже содержит sub — отдельная sub-проверка мертва.
       if (/пре-?мортем|pre-?mortem/i.test(hay)) {
         edge = true;
         edgeModel = safeInputStr(inp.model, 200);
         edgeCallerModel = callerModel;
+        edgeToolUseId = safeInputStr(b.id, 200);
       }
     }
   }
@@ -1648,6 +1733,9 @@ function findReviewAgentCalls(lines) {
     codeCallerModel,
     securityCallerModel,
     edgeCallerModel,
+    codeToolUseId,
+    securityToolUseId,
+    edgeToolUseId,
   };
 }
 
@@ -2528,6 +2616,7 @@ module.exports = {
   findReviewAgentCalls,
   isWeakPremortemModel,
   isOverCapReviewModel,
+  findExecutedSubagentModel,
   safeInputStr,
   parseSelfReview,
   parseReviewTriage,
